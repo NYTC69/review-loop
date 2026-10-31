@@ -1,7 +1,7 @@
 # Migrating from `/review-loop` to paired-session (v2.10.0 default entry)
 
 ## What paired-session is
-paired-session is a coordinator (`bin/paired-session`) that runs one author and one reviewer through PLAN and EXEC, applies fresh shadow/adversarial checks, and then, with `lifecycle_mode=on`, runs finish, quality polish, docs and security turns before DONE (acceptance pending). It owns isolated run artifacts outside the workspace, invocation limits and a permission probe. See [`paired_session/README.md`](../paired_session/README.md); the entry-switch design is [`paired_session/docs/v2.10-entry-switch.md`](../paired_session/docs/v2.10-entry-switch.md).
+paired-session is a coordinator (`bin/paired-session`) that runs one author and one reviewer through PLAN and EXEC, applies fresh shadow/adversarial checks, and then, with `lifecycle_mode=on`, runs finish, quality polish, docs and security turns before DONE (acceptance pending). It owns gitignored run artifacts under `<repo>/.review-loop/runs/` and external private scratch, invocation limits and a permission probe. See [`paired_session/README.md`](../paired_session/README.md); the entry-switch design is [`paired_session/docs/v2.10-entry-switch.md`](../paired_session/docs/v2.10-entry-switch.md).
 
 ## Status in 3.0.0: runs saved by 2.13.x are refused
 - The saved run format changed (state `version` 2). A run saved by review-loop 2.13.x or earlier is refused by every run command (`resume`, `accept`, `reject`, `note`, `abort`, ...) with one line: start a new run, or finish or abort it with review-loop 2.13.x (for example a pinned copy at `~/paired-runs/review-loop-v2.13.<n>`). `status` still reads it. Accept or abort open runs before upgrading.
@@ -9,7 +9,7 @@ paired-session is a coordinator (`bin/paired-session`) that runs one author and 
 
 ## Status in v2.13.0: legacy removed from routing
 - Every `/review-loop` request (and the Codex review-loop request) hands off to paired-session: fresh work; an existing plan, used as the work item (PLAN drafts and reviews it again; `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again`); existing code as `run --review-only`.
-- Refused, with one line saying what to do instead: `entry: legacy`, a legacy session resume, `--legacy` on review-pr and code-quality-loop, code-quality-loop `--reorganize` (run `/review-loop:reorganize` after the run), and a host that is not macOS (on every entry).
+- Refused, with one line saying what to do instead: `entry: legacy`, a legacy session resume, `--legacy` on review-pr and code-quality-loop, code-quality-loop `--reorganize` (run `/review-loop:reorganize` after the run), and a host that is not macOS (on every entry; since v3.3.0 native Windows is accepted too).
 - A failed check before the coordinator starts refuses (or HOLDs) whether the `entry` key is set or not; nothing falls back to legacy.
 - v2.13.1 deleted `/review-loop:legacy`, `/review-loop:plan`, `/review-loop:execute`, the Codex plan/execute skills, the Codex Stage 1 workflow and its agents, and the legacy protocol files, scripts and tests (ADR-16). The Codex "legacy review-loop workflow" request is refused with `review-loop: the legacy workflow was removed in v2.13.0; ask for review-loop without "legacy" (paired-session is the only entry)`. Plan-only work is `/review-loop:paired-session <work item> --plan-only`; an existing plan or a review of existing code is `/review-loop`. Legacy session files under `.review-loop/sessions/` are left on disk and never read.
 
@@ -84,7 +84,7 @@ Printed by the `/review-loop` skill text (from v2.13.0; Claude and Codex alike):
 - Duplicate `entry` key or unreadable config: `review-loop: entry could not be read (<reason>); using paired-session`
 - A plan already exists: `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again`
 - A legacy session resume: `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item`
-- A host that is not macOS: `review-loop: paired-session needs macOS; Linux and other hosts are not supported`
+- A host that is neither macOS nor native Windows: `review-loop: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`
 - A failed check before the coordinator starts: `review-loop: paired-session entry refused (<reason>)` (unavailable background or outside-sandbox execution: HOLD)
 - Codex, a request for "the legacy review-loop workflow": `review-loop: the legacy workflow was removed in v2.13.0; ask for review-loop without "legacy" (paired-session is the only entry)`
 - review-pr, no `entry` key: `review-pr: paired-session report mode (the default entry)`
@@ -196,8 +196,8 @@ Status values:
 | `reviewer: codex \| subagent`, `.codex/agents/*.toml`, `scripts/run_claude_reviewer.py` | the coordinator launches its own role CLIs | covered |
 | Parallel reviewer fan-out | none needed: roles run in sequence (wall time only) | covered |
 | macOS | the full path | covered |
-| Linux (legacy works today) | since v2.13.0 a non-macOS host is refused on every entry (`paired-session needs macOS; Linux and other hosts are not supported`); no real Linux run recorded | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback (L133) |
-| Windows | unsupported in both | covered |
+| Linux (legacy works today) | since v2.13.0 a non-macOS host is refused on every entry; since v3.3.0 native Windows is accepted and Linux (WSL included) still refused (`paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`); no real Linux run recorded | dropped (owner 2026-10-07, ADR-15 amendment): macOS only for now; legacy removal does not wait for Linux, and after removal a non-macOS host gets a clear refusal instead of the legacy fallback (L133) |
+| Windows | unsupported in legacy; paired-session supports native Windows since v3.3.0 (ADR-20): efficient mode only (`--strict`, `permission-probe` and `--detach` are refused), Git for Windows required | covered |
 | CI and off-macOS tests | GitHub Actions runs the tests on Linux and macOS (D08; the workflow lives on the `ci/**` branches); the macOS-only tests are skipped on Linux | covered (ADR-15) (L135) |
 
 **Owner answers:** the 18 rows marked (ADR-15) were answered provisionally on 2026-10-05 (D-OWNER-1005) and finally

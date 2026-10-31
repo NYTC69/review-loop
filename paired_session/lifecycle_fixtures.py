@@ -37,7 +37,7 @@ class OnModeFixtures:
 
     def _run_on_command(self, command, env=None):
         return subprocess.run(command, cwd=self.root, env={**os.environ, **(env or {})},
-                              text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                              text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def operator_command_on(self, action, *extra):
         config = json.loads((self.run_dir / 'state.json').read_text())['config']

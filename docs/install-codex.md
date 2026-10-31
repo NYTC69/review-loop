@@ -1,5 +1,7 @@
 # Install review-loop on Codex CLI
 
+For CODEX_HOME provisioning, run roots and fallback rules, see the [project overview](../README.md).
+
 review-loop is dual-runtime: the same repo ships a Claude Code plugin
 (`.claude-plugin/`) and a Codex CLI plugin (`.codex-plugin/` + `.agents/`).
 This document covers the Codex install path; for Claude Code see the
@@ -7,14 +9,18 @@ top-level `README.md` Quick Start.
 
 ## Prerequisites
 
-- **macOS** — paired-session runs on macOS only; every entry refuses Linux and other hosts
-  (`paired-session needs macOS; Linux and other hosts are not supported`).
+- **macOS or native Windows** — paired-session runs on macOS and on native Windows; every entry refuses Linux
+  (WSL included) and other hosts (`paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`).
+  On Windows only the default efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git
+  for Windows (Git Bash) is required, Python is `python` or `py -3`, and the Codex skills run their commands in
+  PowerShell as best effort: the Claude Code entry is the tested Windows path. Keep `CODEX_HOME`, run directories
+  and workspaces out of OneDrive-synced folders.
 - **Codex CLI 0.159.2 or later** — the paired-session Codex default uses
   `gpt-6.1-sol`, which needs 0.159.2+. The plugin install command below was
   verified on 0.155.1; older releases may require the `/plugins` UI path, so
   check `codex plugin --help` before using it.
-- **Python ≥ 3.11** — the paired-session coordinator and review-loop's helper
-  scripts depend on it.
+- **Python ≥ 3.9** — the paired-session coordinator and review-loop's helper
+  scripts depend on it; CI runs them on 3.9.
 - **git** — used by the coordinator and its roles to scope diffs.
 - **Claude CLI** — both `codex` and `claude` must be on PATH, whatever vendors the paired-session
   roles use: the coordinator binds both binaries at run start. Role selection in the paired-session
@@ -86,8 +92,7 @@ settings in an operator-owned profile outside the workspace and run directory,
 and pass it with `--config` to both probe and run. The skill uses
 `~/.config/review-loop/paired-session.json` when it exists and no other profile
 is named. This replaces the workspace profile, so copy any desired non-program
-limits into it. Coordinator state stays
-outside the workspace under `$CODEX_HOME/state/paired-session/`.
+limits into it. Coordinator state defaults to `<repo>/.review-loop/runs/<UUID>/` (gitignored).
 
 ## Verification
 

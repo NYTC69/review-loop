@@ -211,13 +211,16 @@ plugin cache.
 For simultaneous lanes, read [Concurrent runs and isolated Codex homes](docs/concurrent-runs.md).
 
 Use a dedicated Git worktree for fresh product work; review-only runs use the
-worktree that holds the existing change. Keep run artifacts in a sibling
-directory outside the workspace. Never put `--run-dir` inside the
-workspace: the author can write to the workspace and must not be able to alter
-coordinator state. Keep the run root outside any git repository too: the role
-TMPDIRs live under the run directory, and a project that refuses scratch space
-inside a repository then falls back to /tmp, which the Codex read-only sandbox
-denies (FIELD-28; `run`, `resume` and `permission-probe` warn on stderr). The workspace must be a Git worktree and the work item must
+worktree that holds the existing change. Default persistent output is
+`<repo>/.review-loop/runs/<UUID>/` (gitignored). Resolve `<repo>` using
+`git rev-parse --path-format=absolute --git-common-dir` and its parent when it
+ends in `/.git` and the parent is a work tree; lane worktrees therefore use the main checkout. When unresolved
+(not a Git repo, a bare repo or a submodule/separate-git-dir checkout), report fallback to
+`${XDG_STATE_HOME:-$HOME/.local/state}/review-loop`. An explicit run directory wins;
+existing runs resume at their original `--run-dir`, without migration.
+Scratch lives in a private per-run root outside any repo (FIELD-28 only warns for
+legacy scratch still inside a repo). Do not run `git clean -x` on the workspace
+while a run is active: it would delete the run. The workspace must be a Git worktree and the work item must
 be a file. The configured test command is checked before the coordinator starts.
 A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
 one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
@@ -255,10 +258,10 @@ and the command tool's timeout (reported as `allowed-command-timeout` by the
 probe, and as a command-tool timeout cause in the EXEC approval HOLD reason and
 the DOCS reviewer's HOLD);
 a test command longer than either cannot be observed to completion.
-Write launcher logs (for example `permission-probe ... > probe.log`) outside the
-run dir's parent: the Claude author probe watches the entries beside the run dir,
-and a log that grows there during the probe fails it as a file changed outside
-the run dir. When any role is Codex, `run`, `resume`, `reject` and
+Write launcher logs (for example `permission-probe ... > probe.log`) under
+`<repo>/.review-loop/logs/`, outside the run dir's parent. Legacy Claude author
+probes watch entries beside the run dir, so a growing log there fails the probe;
+new runs put probe trees in their external private scratch root. When any role is Codex, `run`, `resume`, `reject` and
 `permission-probe` refuse up front if the selected `CODEX_HOME` (default
 `~/.codex`) is not an existing directory.
 
@@ -457,7 +460,7 @@ and [managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-co
 contracts. The scanner reads configuration only and records no raw payload.
 For installed Codex 0.157, the direct control requires a named `-P` profile
 derived from the author's sandbox overrides. It byte-copies only the active
-`config.toml` into a disposable `CODEX_HOME` under the run directory, verifies
+`config.toml` into a disposable `CODEX_HOME` under the external private scratch root, verifies
 the copy and deletes it after each check; no auth or credential files are
 copied. Any secret embedded in `config.toml` remains inside the run-owned copy.
 The probe binds the installed `codex --version` to the author flags. The real
@@ -492,7 +495,8 @@ user, system and project `config.toml`; managed config, requirements and MDM
 may outrank it, and the capability guard refuses a dispatch when they set
 permission keys), instead of
 `sandbox_mode="read-only"`, with TMPDIR/TMP/TEMP set to a fresh 0700
-`<run_dir>/role-tmp/<seq>-<role>` for that one dispatch, so a `tmp_path`-style
+`<scratch_root>/role-tmp/<seq>-<role>` outside any repo for that one dispatch
+(legacy runs without `scratch_root` retain `<run_dir>/role-tmp/<seq>-<role>`), so a `tmp_path`-style
 test has a usable temp dir. The coordinator lists that root in the turn's
 receipt and removes it after the turn (also after a failed turn; an uncertain
 turn's root when it is archived or at the next dispatch). Removal first stops what is
@@ -567,7 +571,8 @@ local network binding, and require the exact Bash allowlist. The reviewer
 permission probe gives exactly one unique run-directory `touch` command a narrow
 CLI allowlist entry. That command may be denied by either the CLI permission
 layer or the OS sandbox; its result alone cannot establish the OS boundary.
-The reviewer probe also uses a dedicated target beside the run directory:
+The reviewer probe also uses a dedicated target under the external scratch root
+(beside the run directory for legacy runs):
 `sandbox.filesystem.denyWrite` covers that target, while `permissions.deny`
 does not. Its exact `/usr/bin/touch` command is allowlisted; the prior `printf`
 redirection was refused by Claude's CLI in dontAsk mode before OS dispatch.

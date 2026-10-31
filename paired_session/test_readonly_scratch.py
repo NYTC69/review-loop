@@ -29,7 +29,7 @@ class ScratchRootTests(unittest.TestCase):
     def test_the_scratch_is_run_owned_private_and_outside_the_snapshot_and_the_author_roots(self):
         co = self.coordinator(*CODEX_ROLES)
         root = co._scratch_root('reviewer')
-        self.assertEqual(root, co.run_dir / 'role-tmp' / f"{co.state['sequence'] + 1:03d}-reviewer")
+        self.assertEqual(root, co.scratch_base / 'role-tmp' / f"{co.state['sequence'] + 1:03d}-reviewer")
         self.assertEqual((stat.S_IMODE(root.stat().st_mode), stat.S_IMODE(root.parent.stat().st_mode)), (0o700, 0o700))
         for outside in (co.workspace, co.author_temp_dir, *(Path(p) for p in co._author_sandbox_overrides()['sandbox_workspace_write.writable_roots'])):
             self.assertFalse(root == outside or outside in root.parents, outside)
@@ -41,7 +41,7 @@ class ScratchRootTests(unittest.TestCase):
         root = co._scratch_root('gate')                                                     # a leftover (crash, uncertain turn) is swept
         self.assertFalse(stale.exists())
         co._drop_scratch(root)
-        self.assertEqual(list((co.run_dir / 'role-tmp').iterdir()), [])
+        self.assertEqual(list((co.scratch_base / 'role-tmp').iterdir()), [])
         for role in ('author',):
             self.assertIsNone(co._scratch_root(role))
         self.run_dir = self.root / 'claude-roles'
@@ -55,30 +55,31 @@ class ScratchRootTests(unittest.TestCase):
         done = self.run_coordinator('--polish-round', 'off', '--reviewer-vendor', 'claude', '--gate-vendor', 'codex', env={'FAKE_TMP_LOG': str(log)})
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        readonly = [turn for turn in state['turns'] if turn.get('environment_overrides', {}).get('TMPDIR', '').startswith(str(self.run_dir / 'role-tmp'))]
+        scratch_base = Path(state['scratch_root'])
+        readonly = [turn for turn in state['turns'] if turn.get('environment_overrides', {}).get('TMPDIR', '').startswith(str(scratch_base / 'role-tmp'))]
         self.assertEqual([turn['role'] for turn in readonly], ['gate'])                    # Claude reviewer/shadow: no override (decision B)
         self.assertTrue(all('TMPDIR' not in turn.get('environment_overrides', {}) for turn in state['turns'] if turn['vendor'] == 'claude'))
         roots = [turn['environment_overrides']['TMPDIR'] for turn in readonly]
         for turn in readonly:
             env = turn['environment_overrides']
-            self.assertEqual((env['TMP'], env['TEMP'], Path(env['TMPDIR']).parent), (env['TMPDIR'], env['TMPDIR'], self.run_dir / 'role-tmp'))
+            self.assertEqual((env['TMP'], env['TEMP'], Path(env['TMPDIR']).parent), (env['TMPDIR'], env['TMPDIR'], scratch_base / 'role-tmp'))
             self.assertIn('scratch_entries', turn)
         rows = [json.loads(line) for line in log.read_text().splitlines()]
         gate = [row for row in rows if row['prompt'].startswith('You are an adversarial')]
         self.assertTrue(gate and all(row['mkdtemp'].startswith(row['TMPDIR'] + '/') for row in gate))   # a tmp_path-style test has a temp dir
         self.assertTrue(all(row['TMPDIR'] not in roots for row in rows if row['vendor'] == 'codex' and 'implementer' in row['prompt']))
-        self.assertEqual(list((self.run_dir / 'role-tmp').iterdir()), [])                   # each one removed after its turn
+        self.assertEqual(list((scratch_base / 'role-tmp').iterdir()), [])                   # each one removed after its turn
 
     def test_the_scratch_is_removed_after_a_failing_and_an_uncertain_turn_and_a_hard_link_there_fails_the_turn(self):
         co = self.coordinator(*CODEX_ROLES, '--quiet-progress')
         co.state['config']['workitem_reviewer_commands'] = []
         with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}), self.assertRaisesRegex(RuntimeError, 'rate_limited'):
             co.invoke('reviewer', 'PLAN', 'Role: reviewer, persistent. Phase: PLAN.', rc.review_schema())
-        self.assertEqual(list((co.run_dir / 'role-tmp').iterdir()), [])
+        self.assertEqual(list((co.scratch_base / 'role-tmp').iterdir()), [])
         target = co.context / 'workitem.md'
         with patch.dict(os.environ, {'FAKE_CODEX_SCRATCH_HARDLINK': str(target)}), self.assertRaisesRegex(RuntimeError, 'left a hard link in its scratch'):
             co.invoke('reviewer', 'PLAN', 'Role: reviewer, persistent. Phase: PLAN.', rc.review_schema())
-        self.assertEqual((list((co.run_dir / 'role-tmp').iterdir()), target.stat().st_nlink), ([], 1))
+        self.assertEqual((list((co.scratch_base / 'role-tmp').iterdir()), target.stat().st_nlink), ([], 1))
         evidence = co.evidence / 'operator-note-N001.txt'                                   # the same-volume residual: link, write the same bytes, unlink
         evidence.write_text('operator note\n')
         (co.internal / 'kept.txt').write_text('kept\n')
@@ -172,16 +173,16 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
         target = self.outside()
-        (co.run_dir / 'role-tmp').symlink_to(target)
+        (co.scratch_base / 'role-tmp').symlink_to(target)
         with self.assertRaisesRegex(RuntimeError, 'role-tmp is not a real directory'):
             co._scratch_root('reviewer')
         with self.assertRaisesRegex(RuntimeError, 'role-tmp is not a real directory'):
-            co._drop_scratch(co.run_dir / 'role-tmp' / 'keep')
+            co._drop_scratch(co.scratch_base / 'role-tmp' / 'keep')
         self.assert_untouched(target)
         self.assertEqual(sorted(os.listdir(target)), ['keep'])
-        (co.run_dir / 'role-tmp').unlink()
-        (co.run_dir / 'role-tmp').mkdir(mode=0o755)
-        os.chmod(co.run_dir / 'role-tmp', 0o755)
+        (co.scratch_base / 'role-tmp').unlink()
+        (co.scratch_base / 'role-tmp').mkdir(mode=0o755)
+        os.chmod(co.scratch_base / 'role-tmp', 0o755)
         with self.assertRaisesRegex(RuntimeError, 'must be a 0700 directory'):
             co._scratch_root('reviewer')
 
@@ -189,15 +190,15 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
         target = self.outside()
-        os.mkdir(co.run_dir / 'role-tmp', 0o700)
-        (co.run_dir / 'role-tmp' / '001-reviewer').symlink_to(target)                       # a leftover scratch that is a link
+        os.mkdir(co.scratch_base / 'role-tmp', 0o700)
+        (co.scratch_base / 'role-tmp' / '001-reviewer').symlink_to(target)                       # a leftover scratch that is a link
         co.state.setdefault('spawn_failures', []).append({'sequence': 1, 'child_created': False})   # f1d: its turn never started, so the type check decides
         with self.assertRaisesRegex(RuntimeError, 'unexpected entry in run_dir/role-tmp, refused'):
             co._scratch_root('reviewer')
         with self.assertRaisesRegex(RuntimeError, 'unexpected entry'):
-            co._drop_scratch(co.run_dir / 'role-tmp' / '001-reviewer')
+            co._drop_scratch(co.scratch_base / 'role-tmp' / '001-reviewer')
         self.assert_untouched(target)
-        (co.run_dir / 'role-tmp' / '001-reviewer').unlink()
+        (co.scratch_base / 'role-tmp' / '001-reviewer').unlink()
         scratch = co._scratch_root('shadow')
         (scratch / 'to-dir').symlink_to(target)                                              # links inside the scratch pointing outside
         (scratch / 'to-file').symlink_to(target / 'keep' / 'child.txt')
@@ -217,7 +218,7 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
     def test_a_missing_role_tmp_needs_no_cleanup_and_a_chmod_of_the_scratch_root_fails_the_turn(self):   # R1 LOW-1, LOW-2
         use_lifecycle_on(self, self)
         co = self.coordinator(*CODEX_ROLES)
-        co._drop_scratch(co.run_dir / 'role-tmp' / '001-reviewer')                            # nothing to remove, no error
+        co._drop_scratch(co.scratch_base / 'role-tmp' / '001-reviewer')                            # nothing to remove, no error
         scratch = co._scratch_root('reviewer')
         os.chmod(scratch, 0o500)
         with self.assertRaisesRegex(ValueError, 'scratch temp root mode changed'):

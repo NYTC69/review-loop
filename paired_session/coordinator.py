@@ -14,7 +14,6 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime
 import errno
 import itertools
-import fcntl
 import hashlib
 import json
 import os
@@ -27,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 import traceback
@@ -48,7 +48,8 @@ try:
     from paired_session import worktree_lifecycle
     from paired_session import review_report
     from paired_session import timeout_scale
-    from paired_session.program_binding import snapshot as program_snapshot, safe_path
+    from paired_session import winplat
+    from paired_session.program_binding import snapshot as program_snapshot, safe_path, program_argv
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
@@ -65,7 +66,10 @@ except ModuleNotFoundError:
     import worktree_lifecycle
     import review_report
     import timeout_scale
-    from program_binding import snapshot as program_snapshot, safe_path
+    import winplat
+    from program_binding import snapshot as program_snapshot, safe_path, program_argv
+if not winplat.IS_WINDOWS:   # WI-WIN: only POSIX detach and probe scheduling use fcntl directly
+    import fcntl
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_GATE_PROMPT = HERE.parent / 'scripts' / 'adversarial_gate_fallback_prompt.txt'
@@ -81,6 +85,9 @@ CLASS_LABEL_REUSE = ' Reuse the exact label of an earlier finding of the same cl
 PROBE_SURFACE_VERSION = 9
 CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
+# W10, Windows only, every Codex role: Yuan's acceptance run (2026-10-27, codex-cli 0.164.0) showed no [windows] table → every shell
+# command "blocked by policy", sandbox="unelevated" → "cannot enforce split writable root sets"; "elevated" runs the profile
+CODEX_WINDOWS_SANDBOX = ('-c', 'windows.sandbox="elevated"')
 # D-LG1 review-only entry (docs/review-only-entry.md); the owner's provisional choices, one place each:
 REVIEW_ONLY_DEFAULT_BASE = 'HEAD'            # Q2: the uncommitted work, as legacy --review-only
 REVIEW_ONLY_BASE_MUST_BE_ANCESTOR = True     # Q5: refuse a base that is not an ancestor of HEAD
@@ -88,7 +95,7 @@ REVIEW_ONLY_EXISTING_CHANGE_ROUNDS = 1       # Q9: the pre-existing change is EX
 REVIEW_ONLY_LIFECYCLE_READY = True           # LG1-c: the delivery baseline is the base tree, so lifecycle on is supported
 REVIEW_ONLY_DOCS_PRE_OWNED = True            # Q8: docs files the change already edits are DOCS's to extend and review, not a HOLD
 def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
-    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text())['version']
+    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
     except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
 CODEX_DEFAULT_MODEL = 'gpt-6.1-sol'   # ADR-12 (owner 2026-10-04); runs keep the models frozen in their state
 CODEX_DEFAULT_MODEL_MIN_CLI = (0, 159, 2)
@@ -118,7 +125,7 @@ def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # 
     finally:
         for fd in fds: os.close(fd)
 def claude_cli_version(binary: str) -> str:
-    try: return subprocess.run([binary, '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
+    try: return subprocess.run([*program_argv(binary), '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
 
 def cli_release_version(value: str):
@@ -135,16 +142,23 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
         before, after = old.get(key, {}), new.get(key, {})
         old_path, new_path = Path(before.get('path', '')), Path(after.get('path', ''))
         old_version = None
-        if key == 'claude_bin':
+        same_path_claude = (winplat.IS_WINDOWS and key == 'claude_bin' and old_path == new_path
+                            and new_path.name.lower() == 'claude.exe' and not before.get('node') and not after.get('node'))
+        if same_path_claude:
+            # A native installer may replace a plain copy/hardlink in .local/bin.
+            old_version = cli_release_version(before.get('version', ''))
+        elif key == 'claude_bin':
             # Native Claude releases are siblings under one versions directory.
             if old_path.parent.name != 'versions' or old_path.parent != new_path.parent: return None
-            old_version = cli_release_version(old_path.name)
-            path_version = cli_release_version(new_path.name)
+            old_version = cli_release_version(old_path.stem if winplat.IS_WINDOWS and old_path.suffix.lower() == '.exe' else old_path.name)
+            path_version = cli_release_version(new_path.stem if winplat.IS_WINDOWS and new_path.suffix.lower() == '.exe' else new_path.name)
             if old_version is None or path_version is None or path_version <= old_version: return None
         elif old_path != new_path:
             return None
-        new_version = cli_release_version(claude_cli_version(str(new_path)))
-        if new_version is None or (old_version is not None and (new_version <= old_version or new_version != path_version)):
+        if winplat.IS_WINDOWS and before.get('node') != after.get('node'): return None
+        new_version = cli_release_version(claude_cli_version(after if winplat.IS_WINDOWS else str(new_path)))
+        if new_version is None or (old_version is not None and (new_version <= old_version or
+                (not same_path_claude and new_version != path_version))):
             return None
         # Codex's in-place updater removes the old executable; its old version
         # cannot be recovered from the frozen path/hash alone.
@@ -230,25 +244,7 @@ def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
 
 
 def _read_role_source(path: Path) -> bytes:
-    nofollow = getattr(os, 'O_NOFOLLOW', None)
-    if nofollow is None:
-        raise ValueError('role source no-follow reads are unavailable')
-    try:
-        fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, 'O_CLOEXEC', 0) |
-                     getattr(os, 'O_NONBLOCK', 0))
-    except OSError as exc:
-        raise ValueError('role source cannot be opened without following links') from exc
-    before = os.fstat(fd)
-    if not stat.S_ISREG(before.st_mode):
-        os.close(fd)
-        raise ValueError('role source is not a regular file')
-    with os.fdopen(fd, 'rb') as stream:
-        content = stream.read()
-        after = os.fstat(stream.fileno())
-    fields = ('st_dev', 'st_ino', 'st_mtime_ns', 'st_ctime_ns', 'st_size')
-    if any(getattr(before, field) != getattr(after, field) for field in fields):
-        raise ValueError('role source changed while reading')
-    return content
+    return winplat.read_regular_file_nofollow(path)   # WI-WIN: POSIX keeps the O_NOFOLLOW read
 
 
 def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
@@ -338,6 +334,16 @@ def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
             if remaining <= 0:
                 raise
             sleep(min(0.05, remaining))
+
+
+def probe_group(pid: int, job: Optional[str] = None) -> None:
+    """WI-WIN W2b: is a turn's process tree gone? ProcessLookupError when gone; returns while alive; another OSError when
+    it cannot be verified. POSIX: retry_killpg_eperm(pid), looked up here so a test can patch it; Windows: the job named
+    in the receipt (winplat.probe_job)."""
+    if winplat.IS_WINDOWS:
+        winplat.probe_job(job)
+        return
+    retry_killpg_eperm(pid)
 
 
 def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') -> Optional[dict]:
@@ -486,7 +492,7 @@ def _codex_trust_paths(workspace) -> list[str]:
     ws = Path(workspace).resolve()
     paths = [str(ws)]
     try:
-        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--path-format=absolute', '--git-common-dir', cwd=ws), cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--path-format=absolute', '--git-common-dir', cwd=ws), cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', timeout=10)
         common = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
         if common is not None and common.is_absolute() and common.name == '.git' and (ws / '.git').is_file():
             paths.append(str(common.resolve().parent))
@@ -623,7 +629,7 @@ OFF_NEVER_COMMITS_NOTE = 'auto_commit true is ignored: lifecycle off never commi
 def saved_state_is_old(run_dir) -> bool:
     """V3-B6: the run (or --supersedes parent) in run_dir was saved by another state format; checked before any of its
     keys is read. A missing or unreadable state is not old: its own readers report it."""
-    try: return json.loads((Path(run_dir).expanduser() / 'state.json').read_text()).get('version') != STATE_VERSION
+    try: return json.loads((Path(run_dir).expanduser() / 'state.json').read_text(encoding='utf-8')).get('version') != STATE_VERSION
     except (OSError, ValueError, AttributeError): return False
 
 
@@ -682,18 +688,18 @@ def concurrent_run_workspaces(own_workspace, live=True) -> dict:
     try:
         own = Path(own_workspace).expanduser().resolve()
         lock_dir = workspace_lease_path(own).parent
-        info = lock_dir.lstat()
+        private = winplat.check_private_dir(lock_dir)
     except (OSError, RunLeaseError):
         return {}
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    if not private:
         return {}
     found = {}
     for entry in sorted(lock_dir.glob('*.lock')):
         try:
-            meta = entry.lstat()
-            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or stat.S_IMODE(meta.st_mode) & 0o077:
+            if not winplat.private_file_ok(entry.lstat()):
                 continue
-            record = json.loads(entry.read_text(encoding='utf-8', errors='replace')[:4096])
+            record = json.loads(winplat.holder_text(entry, 4096) if winplat.IS_WINDOWS else
+                                entry.read_text(encoding='utf-8', errors='replace')[:4096])
             if not isinstance(record, dict) or not isinstance(record.get('workspace'), str) or not isinstance(record.get('run_dir'), str):
                 continue
             workspace, run_dir = Path(record['workspace']).resolve(), Path(record['run_dir'])
@@ -706,12 +712,11 @@ def concurrent_run_workspaces(own_workspace, live=True) -> dict:
                 pid = record.get('pid')
                 if type(pid) is not int or pid <= 1 or state.get('status') != 'ACTIVE':
                     continue
-                lock = json.loads((run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
+                lock = json.loads(winplat.holder_text(run_dir / '.coordinator.lock', 1024) if winplat.IS_WINDOWS else
+                                  (run_dir / '.coordinator.lock').read_text(encoding='utf-8')[:1024])
                 if not isinstance(lock, dict) or lock.get('pid') != pid:   # the same coordinator holds the run lease
                     continue
-                try: os.kill(pid, 0)
-                except ProcessLookupError: continue
-                except PermissionError: pass
+                if not winplat.pid_alive(pid): continue
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RunLeaseError):
             continue
         found[str(workspace)] = run_dir.name
@@ -1076,7 +1081,10 @@ def codex_readonly_profile_args() -> list[str]:
 def scratch_listing(root: Path) -> tuple[list, list]:
     """Names under a scratch root (links not followed, at most 200) and the regular files there with more than one link."""
     names, linked = [], []
-    if stat.S_IMODE(os.lstat(root).st_mode) != 0o700:   # R1 LOW-2: a role that chmods its own scratch could fake an EACCES "denial"
+    if winplat.IS_WINDOWS:   # WI-WIN W4b: NTFS has no mode bits; the root must still be a real directory (no link, no reparse point)
+        if not winplat.real_dir(os.lstat(root)):
+            raise ValueError('the scratch temp root changed during the turn (not a real directory): ' + str(root))
+    elif stat.S_IMODE(os.lstat(root).st_mode) != 0o700:   # R1 LOW-2: a role that chmods its own scratch could fake an EACCES "denial"
         raise ValueError('the scratch temp root mode changed during the turn: ' + str(root))
     def unreadable(error):   # R1 l1: a directory the role made unreadable could hide a link; fail the turn instead
         raise ValueError('unreadable entry in the scratch temp root: ' + str(error.filename))
@@ -1088,6 +1096,8 @@ def scratch_listing(root: Path) -> tuple[list, list]:
             except OSError as exc: raise ValueError('uninspectable entry in the scratch temp root: ' + str(path)) from exc   # R2 LOW-1
             if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
                 linked.append(names[-1])
+        if winplat.IS_WINDOWS:   # WI-WIN W4b: os.walk enters a junction (islink is False for it); never descend a reparse point
+            dirs[:] = [name for name in dirs if winplat.real_dir(os.lstat(Path(parent) / name))]
     return sorted(names)[:200], linked
 
 
@@ -1204,7 +1214,8 @@ def run_dir_inodes(run_dir: Path, skip: set, own: Path) -> dict:
                 continue
             info = path.lstat()
             if stat.S_ISREG(info.st_mode):
-                found[str(path)] = (info.st_ino, info.st_ctime_ns)
+                found[str(path)] = ((info.st_ino, info.st_ctime_ns) if not winplat.IS_WINDOWS else
+                                    (info.st_ino, info.st_mtime_ns, info.st_nlink))   # WI-WIN W4b: st_ctime is the creation time there
     return found
 
 
@@ -1216,7 +1227,8 @@ def dontask_command_hint(commands) -> str:
     shaped = [command for command in commands if DONTASK_SHELL_SYNTAX.search(command)]
     return ('WARNING: a Claude reviewer or gate runs each test/reviewer command as one exact allowlisted Bash call in dontAsk mode; '
             'command substitution, pipes, `;`, `&&`, redirection or loops in ' + '; '.join(repr(command) for command in shaped) +
-            ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.') if shaped else ''
+            ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.' +
+            (' On Windows, use `bash ./script.sh`.' if winplat.IS_WINDOWS else '')) if shaped else ''
 
 
 def resolve_test_executable(workspace: Path, command: str) -> str:
@@ -1228,11 +1240,16 @@ def resolve_test_executable(workspace: Path, command: str) -> str:
         raise ValueError('configured test command is empty')
 
     def resolve_binary(executable: str) -> Optional[str]:
+        if winplat.IS_WINDOWS and executable in ('bash', 'bash.exe', '/bin/bash'):
+            return winplat.git_bash()
         if os.path.isabs(executable) or os.sep in executable or (os.altsep and os.altsep in executable):
             path = Path(executable)
             if not path.is_absolute():
                 path = workspace / path
             path = path.resolve()
+            if winplat.IS_WINDOWS:
+                extensions = os.environ.get('PATHEXT', '.COM;.EXE;.BAT;.CMD').lower().split(';')
+                return str(path) if path.is_file() and (path.suffix.lower() == '.sh' or path.suffix.lower() in extensions) else None
             return str(path) if path.is_file() and os.access(path, os.X_OK) else None
         return shutil.which(executable)
 
@@ -1289,11 +1306,10 @@ class DetachStop(BaseException):
 def detach_paths(run_dir) -> tuple[Path, Path]:
     """detach: the per-user 0700 record and lock of a run dir's detached command (outside the run dir and its parent, which the
     Claude author probe watches); keyed by the resolved run dir, so relative and symlinked spellings share them."""
-    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{os.getuid()}'
+    root = Path(tempfile.gettempdir()).resolve() / f'paired-session-detached-{winplat.user_token()}'
     try: root.mkdir(mode=0o700)
     except FileExistsError: pass
-    info = os.lstat(root)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if not winplat.check_private_dir(root):
         raise ValueError(f'detach directory {root} must be a directory owned by this user with mode 0700')
     key = hashlib.sha256(str(Path(run_dir).expanduser().resolve()).encode()).hexdigest()[:16]
     return root / (key + '.json'), root / (key + '.lock')
@@ -1303,12 +1319,14 @@ def detach_holder(run_dir):
     """None when no detached command holds this run dir's lock; 'starting' while the holder has not published its own record
     (the caller marks the record `starting` under the lock, so an older run's record is never read as the holder's); else the
     holder's record. Only the lock holder writes the record."""
+    if winplat.IS_WINDOWS:
+        return None   # detached commands cannot exist on Windows
     record, lock = detach_paths(run_dir)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
-        try: data = json.loads(record.read_text())
+        try: data = json.loads(record.read_text(encoding='utf-8'))
         except (OSError, ValueError): return 'starting'
         ok = data.get('status') == 'running' and type(data.get('pid')) is int and type(data.get('sid')) is int
         return data if ok else 'starting'
@@ -1334,6 +1352,8 @@ def detach(raw_argv: list, run_dir: str) -> int:
     """FIELD-17 follow-up (docs/detach.md): a host that ends its turn signals the process group it started (Claude Code: SIGTERM)
     or kills the command (Codex: SIGKILL). setsid() and a second fork leave that tree; the grandchild runs the same command and
     records its exit code. Nothing else changes: lease, active/uncertain turns, cleanup and every check are those of a plain run."""
+    if winplat.IS_WINDOWS:
+        raise ValueError('--detach is not supported on Windows')
     record, lock = detach_paths(run_dir)
     lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -1393,7 +1413,7 @@ def detach(raw_argv: list, run_dir: str) -> int:
     finally:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the stop has been taken; finish the record
         sys.stdout.flush(); sys.stderr.flush()
-        try: atomic_json(record, {**json.loads(record.read_text()), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
+        try: atomic_json(record, {**json.loads(record.read_text(encoding='utf-8')), 'status': 'exited', 'exit_code': code, 'ended': time.time()})
         finally: os._exit(code)
 
 
@@ -1419,7 +1439,7 @@ def stop_detached(run_dir: str, wait: float = 60) -> int:
     if detach_holder(run_dir) is not None:
         print(f'HOLD: the detached command (pid {pid}) has not exited after {wait:.0f} s; check it before acting on this run')
         return 2
-    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text()).get('exit_code')})")
+    print(f"STOPPED: detached command pid {pid} exited (exit {json.loads(record.read_text(encoding='utf-8')).get('exit_code')})")
     return 0
 
 
@@ -1429,7 +1449,7 @@ def run_lease(run_dir: Path):
     root = Path(run_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / '.coordinator.lock'
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
     try:
         fd = os.open(lock_path, flags, 0o600)
     except OSError as exc:
@@ -1437,14 +1457,17 @@ def run_lease(run_dir: Path):
     acquired = False
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
+        if (not winplat.private_file_ok(info) if winplat.IS_WINDOWS else not stat.S_ISREG(info.st_mode)):
             raise RunLeaseError('coordinator lease path is not a regular file')
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            winplat.lock_exclusive(fd)
             acquired = True
         except BlockingIOError as exc:
-            os.lseek(fd, 0, os.SEEK_SET)
-            owner = os.read(fd, 1024).decode('utf-8', 'replace').strip()
+            if winplat.IS_WINDOWS:
+                owner = winplat.read_holder(fd, 1024)
+            else:
+                os.lseek(fd, 0, os.SEEK_SET)
+                owner = os.read(fd, 1024).decode('utf-8', 'replace').strip()
             detail = ''
             if owner:
                 try:
@@ -1454,19 +1477,22 @@ def run_lease(run_dir: Path):
                     detail = ''
             raise RunLeaseError('another coordinator currently owns this run' + detail) from exc
         payload = json.dumps({'pid': os.getpid(), 'started_at': datetime.now().astimezone().isoformat()})
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, payload.encode('utf-8'))
-        os.fsync(fd)
+        if winplat.IS_WINDOWS:
+            winplat.write_holder(fd, payload)
+        else:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, payload.encode('utf-8'))
+            os.fsync(fd)
         yield
     finally:
         if acquired:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            winplat.unlock(fd)
         os.close(fd)
 
 
 def _workspace_lease_temp_roots() -> tuple[Path, ...]:
-    roots = (Path('/tmp'), Path('/var/tmp'), Path(tempfile.gettempdir()))
+    roots = (winplat.temp_root(),) if winplat.IS_WINDOWS else (Path('/tmp'), Path('/var/tmp'), Path(tempfile.gettempdir()))
     return tuple(dict.fromkeys(root.expanduser().resolve() for root in roots))
 
 
@@ -1477,7 +1503,7 @@ def workspace_lease_path(workspace: Path) -> Path:
         identity = root.stat()
     except OSError as exc:
         raise RunLeaseError('cannot stat workspace for lease key: ' + str(exc)) from exc
-    uid = os.getuid()
+    uid = winplat.user_token()
     for temp_root in _workspace_lease_temp_roots():
         lock_dir = temp_root / f'paired-session-workspace-leases-{uid}'
         try:
@@ -1505,14 +1531,13 @@ def workspace_lease(workspace: Path, run_dir: Path):
     except OSError as exc:
         raise RunLeaseError('cannot create workspace lease directory: ' + str(exc)) from exc
     try:
-        directory_info = lock_dir.lstat()
+        private = winplat.check_private_dir(lock_dir)
     except OSError as exc:
         raise RunLeaseError('cannot inspect workspace lease directory: ' + str(exc)) from exc
-    if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.getuid()
-            or stat.S_IMODE(directory_info.st_mode) & 0o077):
+    if not private:
         raise RunLeaseError('workspace lease directory is not a private directory owned by this user')
 
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
     try:
         fd = os.open(lock_path, flags, 0o600)
     except OSError as exc:
@@ -1520,15 +1545,19 @@ def workspace_lease(workspace: Path, run_dir: Path):
     acquired = False
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o077):
+        if (not winplat.private_file_ok(info) if winplat.IS_WINDOWS else
+                (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                 or stat.S_IMODE(info.st_mode) & 0o077)):
             raise RunLeaseError('workspace lease path is not a private regular file owned by this user')
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            winplat.lock_exclusive(fd)
             acquired = True
         except BlockingIOError as exc:
-            os.lseek(fd, 0, os.SEEK_SET)
-            owner = os.read(fd, 4096).decode('utf-8', 'replace').strip()
+            if winplat.IS_WINDOWS:
+                owner = winplat.read_holder(fd, 4096)
+            else:
+                os.lseek(fd, 0, os.SEEK_SET)
+                owner = os.read(fd, 4096).decode('utf-8', 'replace').strip()
             try:
                 details = json.loads(owner)
             except (json.JSONDecodeError, TypeError):
@@ -1542,14 +1571,17 @@ def workspace_lease(workspace: Path, run_dir: Path):
             'pid': os.getpid(), 'run_dir': str(Path(run_dir).expanduser().resolve()),
             'workspace': str(root), 'started_at': datetime.now().astimezone().isoformat(),
         })
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, payload.encode('utf-8'))
-        os.fsync(fd)
+        if winplat.IS_WINDOWS:
+            winplat.write_holder(fd, payload)
+        else:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, payload.encode('utf-8'))
+            os.fsync(fd)
         yield
     finally:
         if acquired:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            winplat.unlock(fd)
         os.close(fd)
 
 
@@ -1562,7 +1594,7 @@ PROBE_LOCK_POLL_SECONDS, PROBE_LOCK_WAIT_FACTOR = 1.0, 3
 
 
 def probe_lock_dir() -> Path:   # FIELD-13: fixed and uid-keyed, so runs with any HOME, CODEX_HOME or workspace share it
-    return Path('/tmp') / f'paired-session-probe-locks-{os.getuid()}'
+    return winplat.temp_root() / f'paired-session-probe-locks-{winplat.user_token()}'
 
 
 def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
@@ -1570,7 +1602,7 @@ def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
     saved roles); an unreadable state counts as a Claude author, which only costs a wait."""
     vendor, timeout, path = args.author_vendor, args.timeout, Path(args.run_dir) / 'state.json'
     if path.exists():
-        try: config = json.loads(path.read_text())['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
+        try: config = json.loads(path.read_text(encoding='utf-8'))['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
         except (OSError, ValueError, KeyError, TypeError, AttributeError): vendor = 'claude'
     if type(timeout) not in (int, float) or not 0 < timeout < float('inf'): timeout = args.timeout
     return (vendor if vendor in ('codex', 'claude') else 'claude'), float(timeout)
@@ -1596,6 +1628,10 @@ class ProbeParentLock:
         return key_dir
 
     def __enter__(self):
+        if winplat.IS_WINDOWS:
+            if self.whole:
+                raise ValueError('Claude author permission-probe is not supported on Windows')
+            return self   # only schedules against Claude probes, which cannot run on Windows
         while self.whole or self.fresh:
             self._acquire(key_dir := self._key_dir())
             if self._key_dir() == key_dir: break
@@ -1633,8 +1669,7 @@ class ProbeParentLock:
             raise RunLeaseError('the probe lock directory lies inside the workspace')
         try: lock_dir.mkdir(mode=0o700)
         except FileExistsError: pass
-        info = lock_dir.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        if not winplat.check_private_dir(lock_dir):
             raise RunLeaseError('probe lock directory is not a private directory owned by this user')
         ident = key_dir.stat()
         self.key_dir, self.path = key_dir, lock_dir / (hashlib.sha256(f'{ident.st_dev}:{ident.st_ino}'.encode()).hexdigest() + '.lock')
@@ -1678,32 +1713,24 @@ class ProbeParentLock:
 def atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
-    with temp.open('w', encoding='utf-8') as handle:
+    with temp.open('w', encoding='utf-8', newline='') as handle:   # WI-WIN: LF bytes on every platform
         json.dump(value, handle, indent=2, ensure_ascii=False)
         handle.write('\n')
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temp, path)
-    fd = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    winplat.replace(temp, path)
+    winplat.fsync_dir(path.parent)
 
 
 def atomic_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
-    with temp.open('w', encoding='utf-8') as handle:
+    with temp.open('w', encoding='utf-8', newline='') as handle:   # WI-WIN: LF bytes on every platform
         handle.write(value)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temp, path)
-    fd = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    winplat.replace(temp, path)
+    winplat.fsync_dir(path.parent)
 
 
 def _control_file_digest(path: Path) -> str:
@@ -1723,7 +1750,7 @@ def git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
 def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
     """D1: sha256 of the git control files an author could write: config, hooks/*, info/attributes (missing = a marker)."""
     if dirs is None:
-        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--absolute-git-dir', '--git-common-dir', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--absolute-git-dir', '--git-common-dir', cwd=workspace), cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', timeout=10)
         dirs = list(dict.fromkeys(workspace / line for line in proc.stdout.splitlines() if line)) if proc.returncode == 0 else []
     digest = {}
     if (workspace / '.git').is_file(): digest['.git'] = _control_file_digest(workspace / '.git')
@@ -1739,7 +1766,7 @@ def _git_control_state(workspace: Path, dirs=None) -> tuple[list[Path], dict]:
 def git_head_state(workspace: Path) -> list:
     """D-EFF git guard: the commit HEAD names and the branch it is on (empty when detached or unborn)."""
     return [candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, text=True).stdout.strip()
+                                       stderr=subprocess.DEVNULL, text=True, encoding='utf-8').stdout.strip()
             for args in (('rev-parse', '--verify', '-q', 'HEAD'), ('symbolic-ref', '-q', 'HEAD'))]
 
 
@@ -1754,13 +1781,16 @@ def git_snapshot(workspace: Path) -> tuple[str, list[list[str]]]:
         raise RuntimeError('git ls-files failed: ' + proc.stderr.decode(errors='replace').strip())
     manifest: list[list[str]] = []
     names = sorted(x for x in proc.stdout.decode(errors='surrogateescape').split('\0') if x)
+    modes = candidate_tree.windows_git_modes(workspace) if winplat.IS_WINDOWS else {}
     for name in names:
         path = workspace / name
         if path.is_symlink():
             value = 'link:' + os.readlink(path)
+        elif winplat.IS_WINDOWS and modes.get(name) == '120000' and path.is_file():
+            value = 'link:' + path.read_bytes().decode('utf-8', 'surrogateescape')
         elif path.is_file():
             value = hashlib.sha256(path.read_bytes()).hexdigest()
-            if path.stat().st_mode & stat.S_IXUSR: value = 'exec:' + value
+            if (modes.get(name, '100644') == '100755' if winplat.IS_WINDOWS else path.stat().st_mode & stat.S_IXUSR): value = 'exec:' + value
         else:
             value = 'missing'
         manifest.append([name, value])
@@ -1832,11 +1862,86 @@ def directory_digest(root: Path) -> str:
     return hashlib.sha256(json.dumps(manifest, separators=(',', ':')).encode()).hexdigest()
 
 
+# WI-WIN W11: applies to both providers on every platform; tests shorten the grace.
+EXIT_AFTER_COMPLETION_GRACE_SECONDS = 60
+ROLE_WAIT_STEP_SECONDS = 0.25
+
+
+def wait_role_turn(process, prompt: bytes, stdout_path: Path, timeout_seconds: float,
+                   receipt: dict, job=None) -> None:
+    """Feed stdin independently of timed waits, and incrementally tail terminal JSONL rows."""
+    def feed_prompt():
+        try:
+            process.stdin.write(prompt)
+        except (OSError, ValueError):   # exited child or cleanup already closed the pipe
+            pass
+        finally:
+            try:
+                process.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+    # A blocked pipe write must neither block timeout handling nor keep the coordinator alive.
+    writer = threading.Thread(target=feed_prompt, daemon=True)
+    writer.start()
+    deadline = time.monotonic() + timeout_seconds
+    completed_at = None
+    offset, buffered = 0, b''
+    terminal_types = {'turn.completed', 'turn.failed'} if receipt['vendor'] == 'codex' else {'result'}
+    terminal_key = 'event' if receipt['vendor'] == 'gemini' else 'type'   # ADR-21 G7: agy rows carry `event`
+    with stdout_path.open('rb') as stream:
+        while True:
+            now = time.monotonic()
+            remaining = (completed_at + EXIT_AFTER_COMPLETION_GRACE_SECONDS - now
+                         if completed_at is not None else deadline - now)
+            if remaining <= 0:
+                if completed_at is None:
+                    raise subprocess.TimeoutExpired(process.args if hasattr(process, 'args') else 'role CLI', timeout_seconds)
+                try:
+                    winplat.kill_group(process.pid, job)
+                except OSError:
+                    pass
+                process.wait()
+                writer.join(timeout=1)
+                waited = round(time.monotonic() - completed_at, 3)
+                receipt['exit_after_completion'] = {'waited_s': waited, 'killed': True,
+                                                    'terminal_type': terminal_type}
+                message = (f"NOTE: {receipt['role']} CLI did not exit {waited:g} s after its turn completed; "
+                           + ("ended it; processing the turn failure" if terminal_type == 'turn.failed'
+                            else "ended it and kept the turn's answer"))
+                if winplat.IS_WINDOWS and receipt['vendor'] == 'codex':
+                    message += (' (a wedged Codex sandbox helper can keep sandboxed commands from returning; '
+                                'restarting Windows clears it)')
+                print(message)
+                return
+            try:
+                process.wait(timeout=min(ROLE_WAIT_STEP_SECONDS, remaining))
+                writer.join(timeout=1)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            if completed_at is None:
+                stream.seek(offset)
+                data = stream.read()
+                offset += len(data)
+                chunks = (buffered + data).split(b'\n')
+                buffered = chunks.pop()
+                for raw in chunks:
+                    try:
+                        row = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if isinstance(row, dict) and row.get(terminal_key) in terminal_types:
+                        terminal_type = row[terminal_key]
+                        completed_at = time.monotonic()
+                        break
+
+
 def read_json_lines(path: Path) -> list[dict]:
     rows = []
     if not path.exists():
         return rows
-    for line in path.read_text(errors='replace').splitlines():
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
         try:
             value = json.loads(line)
             if isinstance(value, dict):
@@ -1872,7 +1977,7 @@ def raise_subagent_final_output(requests: list[dict], row: dict) -> bool:
 def reported_provider_model(vendor: str, path: Path) -> tuple[Optional[str], Optional[str]]:
     """Read only the top-level provider model identity from a valid CLI stream."""
     try:
-        lines = path.read_text(errors='strict').splitlines()
+        lines = path.read_text(encoding='utf-8', errors='strict').splitlines()
         rows = [json.loads(line) for line in lines if line.strip()]
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None, None
@@ -1930,6 +2035,28 @@ def unwrap_json(value: str) -> dict:
     return result
 
 
+def shell_wrapped(argv: list) -> Optional[str]:
+    """The command inside a `sh|bash|zsh -c|-lc <cmd>` wrapper argv; None when argv is no such wrapper. WI-WIN W4c: on Windows
+    first the PowerShell and Git Bash wrappers Codex uses there (winplat.windows_wrapped_command)."""
+    if winplat.IS_WINDOWS and (inner := winplat.windows_wrapped_command(argv)) is not None:
+        return inner
+    if len(argv) == 3 and argv[0].endswith(('sh', 'bash', 'zsh')) and argv[1] in ('-c', '-lc'):
+        return argv[2]
+    return None
+
+
+def unwrap_command(raw_command: str) -> str:
+    """A Codex command event's command without its shell wrapper; the raw command when it has none or cannot be split.
+    W4c: on Windows a line POSIX quoting does not split into a known wrapper is split as a Windows command line too."""
+    try:
+        inner = shell_wrapped(shlex.split(raw_command))
+    except ValueError:
+        inner = None
+    if inner is None and winplat.IS_WINDOWS:
+        inner = winplat.windows_wrapped_command(winplat.windows_split(raw_command))
+    return raw_command if inner is None else inner
+
+
 def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """Return actual commands and all observed tool calls from a CLI event stream."""
     commands, calls = [], []
@@ -1946,13 +2073,7 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
             if item.get('type') == 'command_execution':
                 raw_command = item.get('command', '')
                 exit_code = item.get('exit_code')
-                command = raw_command
-                try:
-                    outer = shlex.split(raw_command)
-                    if len(outer) == 3 and outer[0].endswith(('sh', 'bash', 'zsh')) and outer[1] in ('-c', '-lc'):
-                        command = outer[2]
-                except ValueError:
-                    pass
+                command = unwrap_command(raw_command)
                 workdir = next((item[k] for k in ('workdir', 'cwd') if isinstance(item.get(k), str)), None)   # v297-eg-wire: kept, not dropped
                 call = {'tool': 'command_execution', 'input': {'command': command, **({'workdir': workdir} if workdir else {})},
                         'error': type(exit_code) is int and exit_code != 0}
@@ -1965,13 +2086,7 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
                               'error': item.get('status') != 'completed'})
         for item in started.values():
             raw_command = item.get('command', '')
-            command = raw_command
-            try:
-                outer = shlex.split(raw_command)
-                if len(outer) == 3 and outer[0].endswith(('sh', 'bash', 'zsh')) and outer[1] in ('-c', '-lc'):
-                    command = outer[2]
-            except ValueError:
-                pass
+            command = unwrap_command(raw_command)
             calls.append({'tool': 'command_execution', 'input': {'command': command}, 'error': None})
             commands.append({'command': command, 'raw_command': raw_command, 'exit_code': None, 'error': False,
                              'output': item.get('aggregated_output', ''), 'source': 'command_execution',
@@ -2083,7 +2198,7 @@ def review_pr_pins(path: str, workspace: Path, head: Optional[str], base: Option
     """LG2-c: the JSON `scripts/materialize_pr.py --root` printed, as the report's pins (review-pr-port.md §2.5); it must
     describe this run: the clone is the workspace, its head is HEAD and its merge base is the review base."""
     try:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
         pins = {'Target repository': data.get('repository') or data['target_url'], 'PR URL': data.get('url'),
                 'Head': data['head']['oid'], 'Base (pinned)': data['base']['oid'], 'Merge base': data['merge_base']}
         clone = Path(data['workspace']).resolve()
@@ -2103,7 +2218,7 @@ def saved_no_test(config) -> bool:
 def _saved_configured_commands(run_dir: Path) -> list:
     """A restored run's saved test, reviewer and work-item reviewer commands, for admission (args keep the CLI defaults until the
     Coordinator restores the saved config); an unreadable state adds none, and the Coordinator reports it itself."""
-    try: config = json.loads((run_dir / 'state.json').read_text())['config']
+    try: config = json.loads((run_dir / 'state.json').read_text(encoding='utf-8'))['config']
     except (OSError, ValueError, KeyError, TypeError): return []
     if not isinstance(config, dict): return []
     found = [config.get('test_command'), *[c for key in ('reviewer_command', 'workitem_reviewer_commands')
@@ -2265,7 +2380,7 @@ def codex_rollout_usage(session: Optional[str], start: float, end: float,
         return []
     lower_bound = start - 1 if lower_bound is None else lower_bound
     found, seen = [], set()
-    with paths[0].open(errors='replace') as source:
+    with paths[0].open(encoding='utf-8', errors='replace') as source:
         for line_no, line in enumerate(source, 1):
             try:
                 row = json.loads(line)
@@ -2302,7 +2417,7 @@ def codex_rollout_attempts(session: Optional[str], start: float, end: float) -> 
     if len(paths) != 1:
         return [], []
     pending, commands, calls = {}, [], []
-    with paths[0].open(errors='replace') as source:
+    with paths[0].open(encoding='utf-8', errors='replace') as source:
         for line_no, line in enumerate(source, 1):
             try:
                 row = json.loads(line)
@@ -2352,6 +2467,8 @@ def codex_rollout_cwds(session: Optional[str], start: float, end: float, writabl
     None when the rollout cannot be read, when the window holds no or several turns, or when a role could write the sessions dir."""
     from urllib.parse import unquote, urlparse
     def path_of(value) -> Optional[str]:
+        if winplat.IS_WINDOWS:   # W4c: C:\x, C:/x, /c/x (Git Bash) and file:///C:/x, case-insensitive
+            return winplat.windows_abs_path(value)
         url = urlparse(value) if isinstance(value, str) else None
         path = unquote(url.path) if url and url.scheme == 'file' and url.netloc in ('', 'localhost') else value if url and not url.scheme else None
         return path if isinstance(path, str) and os.path.isabs(path) else None
@@ -2363,7 +2480,7 @@ def codex_rollout_cwds(session: Optional[str], start: float, end: float, writabl
         return None
     rows = []
     try:
-        with paths[0].open(errors='replace') as source:
+        with paths[0].open(encoding='utf-8', errors='replace') as source:
             for line in source:
                 try:
                     row = json.loads(line)
@@ -2394,7 +2511,7 @@ def codex_guard_calls(calls: list[dict], proof: Optional[dict]) -> tuple[list[di
     records: dict = {}
     for argv, cwd in proof['commands']:
         if isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv):   # unwrapped as observed_events does
-            text = argv[2] if len(argv) == 3 and argv[0].endswith(('sh', 'bash', 'zsh')) and argv[1] in ('-c', '-lc') else shlex.join(argv)
+            text = shlex.join(argv) if (inner := shell_wrapped(argv)) is None else inner
             records.setdefault(text, []).append(cwd)
     events = [c['input'].get('command') for c in calls if c.get('tool') == 'command_execution' and isinstance(c.get('input'), dict)]
     changes = [c['input'].get('changes') if isinstance(c.get('input'), dict) else None for c in calls if c.get('tool') == 'file_change']
@@ -2471,6 +2588,26 @@ def brief_reason(text: str, limit: int = 160) -> str:
     return text[:head] + ' ... ' + text[len(text) - (limit - 5 - head):]
 
 
+def hold_explanation(prefix: str, findings, evidence, limit: int = 300) -> str:
+    """W10: a reviewer-type HOLD reason with the role's own words after `prefix` (Yuan's Windows acceptance run held with a bare
+    `reviewer HOLD` while the answer said why). The review schema has no reason field: the summaries of the role's own
+    findings, else its self_run_evidence commands; one line and at most `limit` characters, as a finding's progress summary."""
+    texts = [row.get('summary') for row in findings or () if isinstance(row, dict)]
+    if not any(texts):
+        texts = [row.get('command') for row in evidence or () if isinstance(row, dict)]
+    text = ' '.join(' '.join(str(text) for text in texts if text).split())[:limit]
+    return f'{prefix}: {text}' if text else prefix
+
+
+def unusable_review(label: str, answer: dict) -> str:
+    """'<label> returned <status> without a usable review' (DOCS, SECURITY, POLISH-Q specialists); a HOLD adds the role's own
+    words through hold_explanation (W10 r2, text only)."""
+    reason = f"{label} returned {answer['status']} without a usable review"
+    if answer['status'] != 'HOLD':
+        return reason
+    return hold_explanation(reason, answer.get('full_review'), answer.get('self_run_evidence'))
+
+
 def progress_line(row: dict) -> str:
     """PL: the one human-readable rendering of a progress.jsonl row, shared by the live stdout line and status --brief."""
     f = {k: v for k, v in row.items() if k not in ('ts', 'seq')}
@@ -2496,7 +2633,7 @@ class ReadOnlyTurnVoided(ValueError):
 class Coordinator:
     def __init__(self, args: argparse.Namespace):
         saved = Path(args.run_dir).expanduser() / 'state.json'
-        saved_state = json.loads(saved.read_text()) if saved.exists() else None
+        saved_state = json.loads(saved.read_text(encoding='utf-8')) if saved.exists() else None
         if (saved_state is not None and saved_state.get('version') != STATE_VERSION or   # V3-B6: before any key of it,
                 getattr(args, 'supersedes', None) and saved_state_is_old(Path(args.supersedes).resolve())):   # or of a parent, is read
             raise ValueError(OLD_STATE_REFUSAL)
@@ -2518,15 +2655,25 @@ class Coordinator:
         if not 1 <= getattr(args, 'timeout', DEFAULT_TIMEOUT_SECONDS) <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any state exists
             raise ValueError(TIMEOUT_RANGE_ERROR)
         self.args = args
+        self._extracted_mirrors = set()
         self._fake_lifecycle = False   # V4: the fake lifecycle was removed; test_worktree_lifecycle still reads the flag
         self._save_lock = threading.Lock()
         self.workspace = Path(args.workspace).expanduser().resolve()
         self.workitem = Path(args.workitem).expanduser().resolve()
         self.run_dir = Path(args.run_dir).expanduser().resolve()
+        if saved_state is None:
+            prepare_run_directory(self.workspace, self.run_dir, create_ignore=args.action == 'run')
         self.global_config_home = Path.home()
         if not Path(codex_home_text := os.environ.get('CODEX_HOME') or str(Path.home() / '.codex')).expanduser().is_absolute(): raise ValueError('CODEX_HOME must be absolute so global Codex config changes can be monitored')
         self.global_codex_home = Path(codex_home_text).expanduser().resolve()
-        self.author_temp_dir = self.run_dir / 'author-tmp'
+        self.scratch_root = (Path(saved_state.get('scratch_root', str(self.run_dir))) if saved_state is not None
+                             else new_scratch_root(self.run_dir))
+        if (saved_state is not None and 'scratch_root' in saved_state
+                and saved_state.get('status') not in ('ACCEPTED', 'REPORTED', 'ABORTED', 'CLOSED')):
+            self.scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not winplat.check_private_dir(self.scratch_root):
+                raise ValueError('scratch root must be a private directory: ' + str(self.scratch_root))
+        self.author_temp_dir = self.scratch_root / 'author-tmp'
         self._probe_sandbox_commands = None
         self._probe_env_names = None   # FIELD-10: set only while probe_passed() compares with the probe's own env-derived names
         self.rounds = self.run_dir / 'rounds'
@@ -2538,7 +2685,7 @@ class Coordinator:
         args.safety_mode = requested or DEFAULT_SAFETY_MODE
         upgraded = None
         if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
-            saved_state = json.loads(self.state_path.read_text())
+            saved_state = json.loads(self.state_path.read_text(encoding='utf-8'))
             self.state = saved_state
             self._review_report_args(saved_state['config'])
             if args.action in ('note', 'reject'): self._refuse_report_feedback()
@@ -2561,7 +2708,7 @@ class Coordinator:
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
         if self.state_path.exists():
-            self.state = json.loads(self.state_path.read_text())
+            self.state = json.loads(self.state_path.read_text(encoding='utf-8'))
             # test_a_filter_driver_name_git_cannot_pass_safely_fails_closed: validate git config on load.
             self._head_commit()
             worktree_lifecycle.refuse_saved(self.state, args)
@@ -2571,14 +2718,14 @@ class Coordinator:
                 raise ValueError('saved supersedes or effective task hash differs')
             if self.state.get('supersedes'):
                 parent = Path(self.state['supersedes'])
-                old = json.loads((parent / 'state.json').read_text())
+                old = json.loads((parent / 'state.json').read_text(encoding='utf-8'))
                 spec_path = parent / 'evidence/successor-spec.json'
-                spec = json.loads(spec_path.read_text())
+                spec = json.loads(spec_path.read_text(encoding='utf-8'))
                 claim = parent / 'evidence/successor-claim.json'
                 if (old.get('status') != 'ABORTED' or spec.get('run_dir') != str(self.run_dir) or
                         spec.get('task_sha256') != self.state['effective_task_sha256'] or
                         self.state.get('base_commit') != old.get('base_commit') or
-                        not claim.is_file() or json.loads(claim.read_text()).get('run_dir') != str(self.run_dir) or
+                        not claim.is_file() or json.loads(claim.read_text(encoding='utf-8')).get('run_dir') != str(self.run_dir) or
                         spec.get('config_sha256') != hashlib.sha256((parent / 'evidence/successor-config.json').read_bytes()).hexdigest() or
                         old.get('successor_spec_sha256') != hashlib.sha256(spec_path.read_bytes()).hexdigest() or
                         spec.get('original_hash') != hashlib.sha256(Path(spec['original_workitem']).read_bytes()).hexdigest()):
@@ -2628,7 +2775,7 @@ class Coordinator:
             self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
             if 'on' in (self.args.shadow, self.args.adversarial_gate):   # FIELD-30: what the fresh scan would hold on, before any turn
-                if markers := self._introduced_history('original-workitem', self.workitem.read_text(), self._head_commit() or ''):
+                if markers := self._introduced_history('original-workitem', self.workitem.read_text(encoding='utf-8'), self._head_commit() or ''):
                     raise ValueError(f'independence check rejected history in original-workitem: {markers[0]}; the fresh '
                                      'shadow and gate would hold on it. The phrase reads as this run\'s review history; say it another '
                                      'way, or put it in backticks when the repository already contains it')
@@ -2638,8 +2785,9 @@ class Coordinator:
             self.evidence.mkdir(exist_ok=True)
             self.context.mkdir(exist_ok=True)
             self.internal.mkdir(exist_ok=True)
-            atomic_text(self.context / 'workitem.md', self.workitem.read_text())
+            atomic_text(self.context / 'workitem.md', self.workitem.read_text(encoding='utf-8'))
             self.state = {
+                'scratch_root': str(self.scratch_root),
                 'version': STATE_VERSION, 'status': 'ACTIVE', 'phase': 'PLAN', 'next': 'author',
                 'workspace': str(self.workspace), 'workitem': str(self.workitem),
                 'config': frozen_config,
@@ -2671,8 +2819,8 @@ class Coordinator:
                 self._start_review_only(scope)
             if args.supersedes:
                 parent = Path(args.supersedes).resolve()
-                old = json.loads((parent / 'state.json').read_text())
-                spec = json.loads((parent / 'evidence/successor-spec.json').read_text())
+                old = json.loads((parent / 'state.json').read_text(encoding='utf-8'))
+                spec = json.loads((parent / 'evidence/successor-spec.json').read_text(encoding='utf-8'))
                 task_hash = hashlib.sha256(self.workitem.read_bytes()).hexdigest()
                 if (old.get('status') != 'ABORTED' or old.get('abort_kind') != 'scope-change' or
                         not old.get('base_commit') or
@@ -2691,7 +2839,7 @@ class Coordinator:
                     raise ValueError('parent base_commit is not an ancestor of HEAD')
                 with run_lease(parent):
                     claim = parent / 'evidence/successor-claim.json'
-                    if claim.exists() and json.loads(claim.read_text())['run_dir'] != str(self.run_dir):
+                    if claim.exists() and json.loads(claim.read_text(encoding='utf-8'))['run_dir'] != str(self.run_dir):
                         raise ValueError('parent already has a successor')
                     if not claim.exists():
                         atomic_json(claim, {'run_dir': str(self.run_dir)})
@@ -2860,7 +3008,7 @@ class Coordinator:
         config['docs_file'] = frozen_doc_path(docs_file) if docs_file else ''
         config['docs_allowlist'] = sorted({frozen_doc_path(value) for value in
                                            [*self.args.docs_allowlist, *([docs_file] if docs_file else [])]})
-        config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text())
+        config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
         return config
 
     def _author_tmp_isolated(self) -> bool:
@@ -2947,7 +3095,7 @@ class Coordinator:
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
 
     def reviewer_commands(self) -> list[str]:
-        current = workitem_reviewer_commands(self.workitem.read_text())
+        current = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
         frozen = self.state['config']['workitem_reviewer_commands']
         if current != frozen:
             reason = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
@@ -3017,7 +3165,7 @@ class Coordinator:
         }
         if vendor == 'gemini':   # ADR-21 G5
             flags['gemini_settings'] = GEMINI_READONLY_SETTINGS
-            flags['scratch_tmp'] = str(self.run_dir / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
+            flags['scratch_tmp'] = str(self.scratch_base / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
         if vendor == 'claude':
             flags['claude_child_env'] = CLAUDE_CHILD_ENV
             flags['claude_bash_sandbox'] = self._claude_sandbox_settings(sandbox_role)
@@ -3026,7 +3174,7 @@ class Coordinator:
             flags['ignore_execpolicy_rules'] = True
             flags['codex_plugins_argv'] = list(CODEX_PLUGINS_OFF)
             flags['codex_readonly_profile'] = codex_readonly_profile_args()   # b295-f1: a new digest, so an older probe PASS or cache entry stops matching
-            flags['scratch_tmp'] = str(self.run_dir / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
+            flags['scratch_tmp'] = str(self.scratch_base / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
         return flags
 
     def author_flags(self) -> dict:
@@ -3063,7 +3211,7 @@ class Coordinator:
     def _codex_cli_version(self) -> str:
         try:
             if self._program_state()[1]: return 'UNAVAILABLE'
-            result = subprocess.run([self.state['operator_programs']['codex_bin']['path'], '--version'], text=True,
+            result = subprocess.run([*program_argv(self.state['operator_programs']['codex_bin']), '--version'], text=True, encoding='utf-8',
                                     capture_output=True, timeout=10 * timeout_scale.env_factor())
             return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
         except (OSError, subprocess.SubprocessError):
@@ -3092,7 +3240,7 @@ class Coordinator:
     def _codex_policy_digest(self) -> Optional[str]:
         try: text = self._codex_config_bytes().decode()
         except (OSError, UnicodeError): return None
-        roots = '|'.join(re.escape(path) for path in dict.fromkeys([str(self.workspace), *_codex_trust_paths(self.workspace)])) + '|' + re.escape(str(self.run_dir)) + r'/paired-session-author-probe-[^"]+/workspace'
+        roots = '|'.join(re.escape(path) for path in dict.fromkeys([str(self.workspace), *_codex_trust_paths(self.workspace)])) + '|' + re.escape(str(self.scratch_base)) + r'/paired-session-author-probe-[^"]+/workspace'
         raw = re.sub(r'(?m)^\[projects\."(?:' + roots + r')"\]\ntrust_level = "trusted"\n', '', text)
         return hashlib.sha256('\n'.join(line for line in raw.splitlines() if line.strip()).encode()).hexdigest()
 
@@ -3117,7 +3265,7 @@ class Coordinator:
         return args
 
     def _author_environment(self) -> dict:
-        return {**os.environ, 'TMPDIR': str(self.author_temp_dir)}
+        return {**os.environ, **winplat.temp_env(self.author_temp_dir)}
 
     def codex_contract_verified(self) -> tuple[bool, str]:
         """Verified set, or this run's full probe_passed() record / operator override for the installed version."""
@@ -3192,7 +3340,7 @@ class Coordinator:
             return True, ''
         optin = self.state.get('claude_author_override') or {}
         try:
-            probed = json.loads((self.run_dir / 'permission-probe.json').read_text()).get(
+            probed = json.loads((self.run_dir / 'permission-probe.json').read_text(encoding='utf-8')).get(
                 'author_permission_probe', {}).get('claude_author_status') == 'PASS'
         except (OSError, ValueError, AttributeError):
             probed = False
@@ -3239,12 +3387,13 @@ class Coordinator:
             raise ValueError('the workspace must not be the filesystem root, the home dir or an ancestor of it, hold the context dir, '
                              'sit inside the context, run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), '
                              'or hold rule metacharacters')
-        rule = lambda path, tail: f'Edit(//{path.as_posix().lstrip("/")}{tail})'
+        rule = lambda path, tail: f'Edit(//{winplat.claude_rule_path(path)}{tail})'   # WI-WIN: //c/Users/... on Windows
         # No '//parent/*' sibling deny: gitignore-style matching could cover the workspace itself; siblings are not allowed anyway.
         return [rule(workspace, '/**')], [rule(context, '/**'), rule(home / '.cache' / 'review-loop' / 'probe-pass', '/**'), *(f'Edit(~/{home.name}/**)' for home in homes)]   # P0-4 V4
 
     def _claude_sandbox_settings(self, role: str) -> dict:
-        """Strict OS boundary for Claude Bash, independent of Claude tool permissions."""
+        """Strict OS boundary for Claude Bash, independent of Claude tool permissions. WI-WIN D1: native Windows has no Claude
+        Code Bash sandbox, so there it is off (the same nested shape, which helpers read); tool permissions still bound the roles."""
         secret_names = set(self._probe_env_names) if self._probe_env_names is not None else {
             name for name in os.environ
             if SECRET_ENV_NAME.search(name)
@@ -3259,11 +3408,15 @@ class Coordinator:
             '~/.docker/config.json', '~/.git-credentials', '~/.netrc', '~/.npmrc', '~/.pypirc',
             '~/.kube/config', '~/.azure',
         )
+        credential_dirs = ('~/.aws', '~/.ssh', '~/.config/gcloud', '~/.config/gh', '~/.azure')
+        # WI-WIN W4b: with the Bash sandbox off nothing hides these files, so on Windows the Read tool is denied them (Bash can still
+        # read them: an accepted residual under D1).
+        read_denies = [f'Read({path}/**)' if path in credential_dirs else f'Read({path})' for path in credential_paths] if winplat.IS_WINDOWS else []
         return {
             'disableAllHooks': True,
             'sandbox': {
-                'enabled': True,
-                'failIfUnavailable': True,
+                'enabled': not winplat.IS_WINDOWS,
+                'failIfUnavailable': not winplat.IS_WINDOWS,
                 'allowUnsandboxedCommands': False,
                 'autoAllowBashIfSandboxed': False,
                 'excludedCommands': [],
@@ -3279,11 +3432,11 @@ class Coordinator:
                 },
             },
             'permissions': {
-                'deny': [f'Edit(//{self.run_dir.as_posix().lstrip("/")}/**)'],
+                'deny': [f'Edit(//{winplat.claude_rule_path(self.run_dir)}/**)', *read_denies],
             },
         }
 
-    def _claude_os_probe_path(self, role: str = 'probe') -> Path: return self.run_dir.parent / ('.paired-session-os-probe-' + hashlib.sha256((str(self.run_dir) + ('|gate-probe' if role == 'gate-probe' else '')).encode()).hexdigest()[:16])   # G-a K2: the gate probe's OS-only target differs from the reviewer probe's
+    def _claude_os_probe_path(self, role: str = 'probe') -> Path: return self.scratch_parent / ('.paired-session-os-probe-' + hashlib.sha256((str(self.run_dir) + ('|gate-probe' if role == 'gate-probe' else '')).encode()).hexdigest()[:16])   # G-a K2: the gate probe's OS-only target differs from the reviewer probe's
 
     def author_flags_digest(self) -> str:
         raw = json.dumps(self.author_flags(), sort_keys=True, separators=(',', ':')).encode()
@@ -3368,7 +3521,7 @@ class Coordinator:
     def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
         root, ws = probe_cache_root().resolve(), self.workspace.resolve()
         if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
-        versions = [claude_cli_version(self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
+        versions = [claude_cli_version(self.state['operator_programs']['claude_bin'] if winplat.IS_WINDOWS else self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
         if 'UNAVAILABLE' in versions: return None
         inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions,
                   **({'review_report': True} if self.state['config'].get('review_report') else {})}   # LG2-a2: report and ordinary entries never share a key
@@ -3534,7 +3687,7 @@ class Coordinator:
 
     def _head_commit(self) -> Optional[str]:
         proc = candidate_tree.run_bounded(candidate_tree.git_command('rev-parse', '--verify', 'HEAD', cwd=self.workspace), cwd=self.workspace,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         return proc.stdout.strip() if proc.returncode == 0 else None
 
     def _head_ref(self) -> Optional[str]:   # the branch HEAD names, None when detached
@@ -3556,7 +3709,7 @@ class Coordinator:
     def _git(self, args: list[str], ok=(0,), raw: bool = False) -> str:
         """`raw` keeps git's own line endings; the text mode default turns `\\r\\n` and a bare `\\r` into `\\n`."""
         proc = candidate_tree.run_bounded(candidate_tree.git_command(*args, cwd=self.workspace), cwd=self.workspace, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, **({} if raw else {'text': True, 'errors': 'replace'}))
+                              stderr=subprocess.PIPE, **({} if raw else {'text': True, 'encoding': 'utf-8', 'errors': 'replace'}))
         if raw:
             proc.stdout, proc.stderr = proc.stdout.decode(errors='replace'), proc.stderr.decode(errors='replace')
         if proc.returncode not in ok:
@@ -3594,9 +3747,101 @@ class Coordinator:
                              check=True).stdout
         return sorted(name for name in raw.decode(errors='surrogateescape').split('\0') if name)
 
+    @property
+    def mirror_base(self) -> Path:
+        """Legacy mirrors stay frozen in internal/; new runs keep workspace copies external."""
+        return self.internal if self.scratch_base == self.run_dir else self.scratch_base / 'mirrors'
+
+    def _archive_mirror(self, source: Path, archive: Path) -> None:
+        """Publish a persistent baseline without a walkable workspace tree in the repo."""
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=archive.name + '.', dir=archive.parent)
+        os.close(fd)
+        try:
+            with tarfile.open(temporary, 'w', dereference=False) as bundle:
+                for child in sorted(source.iterdir()):
+                    bundle.add(child, arcname=child.name)
+            os.replace(temporary, archive)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _extract_mirror(self, archive: Path, target: Path) -> Path:
+        # Scratch cleaners or interrupted captures can leave an incomplete tree.
+        # Trust only mirrors extracted by this coordinator, never a prior process.
+        if target.name in self._extracted_mirrors and target.is_dir():
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=target.name + '.', dir=target.parent))
+        try:
+            with tarfile.open(archive, 'r:') as bundle:
+                members = bundle.getmembers()
+                for member in members:
+                    if Path(member.name).is_absolute() or '..' in member.name.replace('\\', '/').split('/'):
+                        raise ValueError('unsafe baseline archive member: ' + member.name)
+                    # Mirrors contain only directories, regular files and symlinks.
+                    if not (member.isdir() or member.isfile() or member.issym()):
+                        raise ValueError('unsupported baseline archive member: ' + member.name)
+                if hasattr(tarfile, 'data_filter'):
+                    # data_filter normally strips mode bits; copy2 mirror semantics retain them.
+                    def mirror_filter(member, destination):
+                        checked = copy.copy(member)
+                        if checked.issym():
+                            # Preserve workspace link text, including outside targets; links are leaves.
+                            checked.linkname = '.'
+                        filtered = tarfile.data_filter(checked, destination)
+                        if filtered is not None:
+                            filtered.mode = member.mode
+                            filtered.linkname = member.linkname
+                        return filtered
+                    bundle.extractall(temporary, members=members, filter=mirror_filter)
+                else:  # Python 3.9: reject writes through symlink parents, allow symlink leaves.
+                    links = {m.name.rstrip('/') for m in members if m.issym()}
+                    for member in members:
+                        parts = member.name.split('/')
+                        if any('/'.join(parts[:i]) in links for i in range(1, len(parts))):
+                            raise ValueError('baseline archive writes through a symlink: ' + member.name)
+                    bundle.extractall(temporary, members=members)
+            if target.exists():
+                (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(target)
+            os.replace(temporary, target)
+            self._extracted_mirrors.add(target.name)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+        return target
+
+    def _baseline(self, name: str) -> Path:
+        target = self.mirror_base / name
+        archive = self.internal / (name + '.tar')
+        if self.mirror_base != self.internal and archive.is_file():
+            return self._extract_mirror(archive, target)
+        return target
+
+    def _capture_baseline(self, name: str) -> Path:
+        target = self.mirror_base / name
+        self._mirror_workspace(target)
+        if self.mirror_base == self.internal:
+            return target
+        archive = self.internal / (name + '.tar')
+        self._archive_mirror(target, archive)
+        self._extracted_mirrors.discard(name)
+        return archive
+
+    def _cleanup_scratch(self) -> None:
+        if self.state.get('scratch_root') and self.scratch_base != self.run_dir:
+            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(self.scratch_base, ignore_errors=True)
+
+    def _missing_review_start_issue(self) -> Optional[str]:
+        record = self.state.get('review_only') or {}
+        mirror = record.get('history_mirror') or record.get('mirror')
+        if self.state.get('scratch_root') and mirror and not Path(mirror).is_file():
+            return ('FIELD-27 review-start mirror is missing: ' + mirror +
+                    '; restore the original mirror and resume, or abort and start a new run')
+        return None
+
     def _mirror_workspace(self, target: Path) -> None:
-        if target.exists():
-            shutil.rmtree(target)
+        if target.exists():   # W10: copy2 keeps a workspace file's read-only attribute on Windows
+            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(target)
         target.mkdir(parents=True)
         for name in self._workspace_names():
             source, destination = self.workspace / name, target / name
@@ -3630,22 +3875,22 @@ class Coordinator:
         atomic_text(self.context / 'delta.stat', stat + untracked_stat)
         atomic_text(self.context / 'status.txt', self._git(['-c', 'core.quotepath=false', 'status', '--short', '--untracked-files=all']))
         since = self.context / 'delta-since-last-review.patch'
-        baseline = self.internal / 'last-review'
+        baseline = self._baseline('last-review')
         if self.state.get('reviews_completed', 0) and baseline.exists():
-            current = self.internal / 'current-review'
+            current = self.mirror_base / 'current-review'
             self._mirror_workspace(current)
             proc = candidate_tree.run_bounded(candidate_tree.git_command('-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
-                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
+                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
             if proc.returncode not in (0, 1):
                 raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
             atomic_text(since, proc.stdout)
-            shutil.rmtree(current)
+            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(current)
         elif since.exists():
             since.unlink()
 
     def capture_review_baseline(self, sequence: Optional[int] = None,
                                 phase: Optional[str] = None) -> None:
-        self._mirror_workspace(self.internal / 'last-review')
+        self._capture_baseline('last-review')
         reviewed = self.state.setdefault('reviewed_reviewer_sequences', [])
         if sequence is None or sequence not in reviewed:
             self.state['reviews_completed'] = self.state.get('reviews_completed', 0) + 1
@@ -3827,6 +4072,8 @@ class Coordinator:
         return [f"{row['id']} {row['severity']}" + ('+sec' if row.get('security') else '') for row in self.open_findings()]
 
     def _progress_terminal(self, status: str, reason: str = '') -> None:
+        if status in ('ACCEPTED', 'REPORTED', 'ABORTED'):
+            self._cleanup_scratch()
         reason = ' '.join(reason.split())
         if reason.startswith('implementer: '): reason = reason.split(':')[0] + ': (author text withheld)'
         self.progress('terminal', status=status, reason=brief_reason(reason), invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
@@ -4103,13 +4350,13 @@ class Coordinator:
                                  + ('; --note is for attach-verification, so use --text' if getattr(self.args, 'note', None) is not None and not (text or file) else ''))
             note = Path(file).expanduser().read_bytes().decode('utf-8') if file else text or ''
             if not note.strip() or '```reviewer-commands' in note: raise ValueError('empty or command-bearing scope note')
-            raw = json.loads(self.state_path.read_text())
+            raw = json.loads(self.state_path.read_text(encoding='utf-8'))
             if not raw.get('base_commit'): raise ValueError('parent has no trustworthy base_commit')
-            task = self.workitem.read_text() + '\n\n## Operator scope change\n' + note + '\n'
+            task = self.workitem.read_text(encoding='utf-8') + '\n\n## Operator scope change\n' + note + '\n'
             if target.exists():
                 raise ValueError('successor run dir already exists')
             with tempfile.TemporaryDirectory() as tmp:
-                trial = copy.copy(self); trial.workitem = Path(tmp) / 'workitem.md'; trial.workitem.write_text(task)   # V326-SCOPE: match successor scan source
+                trial = copy.copy(self); trial.workitem = Path(tmp) / 'workitem.md'; winplat.write_text(trial.workitem, task)   # V326-SCOPE: match successor scan source
                 trial.context = Path(tmp); trial.evidence = Path(tmp); trial.run_dir = target
                 trial.author_temp_dir = target / 'author-tmp'; trial.state = {'sequence': 0, 'finding_ledger': []}
                 try: trial.assert_fresh_prompt('shadow', 'Clean prompt')
@@ -4125,7 +4372,7 @@ class Coordinator:
             self.state['scope_change_intent'] = intent; self.save()
         elif intent['action'] != self.args.action or intent['source'] != (str(Path(file).expanduser().resolve()) if file else 'cli') or (text is not None and text != intent['text']):
             raise ValueError('different scope-change request is pending')
-        task = self.workitem.read_text() + '\n\n## Operator scope change\n' + intent['text'] + '\n'
+        task = self.workitem.read_text(encoding='utf-8') + '\n\n## Operator scope change\n' + intent['text'] + '\n'
         if hashlib.sha256(task.encode()).hexdigest() != intent.get('task_sha256'):
             raise ValueError('scope-change task changed after intent')
         atomic_text(self.evidence / 'scope-note.txt', intent['text']); atomic_text(task_path, task)
@@ -4149,9 +4396,17 @@ class Coordinator:
                                    'review_scope_sha256': self.state['review_only']['review_scope_sha256']}
         spec_path = self.evidence / 'successor-spec.json'; atomic_json(spec_path, spec)
         self._write_scope_change_report(spec_path)
+        if self.state.get('scratch_root') and self.state.get('review_only'):
+            # The successor needs FIELD-27's original user content after this run's scratch is gone.
+            source = self._review_start_root()
+            if source and source.is_dir():
+                history = target / 'internal' / 'history-start.tar'
+                self._archive_mirror(source, history)
+                self.state['review_only']['history_mirror'] = str(history)
         self.state.update(status='ABORTED', abort_kind='scope-change',
                           successor_spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest())
         self.save(); self.write_comparison(); self.write_open_findings(); self.write_usage()
+        self._cleanup_scratch()
         return command()
 
     def _write_scope_change_report(self, spec_path: Path) -> None:
@@ -4269,7 +4524,7 @@ class Coordinator:
         self.state['status'] = 'ACCEPTED'
         self.state.pop('terminal_hold_kind', None)
         self.state['accepted_at'] = record['timestamp']
-        title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()), '')
+        title = next((line.lstrip('# ').strip() for line in self.workitem.read_text(encoding='utf-8').splitlines() if line.strip()), '')
         atomic_text(self.run_dir / 'delivery-report.md', '\n'.join([   # L120: as W's report, without its stages and commit
             '# 交付报告（lifecycle off）', '', f'- 运行：`{self.run_dir.name}`；工作项：{title}',
             f"- 结论：已接受（ACCEPTED）{'，--override-rejection' if record['override_rejection'] else ''}，{record['timestamp']}",
@@ -4297,7 +4552,7 @@ class Coordinator:
             raise ValueError('worktree lifecycle refuses external delivery (push, PR, merge; D8); set external_delivery '
                              'false in the operator profile')
         journal_path = self.evidence / 'delivery-commit.json'
-        journal = json.loads(journal_path.read_text()) if journal_path.exists() else None
+        journal = json.loads(journal_path.read_text(encoding='utf-8')) if journal_path.exists() else None
         receipts = hashlib.sha256(json.dumps(life['receipts'], sort_keys=True).encode()).hexdigest()
         if journal and self.args.expect == journal['intent']['digest'] and life.get('stage') == 'DONE' and (
                 self.state.get('status') in ('DONE', 'HOLD')) and (   # never ABORTED: a superseded run stays superseded
@@ -4340,7 +4595,7 @@ class Coordinator:
         self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
         self.state.pop('delivery_pending', None)
         atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
-            self.state, self.run_dir.name, self.workitem.read_text(), delivery) + '\n' + review_report.delivery_section(self.state))
+            self.state, self.run_dir.name, self.workitem.read_text(encoding='utf-8'), delivery) + '\n' + review_report.delivery_section(self.state))
         self.save()
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
@@ -4357,45 +4612,58 @@ class Coordinator:
 
     def _commit_refusals(self, paths: list[str]) -> None:
         """W04 parity before an auto_commit: no work staged before the run, no content-transforming attribute or
-        filter, no core.autocrlf, so the commit holds exactly the accepted bytes and checks out as them."""
+        filter. POSIX keeps raw bytes; Windows permits ordinary Git text/EOL cleaning."""
         if record := self.state.get('review_only'):   # LG1-c: the index may hold the reviewed change, fully staged at start
             if hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest() != record['index_at_start']:
                 raise ValueError('auto_commit refuses an index changed since the review-only run started; restore it or abort')
         elif staged := self._git_names(['diff-index', '--cached', '--name-only', '-z', 'HEAD']):
             raise ValueError('auto_commit refuses work staged before the run: ' + ', '.join(staged[:10]))
-        if self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
+        if not winplat.IS_WINDOWS and self._git(['config', '--get', 'core.autocrlf'], ok=(0, 1)).strip().lower() not in ('', 'false', 'no', 'off', '0'):
             raise ValueError('auto_commit refuses core.autocrlf; unset it (or set it to false in this repository) and accept again')
-        if self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
+        if not winplat.IS_WINDOWS and self._git(['config', '--bool', '--get', 'core.fileMode'], ok=(0, 1)).strip() == 'false':   # no reliable mode bits
             raise ValueError('auto_commit refuses core.fileMode false; set it to true and accept again, or abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('160000 ') for row in self._git(['ls-files', '-s', '-z']).split('\0')):
             raise ValueError('auto_commit refuses a repository with submodules; abort and commit the tree yourself (auto_commit is frozen at run start)')
         if any(row.startswith('S ') for row in self._git(['ls-files', '-t', '-z']).split('\0')):
             raise ValueError('auto_commit refuses skip-worktree (sparse) entries; abort and commit the tree yourself, or start a new run with auto_commit false (the value is frozen at run start)')
         proc = candidate_tree.run_bounded(['git', *candidate_tree.GIT_NO_EXEC, 'check-attr', '-z', '--stdin', 'filter',
-                                           'text', 'eol', 'working-tree-encoding'], cwd=self.workspace,
-                                          input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                           'text', 'eol', 'working-tree-encoding', *(['ident', 'crlf'] if winplat.IS_WINDOWS else [])], cwd=self.workspace,
+                                          input='\0'.join(paths) + '\0', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         fields = proc.stdout.split('\0')
         transforming = [f'{path}: {attr}={value}' for path, attr, value in zip(fields[0::3], fields[1::3], fields[2::3])
-                        if value not in ('unspecified', 'unset')]
+                        if value not in ('unspecified', 'unset') and not (winplat.IS_WINDOWS and
+                            ((attr == 'text' and value in ('set', 'auto')) or (attr == 'eol' and value in ('lf', 'crlf'))))]
         if proc.returncode or transforming:
             raise ValueError('auto_commit refuses content-transforming attributes: ' +
                              ', '.join(transforming[:10] or [proc.stderr.strip()[-200:]]))
 
     def _manifest_tree(self, snapshot: list) -> str:
-        """The git tree of exactly the accepted manifest, written through a private index (raw bytes, no filters)."""
+        """Accepted modes via a private index; raw POSIX blobs, ordinary Git text cleaning on Windows."""
         files = [(path, value) for path, value in snapshot if value != 'missing']
         if any('\n' in path or path.startswith('"') or path.endswith('\r') for path, _ in files):
             raise ValueError('auto_commit refuses a path that --stdin-paths would rewrite (newline, leading quote, trailing CR)')
         regular = [path for path, value in files if not value.startswith('link:')]
-        oids = dict(zip(regular, candidate_tree.run_bounded(
-            candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
-            cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, check=True, timeout=600).stdout.split()))
+        if winplat.IS_WINDOWS:
+            # Use the same attributes/autocrlf as git add, but never run configured filter drivers.
+            # Acceptance and replay still bind raw working bytes: read-tree below only updates the index,
+            # leaving the reviewed CRLF checkout untouched. Modes come from the accepted snapshot.
+            # One git process for the whole manifest (W5 r2 review note 1): --stdin-paths without --no-filters reads each
+            # file from the worktree and applies its path's text/eol cleaning, as `git add` does.
+            oids = dict(zip(regular, candidate_tree.run_bounded(
+                ['git', *candidate_tree.GIT_NO_EXEC, *candidate_tree._filter_overrides(self.workspace),
+                 'hash-object', '-w', '--stdin-paths'], cwd=self.workspace,
+                input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', check=True, timeout=600).stdout.split()))
+        else:
+            oids = dict(zip(regular, candidate_tree.run_bounded(
+                candidate_tree.git_command('hash-object', '-w', '--no-filters', '--stdin-paths', cwd=self.workspace),
+                cwd=self.workspace, input=''.join(path + '\n' for path in regular), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True, timeout=600).stdout.split()))
         for path, value in files:   # --stdin-paths follows symlinks: a link blob is its target text
             if value.startswith('link:'):
                 oids[path] = candidate_tree.run_bounded(
                     candidate_tree.git_command('hash-object', '-w', '--stdin', cwd=self.workspace), cwd=self.workspace,
-                    input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                    input=value[len('link:'):], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True,
                     timeout=600).stdout.strip()
         rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if value.startswith('exec:') else '100644'}"
                        f' {oids[path]}\t{path}\0' for path, value in files)   # rel210-fixA: the accepted mode, not a live lstat
@@ -4403,9 +4671,9 @@ class Coordinator:
         env = {**candidate_tree.git_env(), 'GIT_INDEX_FILE': str(index)}
         try:
             subprocess.run(candidate_tree.git_command('update-index', '-z', '--index-info', cwd=self.workspace),
-                           cwd=self.workspace, env=env, input=rows, text=True, check=True, capture_output=True, timeout=600)
+                           cwd=self.workspace, env=env, input=rows, text=True, encoding='utf-8', check=True, capture_output=True, timeout=600)
             return subprocess.run(candidate_tree.git_command('write-tree', cwd=self.workspace), cwd=self.workspace, env=env,
-                                  text=True, check=True, capture_output=True, timeout=600).stdout.strip()
+                                  text=True, encoding='utf-8', check=True, capture_output=True, timeout=600).stdout.strip()
         finally:
             index.unlink(missing_ok=True)
 
@@ -4423,7 +4691,7 @@ class Coordinator:
                 return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc).split('; ', 1)[0]}
             if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                 raise ValueError('the tree changed during the accept; restore the approved tree or abort')
-            title = next((line.lstrip('# ').strip() for line in self.workitem.read_text().splitlines() if line.strip()),
+            title = next((line.lstrip('# ').strip() for line in self.workitem.read_text(encoding='utf-8').splitlines() if line.strip()),
                          'paired-session work item')
             message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
                        f"Item: {self.state['item_uuid']}\nAccept intent: {intent['digest']}\n"
@@ -4460,7 +4728,7 @@ class Coordinator:
     def _inherited_security_baseline(self, parent: Path) -> dict:
         """Supervisor decision (W3a): a scope-change successor inherits its parent's delivery baseline, so the delivery
         scope stays relative to the tree before the work item; the copy is bound to the parent's digest."""
-        base = (json.loads((parent / 'state.json').read_text()).get('lifecycle') or {}).get('security_baseline')
+        base = (json.loads((parent / 'state.json').read_text(encoding='utf-8')).get('lifecycle') or {}).get('security_baseline')
         if not base or Path(base['path']).parent != parent / 'evidence':
             raise ValueError('a worktree-lifecycle successor inherits its parent delivery baseline, and the parent has '
                              'none; start a new run instead')
@@ -4479,10 +4747,10 @@ class Coordinator:
         if action not in ('accept', 'reject', 'withdraw-findings'): raise ValueError('intent action must be accept, reject or withdraw-findings')
         if action == 'withdraw-findings': self._withdrawal_rows()
         payload = ((self.args.reason or '') if action == 'withdraw-findings' else
-                   (Path(file).expanduser().read_text() if file else text or self.args.reason or '')).encode()
+                   (Path(file).expanduser().read_text(encoding='utf-8') if file else text or self.args.reason or '')).encode()
         index = self.workspace / self._git(['rev-parse', '--git-path', 'index']).strip()
         tree_sha, tree_snapshot = git_snapshot(self.workspace)
-        data = {'action': action, 'uid': os.getuid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
+        data = {'action': action, 'uid': winplat.uid(), 'run_id': str(self.run_dir), 'item_uuid': self.state['item_uuid'],
                 'workspace': str(self.workspace), 'workitem': str(self.workitem), 'head': self._head_commit(),
                 'tree_sha256': tree_sha, 'workitem_sha256': hashlib.sha256(self.workitem.read_bytes()).hexdigest(),
                 'index_sha256': hashlib.sha256(index.read_bytes()).hexdigest(),
@@ -4569,7 +4837,7 @@ class Coordinator:
         intent = self.operator_intent('withdraw-findings', None, None, self.args.expect, required=True)
         rulings = self.state.setdefault('operator_rulings', [])
         ruling_id = f'O{len(rulings) + 1:03d}'
-        record = {'id': ruling_id, 'author': 'operator', 'uid': os.getuid(),
+        record = {'id': ruling_id, 'author': 'operator', 'uid': winplat.uid(),
                   'timestamp': datetime.now().astimezone().isoformat(),
                   'finding_ids': [row['id'] for row in rows], 'reason': self.args.reason, 'intent': intent,
                   'evidence': str(self.evidence / f'operator-ruling-{ruling_id}.json')}
@@ -4641,7 +4909,7 @@ class Coordinator:
             raise ValueError('reject requires exactly one of --text or --file')
         intent = self.operator_intent('reject', text, file, self.args.expect, required=True)
         if file:
-            feedback = Path(file).expanduser().read_text()
+            feedback = Path(file).expanduser().read_text(encoding='utf-8')
             source = str(Path(file).expanduser().resolve())
         else:
             feedback = text or ''
@@ -4694,7 +4962,7 @@ class Coordinator:
         before any dispatch, so a change after this check is not silently taken into the next turn's baseline)."""
         verified = {}
         scratch = (receipt.get('environment_overrides') or {}).get('TMPDIR')
-        if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.run_dir / 'role-tmp':
+        if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.scratch_base / 'role-tmp':
             self._drop_scratch(Path(scratch))   # b295-f1: the uncertain turn's child is stopped before it is archived
         if receipt.get('vendor') == 'claude' and receipt.get('global_claude_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
@@ -4703,7 +4971,7 @@ class Coordinator:
             if changed:
                 pending = {'sequence': receipt['sequence'], 'after': changed}
                 if self.args.action == 'resume' and self.state.get('claude_uncertain_config_change') == pending:
-                    receipt['global_claude_ack'] = {'operator_uid': os.getuid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
+                    receipt['global_claude_ack'] = {'operator_uid': winplat.uid(), 'timestamp': datetime.now().astimezone().isoformat(), 'before': receipt['global_claude_before'], 'after': changed}; self.state.pop('claude_uncertain_config_change', None)
                 else: self.state['claude_uncertain_config_change'] = pending; self.hold('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain'); raise RuntimeError('global Claude config changed during uncertain turn; inspect, then resume --retry-uncertain')
             verified.update({key: current.get(key, {}).get('sha256') for key in receipt['global_claude_before']})
         if receipt.get('vendor') == 'codex' and receipt.get('global_codex_before'):
@@ -4720,7 +4988,7 @@ class Coordinator:
                            and trust_entry_only_since_hash(self.global_codex_home / 'config.toml', receipt['global_codex_before']['codex_config'], Path(receipt['workspace']), raw,
                                                            extra=list(concurrent_run_workspaces(receipt['workspace'], live=False))))   # FIELD-22: the operator inspected it
                 if not allowed: self.hold('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name); raise RuntimeError('global Codex config changed during uncertain turn; inspect, then resume --acknowledge-codex-trust ' + self.run_dir.name)
-                self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': os.getuid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
+                self.state.setdefault('codex_trust_acknowledgments', []).append({'sequence': receipt['sequence'], 'operator_uid': winplat.uid(), 'run_id': self.run_dir.name, 'timestamp': datetime.now().astimezone().isoformat(), 'workspace': receipt['workspace'], 'before': receipt['global_codex_before']['codex_config'], 'after': current['codex_config']['sha256']})
         if receipt.get('vendor') == 'gemini' and receipt.get('global_gemini_before'):   # ADR-21 G8: agy rewrites its own preferences
             current = global_config_snapshot(self.global_config_home, self.global_codex_home, gemini=True)   # in normal use: noted only
             if changed := {key: current[key]['sha256'] for key, value in receipt['global_gemini_before'].items() if current[key]['sha256'] != value}:
@@ -4850,7 +5118,7 @@ class Coordinator:
                '--setting-sources', '', '--settings', json.dumps(
                    self._claude_sandbox_settings(role), separators=(',', ':')), '--no-chrome',
                '--add-dir', str(self.context),
-               '--json-schema', json.dumps(json.loads(schema_path.read_text()), separators=(',', ':'))]
+               '--json-schema', json.dumps(json.loads(schema_path.read_text(encoding='utf-8')), separators=(',', ':'))]
         if role == 'author':
             # The Agent deny came from the S1 read-only lockdown; it has no purpose for a role
             # that may already edit and run Bash. Read-only roles keep it denied.
@@ -4887,6 +5155,8 @@ class Coordinator:
         cmd = [self.args.codex_bin, 'exec', '-m', model, '--json', '--output-schema', str(schema_path),
                '-c', f'model_reasoning_effort="{effort}"',
                '-c', 'approval_policy="never"', '-c', 'features.hooks=false', *CODEX_PLUGINS_OFF]
+        if winplat.IS_WINDOWS:
+            cmd += CODEX_WINDOWS_SANDBOX
         if role == 'author':
             cmd += self._author_sandbox_config_args()
         else:
@@ -4911,9 +5181,14 @@ class Coordinator:
         return cmd
 
     def command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
-        return vendor_entry({'claude': lambda: self._claude_command(role, schema_path, fresh, workspace),
-                             'codex': lambda: self._codex_command(role, schema_path, fresh),
-                             'gemini': lambda: self._gemini_command(role, schema_path, fresh)}, self._role_vendor(role))()
+        vendor = self._role_vendor(role)
+        command = vendor_entry({'claude': lambda: self._claude_command(role, schema_path, fresh, workspace),
+                                'codex': lambda: self._codex_command(role, schema_path, fresh),
+                                'gemini': lambda: self._gemini_command(role, schema_path, fresh)}, vendor)()
+        if winplat.IS_WINDOWS:   # gemini never reaches here on Windows: windows_refusal refuses it (ADR-21 amendment)
+            command[:1] = program_argv(self.state['operator_programs'][vendor + '_bin'])
+            winplat.check_command_line(command)
+        return command
 
     def _author_prompt(self) -> str:
         contract = self.author_control_contract()
@@ -5140,11 +5415,11 @@ class Coordinator:
                     'Rows already recorded as advisory may stay still_open without that alone being a reason for REVISE; '
                     'approve when the rewritten plan is the same in substance. '
                     'Return REVISE if the scope, steps, or verification changed.\n## Previously accepted plan\n'
-                    + (approved.read_text() if approved.is_file() else '(unavailable)'))
+                    + (approved.read_text(encoding='utf-8') if approved.is_file() else '(unavailable)'))
             if self._role_vendor(role) in ('codex', 'gemini'):   # ADR-21: as for Codex, agy gets the PLAN inputs inline
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
-                          '## Work item content\n' + (self.context / 'workitem.md').read_text() +
-                          '\n## Plan content\n' + (self.context / 'plan.md').read_text())
+                          '## Work item content\n' + (self.context / 'workitem.md').read_text(encoding='utf-8') +
+                          '\n## Plan content\n' + (self.context / 'plan.md').read_text(encoding='utf-8'))
             return '\n'.join([
                 f'Role: reviewer, persistent plan-only reviewer. Phase: PLAN. {fresh_note}',
                 f'Work item: {self.context / "workitem.md"}',
@@ -5178,7 +5453,7 @@ class Coordinator:
         ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role)
 
     def _gate_prompt(self, snapshot: str) -> str:
-        template = Path(self.args.gate_prompt).read_text()
+        template = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         filled = template.replace('${REVIEW_TARGET_DESC}', str(self.context / 'workitem.md')).replace(
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
@@ -5274,7 +5549,7 @@ class Coordinator:
         reviewer-commands block), longest first. An absolute path in one may name a vendor or a review word."""
         frozen = ((getattr(self, 'state', None) or {}).get('config') or {}).get('workitem_reviewer_commands')
         if frozen is None:
-            try: frozen = workitem_reviewer_commands(self.workitem.read_text())
+            try: frozen = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
             except (OSError, ValueError): frozen = []
         commands = {c.strip() for c in (self.args.test_command, *(self.args.reviewer_command or ()), *frozen) if c and c.strip()}
         return sorted(commands, key=len, reverse=True)
@@ -5298,7 +5573,7 @@ class Coordinator:
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
 
         try:
-            workitem_text = (self.context / 'workitem.md').read_text()
+            workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
         except OSError:
             workitem_text = ''   # No frozen work item yet at run creation.
 
@@ -5342,7 +5617,7 @@ class Coordinator:
                     if status.startswith(('R', 'C')):
                         new_path = fields.pop(0)
                         if status.startswith('R'): renames[new_path] = old_path
-            mirrors = (str(self.internal / 'last-review'), str(self.internal / 'current-review'))
+            mirrors = (str(self.mirror_base / 'last-review'), str(self.mirror_base / 'current-review'))
             for section in re.split(r'(?m)^(?=diff --git )', content):
                 old = new = None
                 header = section.split('\n@@', 1)[0]
@@ -5449,7 +5724,12 @@ class Coordinator:
         """The review-only creation mirror whose content is user code (a scope-change successor keeps its parent's)."""
         record = self.state.get('review_only') or {}
         mirror = record.get('history_mirror') or record.get('mirror')
-        return Path(mirror) if mirror else None
+        if not mirror:
+            return None
+        path = Path(mirror)
+        if self.mirror_base != self.internal and path.suffix == '.tar':
+            return self._extract_mirror(path, self.mirror_base / path.stem) if path.is_file() else None
+        return path
 
     def _review_start_paths(self) -> set:
         """FIELD-27: the paths in the creation mirror (empty for an ordinary run or a missing mirror)."""
@@ -5538,7 +5818,7 @@ class Coordinator:
             return []
         self.materialize_review_context()
         path = self.context / 'delta.patch'
-        hits = self._delta_history_hits(path.read_text() if path.is_file() else '')
+        hits = self._delta_history_hits(path.read_text(encoding='utf-8') if path.is_file() else '')
         if not hits:
             return []
         shown = ', '.join(f'{marker!r} at {where}' for where, marker in hits[:10])
@@ -5585,7 +5865,7 @@ class Coordinator:
         kind are written, never the value. One open row carries the current hit list; a clean scan closes it."""
         hits = leak_scan.scan_patch(self._delta_patch(raw=True)[0], self._git_unquote)
         workitem = self.context / 'workitem.md'
-        allow = leak_scan.allow_patterns(workitem.read_text(errors='replace') if workitem.is_file() else '')
+        allow = leak_scan.allow_patterns(workitem.read_text(encoding='utf-8', errors='replace') if workitem.is_file() else '')
         blocking = [hit for hit in hits if not leak_scan.exempt(hit['path'], allow)]
         exempted = [leak_scan.where(hit) for hit in hits if hit not in blocking]
         self.state['secret_scan'] = {'sequence': sequence, 'blocking': [leak_scan.where(hit) for hit in blocking],
@@ -5646,7 +5926,7 @@ class Coordinator:
         """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval (or, for a
         review-only run, which has no PLAN approval, on the texts it is about to write)."""
         for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
-            text = texts[label] if texts else path.read_text() if path.is_file() else ''
+            text = texts[label] if texts else path.read_text(encoding='utf-8') if path.is_file() else ''
             text = self._fresh_history_text('context/' + path.name, text, base)   # FIELD-23: as the gate scan
             if ids := sorted(set(LEDGER_ID_RE.findall(text))):
                 return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
@@ -5662,7 +5942,7 @@ class Coordinator:
         return oid
 
     def _parent_spec(self) -> dict:   # the scope-change parent's spec; its full validation comes later in __init__
-        try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text())
+        try: return json.loads((Path(self.args.supersedes).resolve() / 'evidence/successor-spec.json').read_text(encoding='utf-8'))
         except (OSError, ValueError): return {}
 
     def _review_report_args(self, saved: Optional[dict]) -> None:
@@ -5700,7 +5980,7 @@ class Coordinator:
             if self.args.reviewer_command:
                 raise ValueError('--no-test-command refuses --reviewer-command, including a reviewer_command list from the '
                                  'workspace or operator paired-session.json (a no-test report run allows no command)')
-            if workitem_reviewer_commands(self.workitem.read_text()):
+            if workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8')):
                 raise ValueError('--no-test-command refuses a work item that declares reviewer-commands')
         if (saved or {}).get('adversarial_gate', self.args.adversarial_gate) == 'off':
             raise ValueError('--review-report refuses --adversarial-gate off (the gate always runs in report mode)')
@@ -5808,7 +6088,7 @@ class Coordinator:
         changed = ''.join(f'{status}\t{review_scope_path(path)}\n' for status, path in zip(fields[0::2], fields[1::2]))
         if not changed and not untracked:
             raise ValueError(f'nothing to review: the workspace tree equals the review base {base[:12]}')
-        workitem = self.workitem.read_text()
+        workitem = self.workitem.read_text(encoding='utf-8')
         scope = ('# Review scope (review-only entry)\n\nNo plan was drafted or approved; review the change itself: the '
                  'workspace tree against the review base.\n\n'
                  f'Review base: {base}\nHEAD at the start: {head}\nTest command: {args.test_command or "none (no tests run in this review)"}\n\n'
@@ -5824,7 +6104,7 @@ class Coordinator:
         """Freeze the review-only start: the scope (as plan.md), the tree and index under review, a mirror of the tree, EXEC
         round 1 counted as the existing change, and the EXEC reviewer as the first dispatch."""
         atomic_text(self.context / 'plan.md', scope['text'])
-        self._mirror_workspace(mirror := self.internal / 'review-start')
+        mirror = self._capture_baseline('review-start')
         index = hashlib.sha256(self._git(['ls-files', '-s', '-z']).encode('utf-8', 'surrogateescape')).hexdigest()
         self.state.update(phase='EXEC', next='reviewer', exec_rounds=REVIEW_ONLY_EXISTING_CHANGE_ROUNDS,
                           base_commit=self.args.review_base, review_only={
@@ -5850,10 +6130,17 @@ class Coordinator:
         if not self.args.supersedes:
             return None
         try:
-            record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text()).get('review_only') or {}
+            record = json.loads((Path(self.args.supersedes).resolve() / 'state.json').read_text(encoding='utf-8')).get('review_only') or {}
         except (OSError, ValueError, AttributeError):
             return None
-        return record.get('history_mirror') or record.get('mirror')
+        mirror = record.get('history_mirror') or record.get('mirror')
+        if mirror and self.mirror_base != self.internal and Path(mirror).is_dir():
+            # A legacy parent keeps its expanded tree. The new-layout successor
+            # owns a persistent archive so later scratch cleanup cannot lose it.
+            archive = self.internal / 'history-start.tar'
+            self._archive_mirror(Path(mirror), archive)
+            return str(archive)
+        return mirror
 
     def _review_only_start_issue(self) -> Optional[str]:
         """Before the first EXEC review of a review-only run: the frozen scope and tree must be as created."""
@@ -5876,7 +6163,7 @@ class Coordinator:
         for name in ('workitem.md', 'plan.md'):
             path = self.context / name
             if path.is_file():
-                ids = sorted(set(LEDGER_ID_RE.findall(self._fresh_history_text(f'context/{name}', path.read_text()))))
+                ids = sorted(set(LEDGER_ID_RE.findall(self._fresh_history_text(f'context/{name}', path.read_text(encoding='utf-8')))))
                 if ids:
                     shown = ', '.join(ids[:5]) + (', …' if len(ids) > 5 else '')
                     if name == 'workitem.md':
@@ -5901,11 +6188,11 @@ class Coordinator:
             raise RuntimeError(f'{role} independence check rejected prompt leak: ' + ', '.join(details))
         # Inspect the literal launch inputs, not just the top-level prompt. Save
         # immutable copies outside context so a later audit can verify each launch.
-        sources = {'prompt': prompt, 'original-workitem': self.workitem.read_text()}
-        sources.update({f'context/{p.name}': p.read_text()
+        sources = {'prompt': prompt, 'original-workitem': self.workitem.read_text(encoding='utf-8')}
+        sources.update({f'context/{p.name}': p.read_text(encoding='utf-8')
                         for p in sorted(self.context.iterdir()) if p.is_file()})
         if role == 'gate':
-            sources['gate-template'] = Path(self.args.gate_prompt).read_text()
+            sources['gate-template'] = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         checked = {}
         for name, content in sources.items():
             matches = self._introduced_history(name, content)   # FIELD-23: repository text is not review history
@@ -6128,18 +6415,27 @@ class Coordinator:
                     rollout_stream.close()
                 return
 
+    @property
+    def scratch_base(self) -> Path:
+        # Objects built by older API callers/tests, like old states, retain the original layout.
+        return getattr(self, 'scratch_root', self.run_dir)
+
+    @property
+    def scratch_parent(self) -> Path:
+        return self.scratch_base if self.scratch_base != self.run_dir else self.run_dir.parent
+
     def _scratch_root(self, role: str) -> Optional[Path]:
         """b295-f1 FIELD-1: a fresh 0700 temp root under run_dir/role-tmp for one Codex read-only dispatch; never the workspace, never the
         author's roots (workspace, author-tmp), never shared. Under the run lease one dispatch runs at a time, so a leftover is stale.
         b296-f1b: role-tmp must be a real 0700 directory we own (never a link), and everything is created and removed through it no-follow."""
         if role not in READONLY_SCRATCH_ROLES or self._role_vendor(role) not in ('codex', 'gemini'):   # ADR-21 G5: agy as Codex
             return None
-        base = self.run_dir / 'role-tmp'
+        base = self.scratch_base / 'role-tmp'
         try: os.mkdir(base, 0o700)
         except FileExistsError: pass
         name = f"{self.state['sequence'] + 1:03d}-{role}"   # the sequence _invoke_once assigns
-        with self._role_tmp_fd() as base_fd:
-            for stale in os.listdir(base_fd):   # b296-f1c: a leftover is swept only once its turn's process group is confirmed gone
+        with self._role_tmp_fd() as base_fd:   # WI-WIN W4b: no dir_fd on Windows (base_fd is None); ordinary path calls there
+            for stale in (os.listdir(base) if winplat.IS_WINDOWS else os.listdir(base_fd)):   # b296-f1c: a leftover is swept only once its turn's process group is confirmed gone
                 try:
                     if not (match := re.fullmatch(r'(\d+)-[a-z-]+', stale)):
                         raise RuntimeError('its name carries no turn sequence')
@@ -6149,6 +6445,11 @@ class Coordinator:
                     self.hold(reason)
                     raise RuntimeError(reason) from exc
                 self._drop_scratch(base / stale)
+            if winplat.IS_WINDOWS:
+                os.mkdir(base / name)
+                if not winplat.real_dir(os.lstat(base / name)):
+                    raise RuntimeError('the new read-only role scratch is not a directory we own: ' + str(base / name))
+                return base / name
             os.mkdir(name, 0o700, dir_fd=base_fd)
             info = os.stat(name, dir_fd=base_fd, follow_symlinks=False)
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
@@ -6165,35 +6466,43 @@ class Coordinator:
         never-started turn; no pid, EPERM or any other error is refused (b296-f1d)."""
         receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}, self.state.get('uncertain_active') or {}]
                         if row.get('sequence') == sequence), {})
-        pid = receipt.get('pid')
+        pid, job = receipt.get('pid'), receipt.get('job')   # WI-WIN: Windows receipts also name the turn's Job Object
         if not kill:   # b296-f1d: the sweep deletes only on an explicit ESRCH or a recorded never-started turn; any unknown state keeps it
             if type(pid) is not int and any(row.get('sequence') == sequence and row.get('child_created') is False
                                             for row in self.state.get('spawn_failures', [])):
                 return   # _invoke_once recorded that the CLI process was never created
-            if type(pid) is not int or pid <= 1:
+            if type(pid) is not int or pid <= 1 or (winplat.IS_WINDOWS and not job):
                 raise RuntimeError('no verifiable pid is recorded for that turn')
-            try: retry_killpg_eperm(pid)   # a null-signal probe; no signal is ever sent on this path
+            try: probe_group(pid, job)   # a null-signal probe; no signal is ever sent on this path
             except ProcessLookupError: return
             except OSError as exc: raise RuntimeError(f'the process group of that turn cannot be verified gone ({exc}; its pid may be reused)') from exc
             raise RuntimeError('the process group of that turn still answers (alive, or its pid reused)')
-        if type(pid) is not int or pid <= 1:
+        if type(pid) is not int or pid <= 1 or (winplat.IS_WINDOWS and not job):
             return   # no child was started
         deadline = time.monotonic() + 3
         while True:
-            try: retry_killpg_eperm(pid)
+            try: probe_group(pid, job)
             except ProcessLookupError: return
             except PermissionError: return   # macOS: a group of our own uid left only with unreaped zombies answers EPERM; a zombie cannot act
             except OSError as exc: raise RuntimeError('cannot verify that the read-only role process group stopped; scratch kept') from exc
             if time.monotonic() > deadline:
                 raise RuntimeError('the read-only role process group outlived its turn; scratch kept')
-            try: os.killpg(pid, signal.SIGKILL)
+            try: winplat.kill_group(pid, job)
             except OSError: pass
             time.sleep(0.05)
 
     @contextmanager
     def _role_tmp_fd(self):
         """b296-f1b: an O_NOFOLLOW handle on run_dir/role-tmp, refused unless it is a real directory owned by us with mode 0700."""
-        base = self.run_dir / 'role-tmp'
+        base = self.scratch_base / 'role-tmp'
+        if winplat.IS_WINDOWS:   # WI-WIN W4b: no O_DIRECTORY / O_NOFOLLOW / dir_fd; a real directory (no link, no reparse point)
+            # instead of 0700 + uid, wherever the run dir lives (a run dir on another drive works); yields None, not an fd
+            try: real = winplat.real_dir(os.lstat(base))
+            except OSError as exc: raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {exc}') from exc
+            if not real:
+                raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {base}')
+            yield None
+            return
         try: fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
         except OSError as exc: raise RuntimeError(f'run_dir/role-tmp is not a real directory (a link or another type is refused): {exc}') from exc
         try:
@@ -6207,12 +6516,19 @@ class Coordinator:
     def _drop_scratch(self, root: Path) -> None:
         """Remove one scratch root fd-relative and never following a link: a link inside is removed as a link; a leftover in role-tmp
         that is not a real directory we own is refused (b296-f1b)."""
-        if root.parent != self.run_dir / 'role-tmp':
+        if root.parent != self.scratch_base / 'role-tmp':
             raise RuntimeError('refusing to remove a path outside role-tmp: ' + str(root))
         if not os.path.lexists(root.parent):
             return   # R1 LOW-1: no role-tmp, nothing to remove (a link or another type there is still refused below)
         try:
             with self._role_tmp_fd() as base_fd:
+                if winplat.IS_WINDOWS:   # WI-WIN W4b: path-based; a link or reparse point inside is removed as itself, never entered
+                    try: info = os.lstat(root)
+                    except FileNotFoundError: return
+                    if not winplat.real_dir(info):
+                        raise RuntimeError(f'unexpected entry in run_dir/role-tmp, refused (never followed): {root.name}; inspect and remove it by hand')
+                    winplat.remove_tree(root)
+                    return
                 try: info = os.stat(root.name, dir_fd=base_fd, follow_symlinks=False)
                 except FileNotFoundError: return
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
@@ -6372,10 +6688,10 @@ class Coordinator:
         if self._role_vendor(role) == 'codex':
             capability = self.codex_capabilities(active_workspace)
             if capability['status'] != 'PASS':
-                raise RuntimeError('; '.join(capability['issues']))
+                raise RuntimeError(codex_capability_guard.refusal(capability, self.global_codex_home))
         if role == 'author' and self._role_vendor(role) == 'codex':
-            self.author_temp_dir.mkdir(parents=True, exist_ok=True)
-            env_overrides = {**(env_overrides or {}), 'TMPDIR': str(self.author_temp_dir)}
+            self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
         limit = self.args.max_invocations - self.state.get('q_reserved', 0)
         if self.state['config'].get('review_report'):
             limit = min(limit, self._report_budget())
@@ -6404,7 +6720,8 @@ class Coordinator:
         context_before = directory_digest(self.context)
         atomic_json(prefix.with_suffix('.snapshot-before.json'), {'digest': before, 'manifest': manifest})
         command = self.command(role, schema_path, fresh, active_workspace)
-        command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
+        if not winplat.IS_WINDOWS:
+            command[0] = self.state['operator_programs'][self._role_vendor(role) + '_bin']['path']
         if self._role_vendor(role) == 'codex' and ('-c', 'features.plugins=false') not in zip(command, command[1:]):   # rel210-fixCG:
             raise RuntimeError('Codex argv lacks -c features.plugins=false, so cached plugin bundles would not be inert')   # the guard's premise
         now = time.time()
@@ -6442,9 +6759,9 @@ class Coordinator:
         if receipt['vendor'] == 'gemini':
             self._record_gemini_version(receipt)
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
-        watched = (run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
+        watched = (run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
                    if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR') else None)
-        process = None
+        process = job = None
         try:
             with stdout_path.open('wb') as out, stderr_path.open('wb') as err:
                 # Count durably before entering Popen: a crash during Popen is
@@ -6458,14 +6775,15 @@ class Coordinator:
                 self.save()
                 DETACH_TURN['spawning'] = True   # detach: a stop in this span waits until the group is known (no signal mask:
                 try:                              # a child would inherit it and could not be terminated)
-                    process = subprocess.Popen(command, cwd=active_workspace, env=env, stdin=subprocess.PIPE,
-                                               stdout=out, stderr=err, start_new_session=True)
+                    process, job = winplat.spawn_group(command, f'{self.run_dir.name}-{seq:03d}', cwd=active_workspace,
+                                                       env=env, stdin=subprocess.PIPE, stdout=out, stderr=err)
                     DETACH_TURN['group'] = process.pid
                 finally:
                     DETACH_TURN['spawning'] = False
                     if DETACH_TURN.pop('stop', False):   # a stop noted while spawning: kill the new group, unwind below
                         stop_turn_group()
                 receipt['pid'] = process.pid
+                if job: receipt['job'] = job   # WI-WIN: Windows only; resume finds the tree by this name
                 self.state['active'] = receipt
                 self.save()
         except BaseException as exc:
@@ -6478,7 +6796,7 @@ class Coordinator:
                 except BaseException:
                     pass
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    winplat.kill_group(process.pid, job)
                 except OSError:
                     pass
                 try:
@@ -6514,10 +6832,11 @@ class Coordinator:
                                          args=(stdout_path, receipt, usage_stop), daemon=True)
         usage_monitor.start()
         try:
-            process.communicate(gemini_stdin(prompt) if receipt['vendor'] == 'gemini' else prompt.encode(), timeout=timeout_seconds)
+            wait_role_turn(process, gemini_stdin(prompt) if receipt['vendor'] == 'gemini' else prompt.encode(),
+                           stdout_path, timeout_seconds, receipt, job)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                winplat.kill_group(process.pid, job)
             except ProcessLookupError:
                 pass
             except OSError:
@@ -6532,7 +6851,7 @@ class Coordinator:
             except BaseException:
                 pass
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                winplat.kill_group(process.pid, job)
             except OSError:
                 pass
             try:
@@ -6544,10 +6863,17 @@ class Coordinator:
             DETACH_TURN['group'] = None   # reaped (or being re-raised after its group was killed)
             usage_stop.set()
             usage_monitor.join()
+            # The child has been reaped on normal, timeout, completion-kill and exception paths.
+            # Killing it releases any blocked writer before we close the pipe here.
+            if getattr(process, 'stdin', None):
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
-        after_inodes = run_dir_inodes(self.run_dir, {self.run_dir / 'role-tmp'}, prefix) if watched is not None else None   # before the coordinator writes again
+        after_inodes = run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp'}, prefix) if watched is not None else None   # before the coordinator writes again
         control_after = git_control_state(snapshot_workspace, control_dirs)[1] if role == 'author' else {}
         control_changed = sorted(k for k in {*control_before, *control_after} if control_before.get(k) != control_after.get(k))
         unreadable = control_before.get('!unreadable') or control_after.get('!unreadable')
@@ -6628,7 +6954,9 @@ class Coordinator:
                     warning = changes['warnings'][0] + ': ' + str(active_workspace)
                     receipt['global_config_warning'] = warning
                     print('WARNING: ' + warning)
-            if process.returncode:
+            completion_exit = receipt.get('exit_after_completion', {})
+            if process.returncode and not (completion_exit.get('killed') and
+                                           completion_exit.get('terminal_type') in ('turn.completed', 'result')):
                 error_text = read_text_tail(stderr_path)
                 output_text = read_text_tail(stdout_path)
                 limit = (None if process.returncode <= 0 or receipt.get('timed_out', False) else
@@ -6852,7 +7180,7 @@ class Coordinator:
         """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
-            (self.context / 'plan.md').read_text(), self.args.test_command,
+            (self.context / 'plan.md').read_text(encoding='utf-8'), self.args.test_command,
             ' '.join(filter(None, [self._docs_reserved_note(), LONG_COMMAND_RULE])),
             bool(self.state.get('review_only'))) + self.operator_rulings_prompt('author'))   # V317-B3
         self.render(result, 'finisher', 'FINISH')
@@ -6892,7 +7220,7 @@ class Coordinator:
                 raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
             if continued:
                 try:
-                    manifest = json.loads((self.evidence / f"{previous['request_id']}-docs-base.json").read_text())
+                    manifest = json.loads((self.evidence / f"{previous['request_id']}-docs-base.json").read_text(encoding='utf-8'))
                 except (OSError, ValueError) as exc:
                     raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
             owned = {**self._docs_owned(), **(previous['docs_written'] if continued else {})}
@@ -6905,7 +7233,7 @@ class Coordinator:
                                    ', '.join(bad) + '; restore it or abort')   # the writer would write through it
             atomic_json(base_file, manifest)
         try:   # bound to the POLISH-Q-approved tree before the writer runs
-            base = json.loads(base_file.read_text())
+            base = json.loads(base_file.read_text(encoding='utf-8'))
         except (OSError, ValueError) as exc:
             raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
         if hashlib.sha256(json.dumps(base, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest() != request['candidate_oid']:
@@ -6913,7 +7241,7 @@ class Coordinator:
         def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
             self._docs_budget()
             return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
-                                                  self.run_dir.name, self.workitem.read_text()) + self.operator_rulings_prompt('author')   # V317-B3
+                                                  self.run_dir.name, self.workitem.read_text(encoding='utf-8')) + self.operator_rulings_prompt('author')   # V317-B3
         result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
@@ -6978,7 +7306,7 @@ class Coordinator:
         findings = worktree_lifecycle.normalized_findings('docs-reviewer', answer['full_review'], 'docs reviewer')
         blocking = [row for row in findings if row['severity'] in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
-            raise RuntimeError(f"docs reviewer returned {answer['status']} without a usable review; resume reviews again")
+            raise RuntimeError(unusable_review('docs reviewer', answer) + '; resume reviews again')
         if not (observed := self._observed_test(answer)):
             cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
             raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
@@ -7039,7 +7367,7 @@ class Coordinator:
     def _security_script(self, script: str, *args: str) -> subprocess.CompletedProcess:
         try:
             return subprocess.run([sys.executable, str(HERE.parent / 'scripts' / script), '--repo', str(self.workspace),
-                                   *args], cwd=self.workspace, capture_output=True, text=True, errors='replace', timeout=600)
+                                   *args], cwd=self.workspace, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
         except (OSError, subprocess.SubprocessError) as exc:   # a timeout or a missing interpreter HOLDs
             raise RuntimeError(f'{script} could not run: {exc}') from exc
 
@@ -7231,7 +7559,7 @@ class Coordinator:
         diff = self._git(['diff', '--no-ext-diff', '--no-textconv', '-U0', base, '--'])
         untracked = [path for path in self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0') if path]
         added = ''.join('+' + line + '\n' for path in untracked if (self.workspace / path).is_file()
-                        for line in (self.workspace / path).read_text(errors='replace').splitlines())
+                        for line in (self.workspace / path).read_text(encoding='utf-8', errors='replace').splitlines())
         return worktree_lifecycle.report_specialists(paths, config.get('review_aspects') or worktree_lifecycle.REPORT_ASPECTS,
                                                      worktree_lifecycle.touches_comment_lines(diff + added))
 
@@ -7329,7 +7657,7 @@ class Coordinator:
             findings = worktree_lifecycle.normalized_findings(owner, answer['full_review'], 'security reviewer')
             if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings and not any(
                     row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
-                raise RuntimeError(f"security reviewer returned {answer['status']} without a usable review")
+                raise RuntimeError(unusable_review('security reviewer', answer))
             ledger = copy.deepcopy(self.state['finding_ledger'])
             try:
                 if missing := self.apply_dispositions(answer.get('prior_findings') or [], sequence,
@@ -7387,7 +7715,7 @@ class Coordinator:
         proc = self._security_script('security_preflight.py', '--manifest', str(manifest), '--output', str(report),
                                      *([] if self.state['config'].get('review_report') else ['--run-changes-only']))
         try:
-            document = json.loads(report.read_text())
+            document = json.loads(report.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             document = {}
         result = {'exit': proc.returncode, 'status': document.get('status', 'unknown'), 'report': str(report),
@@ -7692,7 +8020,7 @@ class Coordinator:
         """§2 write boundary, as for FINISH: a reserved DOCS path or `.review-loop/` config is outside the writer's grant,
         so such a change is refused before the local check and the review (`rolled-back:boundary`)."""
         keep = Path(leg['capture'])
-        recorded = json.loads((keep / 'record.json').read_text())
+        recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         now = readonly_guard.state(self.workspace, keep)['tree']
         reserved = set(self._docs_allowlist()) - set(self._docs_owned())
         leg['files'] = sorted(self._git_names(['diff', '--name-only', '--no-renames', '-z', recorded['tree'], now]))   # F2
@@ -7703,7 +8031,7 @@ class Coordinator:
         """D09 F1: the test functions per changed test file (a plain pattern count, no discovery): Python `def test…`,
         Go `func Test…`, Rust `#[test]`, JS/TS `it(…)`/`test(…)`. A deleted file counts 0."""
         paths = sorted({*extra, *(p for p in self._changed_paths() if worktree_lifecycle.is_test_path(p))})
-        read = lambda path: (self.workspace / path).read_text(errors='replace') if (self.workspace / path).is_file() else ''
+        read = lambda path: (self.workspace / path).read_text(encoding='utf-8', errors='replace') if (self.workspace / path).is_file() else ''
         return {path: len(TEST_CASE_RE.findall(read(path))) for path in paths}
 
     def _test_cases_dropped(self, leg: dict) -> bool:
@@ -7711,7 +8039,7 @@ class Coordinator:
         if 'test_cases' not in leg:
             return False
         now = self._test_case_count(tuple(leg['test_cases']))
-        tree = json.loads((Path(leg['capture']) / 'record.json').read_text())['tree']   # the leg's input tree
+        tree = json.loads((Path(leg['capture']) / 'record.json').read_text(encoding='utf-8'))['tree']   # the leg's input tree
         before = sum(leg['test_cases'].values()) + sum(self._tree_test_cases(tree, path) for path in now if path not in leg['test_cases'])
         after = sum(now.values())   # a test file the writer newly touched counts on both sides
         if after < before:
@@ -7753,22 +8081,29 @@ class Coordinator:
         return False
 
     def _test_run(self, label: str) -> dict:
-        """§2 local test executor (no model call, no invocation): the explicitly configured test command under /bin/sh -c
+        """§2 local test executor (no model call, no invocation): the explicitly configured test command under /bin/sh -c (Git Bash -c on Windows)
         in the workspace, bounded by the run's --timeout, its output in evidence; only the exit code counts, and a run
         that changes the live tree (tracked or untracked non-ignored files) fails."""
         log = self.evidence / f"{self.state['sequence']:03d}-polish-q-{label}-test.log"
         before, code, reason = git_snapshot(self.workspace)[0], None, ''
         try:
             with open(log, 'wb') as out:
-                proc = subprocess.Popen(['/bin/sh', '-c', self.args.test_command], cwd=self.workspace, stdout=out,
-                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
-                                        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                shell = '/bin/sh'
+                if winplat.IS_WINDOWS:
+                    shell = winplat.git_bash()
+                    if not shell:
+                        raise FileNotFoundError('Git for Windows is required for local tests; install it or set '
+                                                'CLAUDE_CODE_GIT_BASH_PATH to its bash.exe')
+                # Non-login -c matches the Bash tool: do not source login profiles or replace the inherited PATH.
+                proc, job = winplat.spawn_group([shell, '-c', self.args.test_command], f'{self.run_dir.name}-test-{label}',
+                                                cwd=self.workspace, stdout=out, stderr=subprocess.STDOUT,
+                                                stdin=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
                 try:
                     code = proc.wait(timeout=self.args.timeout)
                 except subprocess.TimeoutExpired:
                     reason = f'timed out after {self.args.timeout}s'
                 finally:   # before the snapshot: no leftover child of the command (a test server) may change the tree later
-                    try: os.killpg(proc.pid, signal.SIGKILL)
+                    try: winplat.kill_group(proc.pid, job)
                     except (ProcessLookupError, PermissionError): pass   # the group is already gone
                     proc.wait()
         except OSError as exc:
@@ -7910,11 +8245,11 @@ class Coordinator:
     def _revert_paths(self, paths: list[str], keep: Path, sequence: int) -> str:
         """F2: put these paths back to base_oid's content from base_capture's tree (a path absent there is deleted) and
         verify them; the other writer's files stay. The diff is kept as evidence."""
-        recorded = json.loads((keep / 'record.json').read_text())
+        recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         base_tree, perms = recorded['tree'], recorded.get('perms') or {}
         diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-review-partial.workspace-change.diff"
         now = readonly_guard.state(self.workspace, keep)['tree']
-        diff.write_text(self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
+        winplat.write_text(diff, self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
         for path in paths:
             target = self.workspace / path
             if target.is_symlink() or target.exists():
@@ -7944,7 +8279,7 @@ class Coordinator:
         """§2: put the writer's input back from its capture and verify it; an unverified restore HOLDs through the
         existing unrestored path (resume refuses until the workspace is back)."""
         keep = Path(leg['capture'])
-        recorded = json.loads((keep / 'record.json').read_text())
+        recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-{writer}.workspace-change.diff"
         try:
             readonly_guard.evidence(self.workspace, recorded, keep, diff)
@@ -8050,7 +8385,7 @@ class Coordinator:
         answer = result['answer']
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not answer['full_review'] and not any(
                 row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
-            raise RuntimeError(f"specialist {name} returned {answer['status']} without a usable review")
+            raise RuntimeError(unusable_review(f'specialist {name}', answer))
         findings = worktree_lifecycle.normalized_findings(name, answer['full_review'])   # validate before any ledger write
         if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
                                               [row['id'] for row in owned], owner):
@@ -8220,7 +8555,7 @@ class Coordinator:
             self.render(shadow, 'shadow', phase)
             if self.state['config'].get('review_report') and shadow['answer']['status'] == 'HOLD':
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold('shadow HOLD')
+                self.hold(hold_explanation('shadow HOLD', shadow_rows, shadow['answer'].get('self_run_evidence')))
                 return
         limit = self.plan_round_limit() if phase == 'PLAN' else self.exec_round_limit()
         at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
@@ -8295,7 +8630,7 @@ class Coordinator:
             if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: not APPROVE
                 return
             self.state['pending_reviewer_result_sequence'] = None
-            self.hold('reviewer HOLD')
+            self.hold(hold_explanation('reviewer HOLD', persistent_findings, answer.get('self_run_evidence')))
             return
         if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and not (
                 self.args.test_command is None and self.state['config'].get('review_report')):   # LG2-b2: a static approval
@@ -8591,7 +8926,7 @@ class Coordinator:
             return {'label': label, 'status': 'CONTRACT-FAIL', 'reason': str(exc),
                     'expected': 'allowed' if expected_allowed else 'denied',
                     'sandbox_overrides': self._author_sandbox_overrides(), 'returncode': None}
-        args = [self.state['operator_programs']['codex_bin']['path'],
+        args = [*program_argv(self.state['operator_programs']['codex_bin']),
                 'sandbox', '--log-denials', '-C', str(workspace),
                 *profile_args, *self._author_sandbox_config_args(), '--', *command]
         outcome = {'label': label, 'command': shlex.join(command), 'argv': args,
@@ -8603,7 +8938,7 @@ class Coordinator:
                    'policy_observed': False, 'cleanup_ok': True, 'stdout': '', 'stderr': ''}
         try:
             source = self._codex_config_bytes()
-            with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.run_dir) as sandbox_home:
+            with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.scratch_base) as sandbox_home:
                 copied = Path(sandbox_home) / 'config.toml'
                 if copied.write_bytes(source) != len(source) or copied.read_bytes() != source:
                     raise OSError('synthetic config copy differs from source')
@@ -8612,7 +8947,7 @@ class Coordinator:
                 outcome['copy_config_sha256'] = hashlib.sha256(copied.read_bytes()).hexdigest()
                 result = subprocess.run(args, cwd=workspace,
                     env={**self._author_environment(), 'CODEX_HOME': sandbox_home},
-                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                    text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             outcome.update({'returncode': result.returncode,
                             'stdout': result.stdout[-OUTPUT_TAIL_CHARS:],
                             'stderr': result.stderr[-OUTPUT_TAIL_CHARS:]})
@@ -8660,8 +8995,9 @@ class Coordinator:
             # V322-PROBE: verify against the real context before swapping it; _invoke_once skips this Claude probe only.
             if self.state.get('config', {}).get('lifecycle_mode') == 'on':
                 self._verify_frozen_role_dispatch()
-            # Beside run_dir, not in it: the run_dir Edit deny, denyWrite and the P0-3a workspace refusal all cover run_dir.
-            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.run_dir.parent)).resolve()
+            # Outside run_dir: its Edit deny, denyWrite and workspace refusal cover it.
+            # New layouts keep the tree in external scratch, but still watch the shared run parent (FIELD-13).
+            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.scratch_parent)).resolve()
             ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
             for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
             (ws / 'tracked.txt').write_text('probe baseline\n')
@@ -8674,7 +9010,7 @@ class Coordinator:
             tmp = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
             if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
             table = cap.steps(base, tmp)
-            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip), None, None, self.state['sequence']
+            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,)), None, None, self.state['sequence']
             self.context = ctx                 # the argv's --add-dir, context deny rules and denyWrite bind to the probe context
             try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
             except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
@@ -8691,14 +9027,15 @@ class Coordinator:
                     except OSError: pass
                     time.sleep(0.2)
             elif result: raise RuntimeError('author probe process group is unverifiable')
-            first = cap.listing(base, base.parent, skip)
+            first = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,))
             time.sleep(cap.SETTLE_SECONDS * timeout_scale.env_factor())
-            second = cap.listing(base, base.parent, skip)
+            second = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,))
             rows = []
             if result:
                 argv = self.state['turns'][-1]['command']
                 out['rules'] = cap.rules_used(argv, ws, ctx)
-                try: out['claude_version'] = subprocess.run([argv[0], '--version'], text=True, capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
+                version_command = program_argv(self.state['operator_programs']['claude_bin']) if winplat.IS_WINDOWS else [argv[0]]
+                try: out['claude_version'] = subprocess.run([*version_command, '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
                 except (OSError, subprocess.SubprocessError): pass
                 rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
             got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
@@ -8716,7 +9053,7 @@ class Coordinator:
             if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
             if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
             out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
-            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == base.parent})   # FIELD-8: may be an operator file (a launcher log)
+            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == self.run_dir.resolve().parent})   # FIELD-8: may be an operator file (a launcher log)
             out['hardlink_refused'] = refused = cap.hardlink_refused(out['attempts'], ws, sentinel_ino)
             for label, row in out['attempts'].items():
                 if refused and 'hardlink' in label and label != 'link_hardlink': row['not_applicable'] = 'link denied'     # raw outcome kept
@@ -8770,8 +9107,8 @@ class Coordinator:
                     'st_ctime_ns': info.st_ctime_ns, 'st_nlink': info.st_nlink,
                     'listing': sorted(os.listdir(path))}
         try:
-            self.author_temp_dir.mkdir(parents=True, exist_ok=True)
-            with nullcontext(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.run_dir)) as base_text:
+            self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with nullcontext(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.scratch_base)) as base_text:
                 base = Path(base_text)
                 workspace = base / 'workspace'
                 workspace.mkdir()
@@ -9016,7 +9353,7 @@ class Coordinator:
         if Path(tempfile.gettempdir()).resolve() not in (Path('/tmp').resolve(), Path('/private/tmp')):
             roots['user_tmp'] = Path(tempfile.gettempdir())
         targets = {label: (root / name, 'printf probe > ' + shlex.quote(str(root / name))) for label, root in roots.items()}
-        targets['role_tmp'] = (self.run_dir / 'role-tmp' / name, f'printf probe > "$TMPDIR/../{name}"')
+        targets['role_tmp'] = (self.scratch_base / 'role-tmp' / name, f'printf probe > "$TMPDIR/../{name}"')
         source = self.run_dir / ('paired-session-link-source-' + tag)
         source.write_text('link source\n')
         targets['hardlink'] = (source, f'ln {shlex.quote(str(source))} "$TMPDIR/paired-session-link-probe"')
@@ -9195,7 +9532,7 @@ class Coordinator:
                 # Provider CLIs start a new session, making the recorded leader
                 # pid the group id. This detects remaining members of that group;
                 # detached descendants are outside this check.
-                retry_killpg_eperm(pid)
+                probe_group(pid, uncertain.get('job'))
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError):
@@ -9387,6 +9724,8 @@ class Coordinator:
 
     def drive(self) -> str:
         refuse_removed_options(self.args)
+        if issue := self._missing_review_start_issue():
+            return self.hold(issue)
         # The one entry of every real author dispatch (run, resume, reject): author_turn
         # is reachable only from _drive_loop, which only drive() calls.
         # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
@@ -9455,6 +9794,8 @@ class Coordinator:
                              + (f": {self.state.get('hold_reason')}" if self.state['status'] == 'HOLD' else ''))
         if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
         if self.state['status'] == 'REPORTED': return 'REPORTED'   # LG2-a3: terminal
+        if issue := self._missing_review_start_issue():
+            return self.hold(issue)
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
                                   bool(self.state.get('uncertain_active') or self.state.get('active')))
         if self.args.acknowledge_codex_trust:
@@ -9494,13 +9835,13 @@ class Coordinator:
             self.write_usage()
             return 'HOLD'
         pid = uncertain.get('pid') if uncertain else None
-        if uncertain and (type(pid) is not int or pid <= 1 or pid > 2**31 - 1):
+        if uncertain and (type(pid) is not int or pid <= 1 or pid > 2**31 - 1 or (winplat.IS_WINDOWS and not uncertain.get('job'))):
             return self.hold('uncertain CLI receipt has no verifiable pid; process existence cannot be verified; operator/manual resolution is required')
         if type(pid) is int:
             try:
                 # Each provider CLI starts a new session, so its pid is also the
                 # process-group id. Check the group to catch surviving descendants.
-                retry_killpg_eperm(pid)
+                probe_group(pid, uncertain.get('job'))
             except ProcessLookupError:
                 pass
             except (OSError, OverflowError):
@@ -9920,6 +10261,33 @@ def restores_run(args: argparse.Namespace) -> bool:
     return args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
 
 
+def windows_refusal(args: argparse.Namespace) -> Optional[str]:
+    """WI-WIN D1/D2: what native Windows does not support, refused before any lease, run dir, state write or model turn.
+    None on POSIX. A saved run counts as strict as the Coordinator reads it (anything but efficient); an unreadable state is
+    left to the Coordinator's own report."""
+    if not winplat.IS_WINDOWS:
+        return None
+    if args.detach:
+        return '--detach is not supported on Windows; run the command in the foreground'
+    if args.action == 'permission-probe':
+        return ('permission-probe is not supported on Windows: it verifies the Claude Code Bash sandbox, which native Windows '
+                'does not have; the default efficient mode needs no probe')
+    if args.safety_mode == 'strict' and args.action not in ('status', 'abort', 'stop'):   # W4a r2: inspect / end a run stays usable
+        return ('strict safety mode (--strict, or safety_mode "strict" in the --config profile) is not supported on Windows: '
+                'Claude Code has no Bash sandbox there; use the default efficient mode')
+    try: config = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config') if restores_run(args) else None
+    except (OSError, ValueError, AttributeError): config = None
+    if isinstance(config, dict) and config.get('safety_mode', 'strict') != 'efficient':
+        return ('strict safety mode is not supported on Windows: this run was created strict; continue it on macOS, '
+                'or abort it and start a new run in the default efficient mode')
+    saved = argparse.Namespace(**config) if isinstance(config, dict) else args   # a saved run's frozen vendors count too
+    if args.action not in ('status', 'abort', 'stop') and 'gemini' in (   # ADR-21 amendment: gemini is not part of ADR-20
+            *vendor_by_role(saved).values(), *vendor_by_role(args).values()):
+        return ('a gemini role is not supported on Windows: the agy adapter (ADR-21) is macOS-only; choose codex or claude '
+                'for the reviewer and gate, or run on macOS')
+    return None
+
+
 def validate_allowed_models(allowed) -> None:
     if allowed is not None and not (
             isinstance(allowed, dict) and set(allowed) <= set(VENDORS) and all(
@@ -9966,7 +10334,7 @@ def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def codex_cli_semver(binary: str) -> Optional[tuple]:
-    try: proc = subprocess.run([binary, '--version'], text=True, capture_output=True, stdin=subprocess.DEVNULL,
+    try: proc = subprocess.run([*program_argv(binary), '--version'], text=True, encoding='utf-8', capture_output=True, stdin=subprocess.DEVNULL,
                                timeout=10 * timeout_scale.env_factor())
     except (OSError, subprocess.SubprocessError): return None
     out = proc.stdout if proc.returncode == 0 else ''
@@ -9987,6 +10355,48 @@ def refuse_default_codex_model_on_old_cli(args: argparse.Namespace, codex_path: 
 
 
 CLAUDE_CLI_ALIASES = {'default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan', 'opus[1m]', 'sonnet[1m]'}
+
+
+def prepare_run_directory(workspace: Path, run_dir: Path, create_ignore: bool = False) -> None:
+    """RR1: only the ignored .review-loop/runs subtree may hold in-workspace state."""
+    workspace, run_dir = workspace.resolve(), run_dir.resolve()
+    allowed = workspace / '.review-loop' / 'runs'
+    inside = run_dir == workspace or workspace in run_dir.parents
+    if inside and allowed not in run_dir.parents:
+        raise ValueError('--run-dir must be outside --workspace (or use gitignored .review-loop/runs/)')
+    runs = next((p for p in run_dir.parents if p.name == 'runs' and p.parent.name == '.review-loop'), None)
+    repo = git_work_tree_root(runs) if runs else None
+    if create_ignore and repo is not None:
+        ignore = repo / '.review-loop' / '.gitignore'
+        ignore.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with ignore.open('x', encoding='utf-8', newline='\n') as stream:
+                stream.write('*\n!config.md\n')
+        except FileExistsError:
+            pass
+    if inside or create_ignore and repo is not None:
+        owner = workspace if inside else repo
+        proc = subprocess.run(candidate_tree.git_command('check-ignore', '-q', '--', str(run_dir), cwd=owner),
+                              cwd=owner, env=candidate_tree.git_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise ValueError(f'{run_dir} is not gitignored in {owner}')
+
+
+def new_scratch_root(run_dir: Path) -> Path:
+    """Stable across resume, private, and outside every Git work tree even with a repo-local TMPDIR."""
+    parents = [winplat.temp_root(), Path(tempfile.gettempdir())]
+    if not winplat.IS_WINDOWS:
+        parents.append(Path('/tmp'))
+    parent = next((p.resolve() for p in parents if git_work_tree_root(p) is None), None)
+    if parent is None:
+        raise ValueError('no scratch temp root outside a git work tree')
+    user_root = parent / ('review-loop-' + winplat.user_token())
+    root = user_root / hashlib.sha256(str(run_dir.resolve()).encode()).hexdigest()[:32]
+    for path in (user_root, root):
+        path.mkdir(mode=0o700, exist_ok=True)
+        if not winplat.check_private_dir(path):
+            raise ValueError(f'scratch directory {path} must be private (0700)')
+    return root
 
 
 def git_work_tree_root(path: Path) -> Optional[Path]:
@@ -10058,7 +10468,7 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
         return p
     writable_profile = _author_writable_profile(config_path, workspace, known.run_dir)   # decided before reading
     try:
-        values = json.loads(config_path.read_text())
+        values = json.loads(config_path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f'cannot read paired-session config {config_path}: {exc}') from exc
     if not isinstance(values, dict):
@@ -10134,7 +10544,7 @@ def status_brief(run_dir: Path, count: int) -> int:
         try: print(progress_line(json.loads(line))); shown += 1
         except (ValueError, KeyError, TypeError): continue
     if not shown: print('no progress events yet')
-    try: written = json.loads((run_dir / 'state.json').read_text()).get('ignored_config_written')
+    try: written = json.loads((run_dir / 'state.json').read_text(encoding='utf-8')).get('ignored_config_written')
     except (OSError, ValueError, AttributeError): written = None
     if written:   # F3
         print('WARNING: ignored executable-config files written by the author: ' + ', '.join(written))
@@ -10145,7 +10555,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
     if args.action == 'status':
-        return print((Path(args.run_dir) / 'state.json').read_text()) or 0
+        return print((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')) or 0
     if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
         args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)
@@ -10170,7 +10580,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             and not os.environ.get('CODEX_HOME')):   # HYGIENE-1: the 2026-10-06 P0 cause (CODEX_HOME left unset); a warning only
         print('WARNING: CODEX_HOME is unset, so Codex uses the default ~/.codex: concurrent Codex runs on the default home write '
               'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
-    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.run_dir)):   # FIELD-28, a warning only
+    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.scratch_base)):   # FIELD-28, a warning only
         print(f'WARNING: the run directory {co.run_dir} is inside the git repository {repo}; tools and test suites that refuse '
               'scratch space inside a repository may fall back to /tmp, which the Codex read-only sandbox denies. Put the run root '
               'outside any repository.', file=sys.stderr)
@@ -10276,6 +10686,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
                   if co.state.get('active') or co.state.get('uncertain_active') else '')
         co.hold('aborted by operator' + suffix)
+        co._cleanup_scratch()
         print('HOLD: ' + co.state['hold_reason'])
         return 2
     if args.action == 'run' and co.state['config'].get('lifecycle_mode') == 'off' and co.state['config'].get('auto_commit'):
@@ -10292,6 +10703,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
 
 
 def main(argv=None) -> int:
+    winplat.configure_stdio()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     cli_parser = parser()
     if '-h' in raw_argv or '--help' in raw_argv:
@@ -10313,6 +10725,9 @@ def main(argv=None) -> int:
         return 2
     args = normalize_cli_paths(args)
     args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
+    if refusal := windows_refusal(args):   # WI-WIN: None on POSIX
+        print('REFUSED: ' + refusal)
+        return 2
     if args.action == 'stop':   # detach: needs no lease; the detached command releases its own
         try: return stop_detached(args.run_dir)
         except ValueError as exc: print('REFUSED: ' + str(exc)); return 2
@@ -10337,7 +10752,7 @@ def main(argv=None) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         print('REFUSED: --scope-change requires note or reject')
         return 2
-    try: saved_null = restores_run(args) and saved_no_test(json.loads((Path(args.run_dir) / 'state.json').read_text()).get('config'))
+    try: saved_null = restores_run(args) and saved_no_test(json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config'))
     except (OSError, ValueError, AttributeError): saved_null = False   # the Coordinator reports an unreadable state itself
     if (saved_null or args.no_test_command) and any(a == '--test-command' or a.startswith('--test-command=') for a in raw_argv):
         print('REFUSED: --test-command conflicts with a no-test report run (--no-test-command)')
@@ -10361,7 +10776,7 @@ def main(argv=None) -> int:
                                                args.gate_prompt, args.config,
                                                gemini_bin=args.gemini_bin if 'gemini_bin' in required_programs(args) else None)
             if not issue:   # a binding issue keeps its own refusal; only the bound program is run, fake harness included
-                refuse_default_codex_model_on_old_cli(args, programs['codex_bin']['path'])
+                refuse_default_codex_model_on_old_cli(args, programs['codex_bin'] if winplat.IS_WINDOWS else programs['codex_bin']['path'])
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
@@ -10391,8 +10806,10 @@ def main(argv=None) -> int:
         return 2
     workspace = Path(args.workspace)
     run_dir = Path(args.run_dir)
-    if run_dir == workspace or workspace in run_dir.parents:
-        print('REFUSED: --run-dir must be outside --workspace')
+    try:
+        prepare_run_directory(workspace, run_dir, create_ignore=args.action == 'run' and not restores_run(args))
+    except ValueError as exc:
+        print('REFUSED: ' + str(exc))
         return 2
     if args.action == 'note' and not (run_dir / 'state.json').is_file():
         print('REFUSED: note requires an existing coordinator run')
@@ -10406,7 +10823,7 @@ def main(argv=None) -> int:
         except ValueError as exc:
             print('REFUSED: ' + str(exc))
             return 2
-        try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text())
+        try: workitem_commands = workitem_reviewer_commands(Path(args.workitem).read_text(encoding='utf-8'))
         except (OSError, ValueError): workitem_commands = []                    # the coordinator reports an unreadable work item itself
         saved = _saved_configured_commands(run_dir) if args.action in ('run', 'resume') and restores_run(args) else []   # they dispatch turns
         if issue := configured_command_issue(workspace, run_dir, [c for c in (args.test_command, *args.reviewer_command, *workitem_commands, *saved) if c]):

@@ -3,15 +3,22 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
+
+try:
+    from paired_session.internal_paths import INTERNAL_WORKSPACE_DIRS
+except ImportError:
+    from internal_paths import INTERNAL_WORKSPACE_DIRS
 try:
     from paired_session.candidate_tree import GIT_NO_EXEC
+    from paired_session import winplat
 except ImportError:
     from candidate_tree import GIT_NO_EXEC
+    import winplat
 def _raise(error):
     raise error
 def _git(root, *args):
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    command = ['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=/dev/null', '-C', str(root), *args]   # ls-files / rev-parse run no clean filter
+    command = ['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=' + winplat.devnull_path(), '-C', str(root), *args]   # ls-files / rev-parse run no clean filter
     env['GIT_ATTR_NOSYSTEM'] = '1'
     result = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE)
@@ -48,7 +55,9 @@ def snapshot(workspace):
     names = _git(root, 'ls-files', '--others', '-z')
     if any(row.startswith(b'160000 ') for row in _git(root, 'ls-files', '--stage', '-z').split(b'\0')):
         raise RuntimeError('submodule gitlink cannot be inventoried')
-    paths = {root / os.fsdecode(name) for name in names.split(b'\0') if name}
+    paths = {root / os.fsdecode(name) for name in names.split(b'\0') if name
+             and not any(os.fsdecode(name).rstrip('/') == prefix or os.fsdecode(name).startswith(prefix + '/')
+                         for prefix in INTERNAL_WORKSPACE_DIRS)}
     git_dir = Path(os.fsdecode(_git(root, 'rev-parse', '--absolute-git-dir').strip())).resolve()
     common = Path(os.fsdecode(_git(root, 'rev-parse', '--git-common-dir').strip()))
     common = (common if common.is_absolute() else root / common).resolve()

@@ -17,6 +17,13 @@ then write that printed directory out literally as `<bundle-dir>`:
 python3 <support-root>/scripts/read_protocol.py --runtime codex --stage entry-paired-session --output <bundle-dir>/protocol-codex-entry-paired-session.md
 ```
 
+On native Windows Codex runs commands in PowerShell, Python is `python` (or `py -3`) and `os.getuid` does not exist:
+print the bundle directory with
+`python -X utf8 -c "import getpass, os, re, tempfile, uuid; print(os.path.join(os.path.realpath(tempfile.gettempdir()), 'review-loop-protocol-' + (re.sub(r'[^A-Za-z0-9._-]', '_', os.environ.get('USERNAME') or getpass.getuser()) or 'user'), uuid.uuid4().hex[:12]).replace(os.sep, '/'))"`
+(the loader names the directory after the Windows user name), then run
+`python -X utf8 '<support-root>\scripts\read_protocol.py' --runtime codex --stage entry-paired-session --output '<bundle-dir>/protocol-codex-entry-paired-session.md'`.
+The Windows commands in this skill are best effort; the Claude Code entry is the tested Windows path.
+
 Resolve `<support-root>` to this plugin, not the task workspace. After exit 0,
 read the complete output file in bounded chunks and follow it; a missing,
 unreadable or incompletely read file is a failed stage A check, reported as
@@ -30,7 +37,7 @@ This file adds only the Codex host rules:
   execution failure: a declined or ungranted outside-sandbox approval: HOLD with
   the reason, on every entry and invocation (nothing falls back).
 - Outside-sandbox execution: the coordinator spawns provider CLIs and writes to
-  `$CODEX_HOME` outside the product workspace; execute each invocation below
+  the selected `$CODEX_HOME`; execute each invocation below
   with the host's full filesystem/network permission, outside the current
   Codex sandbox, and never inside the sandbox.
 - Long-command form: every invocation that can dispatch model turns
@@ -45,10 +52,18 @@ This file adds only the Codex host rules:
   stays ACTIVE; a report run ends in REPORTED. A probe's result is
   `RUN_DIR/permission-probe.json`; end the detached command only with `stop`
   (`paired_session/docs/detach.md`).
-- Run directory: `$CODEX_HOME/state/paired-session/runs/<task id>`, created by
-  the first invocation, which writes the work item there. Resolve `PLUGIN_ROOT`
-  again inside each invocation. Write launcher logs under the run root's
-  `logs/` (`$CODEX_HOME/state/paired-session/logs/`), not next to the run dir.
+- Run directory: default to `<repo>/.review-loop/runs/<UUID>/`, where `<repo>` is the main
+  checkout resolved by `git rev-parse --path-format=absolute --git-common-dir` and its parent
+  when it ends in `/.git`. A lane's output therefore lives in the main checkout.
+  Set `WORKSPACE` in the same Bash call that runs `project_paths.py`. On native Windows
+  PowerShell, set `$Workspace` in the same call that runs `project_paths.py`.
+  `scripts/project_paths.py` resolves this root and creates `.review-loop/.gitignore`
+  (`*`, `!config.md`) only when missing. Not a Git repo, a bare repo or a submodule/separate-git-dir checkout: report fallback to
+  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG uses `$HOME/.local/state`).
+  An explicit operator-chosen run dir replaces the RUN_DIR assignment below; existing runs resume at their original `--run-dir`, without migration.
+  The plugin does not create `CODEX_HOME`. Write launcher logs under the root's `logs/`.
+  Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x`
+  on the workspace while a run is active: it would delete the run.
   Read a launcher log's last lines only when a polled command ends without its
   final coordinator line (the shared contract's Work item section).
 - Default (efficient): no permission probe; the first invocation below starts
@@ -72,7 +87,8 @@ WORKSPACE='/absolute/path/to/the-selected-dedicated-worktree'
 WORKSPACE="$(cd "$WORKSPACE" && pwd -P)" || stage_a 'selected workspace does not exist'
 test "$(git -C "$WORKSPACE" rev-parse --show-toplevel)" = "$WORKSPACE" || stage_a 'selected workspace is not a Git worktree root'
 TASK_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-RUN_DIR="$CODEX_HOME/state/paired-session/runs/$TASK_ID"
+RUN_ROOT="$(python3 "$PLUGIN_ROOT/scripts/project_paths.py" "$WORKSPACE")" || stage_a 'cannot resolve the run root'
+RUN_DIR="$RUN_ROOT/runs/$TASK_ID"
 WORKITEM="$RUN_DIR/WORKITEM.md"
 mkdir -p "$RUN_DIR" || stage_a 'cannot create the run directory'
 cat > "$WORKITEM" <<'PAIRED_SESSION_WORKITEM' || stage_a 'cannot write the work item'
@@ -115,6 +131,52 @@ quoted. Exit 4 from the second invocation means the installed plugin changed
 or became unresolvable after the probe: report it as a HOLD (no fallback); the
 run was not started.
 
+Native Windows (PowerShell; best effort, the Claude Code entry is the tested Windows path): efficient only, so
+there is no second invocation; the coordinator refuses `--strict`, `permission-probe` and `--detach`. Git for
+Windows (Git Bash) must be installed, and the run root and the workspace stay out of OneDrive-synced folders. The
+first invocation becomes (same placeholders, same exit 3 rule; run the coordinator and every script through
+`python`, never by shebang):
+
+```powershell
+$ErrorActionPreference = 'Stop'
+function Stage-A($Reason) { Write-Output "stage A failure: $Reason"; exit 3 }
+$CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+$env:CODEX_HOME = $CodexHome
+if (-not (Test-Path -LiteralPath $CodexHome -PathType Container)) { Stage-A "CODEX_HOME $CodexHome is not an existing directory" }
+try { $Rows = @((codex plugin list --json --marketplace review-loop-marketplace | ConvertFrom-Json).installed | Where-Object { $_.pluginId -eq 'review-loop@review-loop-marketplace' -and $_.enabled }) } catch { $Rows = @() }
+if ($Rows.Count -ne 1) { Stage-A 'review-loop plugin is not installed and enabled exactly once' }
+$Version = [string]$Rows[0].version
+try { $Parsed = [version]$Version } catch { Stage-A "cannot parse installed review-loop version '$Version'" }
+if ($Parsed -lt [version]'3.3.0') { Stage-A "installed review-loop $Version predates native Windows support (3.3.0)" }
+Write-Output "VERSION=$Version"
+$PluginRoot = Join-Path $CodexHome "plugins\cache\review-loop-marketplace\review-loop\$Version"
+$Launcher = Join-Path $PluginRoot 'bin\paired-session'
+if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) { Stage-A 'paired-session launcher missing from installed plugin' }
+$Workspace = 'C:\absolute\path\to\the-selected-dedicated-worktree'
+try { $Workspace = (Resolve-Path -LiteralPath $Workspace).ProviderPath } catch { Stage-A 'selected workspace does not exist' }
+$Top = git -C $Workspace rev-parse --show-toplevel
+if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top) -ne [IO.Path]::GetFullPath($Workspace)) { Stage-A 'selected workspace is not a Git worktree root' }
+if (-not $RunDir) {
+  $RunRoot = python -X utf8 (Join-Path $PluginRoot 'scripts\project_paths.py') $Workspace
+  if ($LASTEXITCODE -ne 0) { Stage-A 'cannot resolve the run root' }
+  $RunDir = Join-Path $RunRoot ('runs\' + [guid]::NewGuid())
+}
+$WorkItem = Join-Path $RunDir 'WORKITEM.md'
+try { New-Item -ItemType Directory -Force -Path $RunDir | Out-Null } catch { Stage-A 'cannot create the run directory' }
+$WorkItemText = @'
+[Write the user's approved goal, acceptance criteria, scope, and verification here.]
+'@
+try { [IO.File]::WriteAllText($WorkItem, $WorkItemText.Replace("`r`n", "`n") + "`n", (New-Object Text.UTF8Encoding $false)) } catch { Stage-A 'cannot write the work item' }
+Write-Output "RUN_DIR=$RunDir"
+$TestCommand = '[verified project command, or the exact value from the profile]'
+python -X utf8 $Launcher run --workspace $Workspace --workitem $WorkItem --run-dir $RunDir --test-command $TestCommand --lifecycle-mode on
+exit $LASTEXITCODE
+```
+
+Add the review-only and review-pr options below to this block as to the POSIX one; a second quoted
+here-string writes `pr-pins.json` the same way as the work item. Windows PowerShell 5.1 does not pass a `"` inside an
+argument intact to `python`: keep `"` out of the test command and the option values, or use PowerShell 7.3 or later.
+
 A review-only request (the user asks to review an existing change, or the review-loop handoff of
 a code target) follows the shared contract's review-only entry: add `--review-only` (and
 `--base "$BASE"` only when the user named a base) to both invocations.
@@ -124,10 +186,13 @@ Add `--auto-commit false` too when the review-loop entry handed it over.
 
 A review-pr handoff (from the Codex `review-pr` skill, or the user asks paired-session to review a PR or
 ref) follows the shared contract's Review-PR entry.
-Host rules: the run root is `$CODEX_HOME/state/paired-session` (the materializer's `--root`); the
+Resolve the run root from the operator project before switching `WORKSPACE` to the clone.
+Host rules: the run root is the resolved `<repo>/.review-loop/` (or the reported state-root fallback) (the materializer's `--root`); the
 materializer reads through `gh` and the network, so run it as its own invocation outside the sandbox,
 with `PLUGIN_ROOT` resolved as in the first invocation, before the first invocation. In both
-invocations set `WORKSPACE` to the clone it printed (no input: the current worktree) and skip the
+invocations set `WORKSPACE` to the clone it printed (no input: the current worktree). In the first
+invocation replace the `RUN_ROOT` resolver (PowerShell: `$RunRoot`) with the absolute operator-project
+root resolved before materialization, so runs stay beside `pr/` rather than inside the clone. Skip the
 dedicated-worktree question, replace `--test-command "$TEST_COMMAND"` with `--no-test-command` unless
 the user confirmed a test command, and add `--review-only --review-report --auto-commit false`,
 `--base "$BASE"` (the printed `merge_base`; no input: only a base the user named),

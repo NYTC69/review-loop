@@ -1,0 +1,11 @@
+# Preserve committed bytes without EOL conversion, including sources beyond bin/ and scripts/.
+bin/paired-session -text
+*.py -text
+*.sh -text
+scripts/run-skill-lint -text
+*.json -text
+*.jsonl -text
+# Frozen role manifests and protocol loader input must retain their release bytes.
+*.md -text
+scripts/adversarial_gate_fallback_prompt.txt -text
+paired_session/windows-ci-modules.txt -text

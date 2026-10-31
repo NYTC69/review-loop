@@ -1,4 +1,5 @@
 """Operator diagnostics and timeout recovery, using local fake CLIs only."""
+import io
 import json
 import subprocess
 import sys
@@ -117,10 +118,13 @@ class OperatorFailureTests(unittest.TestCase):
             pid = 12345
             returncode = None
 
-            def communicate(self, *args, **kwargs):
-                raise subprocess.TimeoutExpired('fake-cli', kwargs['timeout'])
+            def __init__(self):
+                self.stdin = io.BytesIO()
 
-            def wait(self):
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    elapsed[0] += timeout   # simulate each timed wait without sleeping
+                    raise subprocess.TimeoutExpired('fake-cli', timeout)
                 self.returncode = -9
                 return -9
 
@@ -132,11 +136,14 @@ class OperatorFailureTests(unittest.TestCase):
             kwargs['stderr'].write(b'401 Unauthorized\n')
             return TimeoutProcess()
 
+        real_monotonic = rc.time.monotonic
         for mode in ('off', 'on'):
             with self.subTest(mode=mode):
+                elapsed = [0]
                 co = self.failing_coordinator(mode, 'codex')
                 co.args.timeout = 17
-                with patch.object(rc.subprocess, 'Popen', side_effect=popen), patch.object(rc.os, 'killpg'):
+                with patch.object(rc.subprocess, 'Popen', side_effect=popen), patch.object(rc.os, 'killpg'), \
+                        patch.object(rc.time, 'monotonic', side_effect=lambda: real_monotonic() + elapsed[0]):
                     receipt = self.assert_hold(co, 'CLI exit -9 (timed out after 17 s)')
                 self.assertTrue(receipt['timed_out'])
 

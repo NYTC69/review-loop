@@ -4,6 +4,22 @@ A Claude Code and Codex plugin that drives a work item through the paired-sessio
 independent reviewer plan and implement it, an adversarial gate checks the result, then finish, quality polish, docs
 and security run with lifecycle on, and nothing is delivered until you accept.
 
+The plugin does not create `CODEX_HOME`. For an isolated home, provision
+`<repo>/.review-loop/codex-home/<lane>/` and select it before starting the session.
+Here `<repo>` is the main checkout: resolve `git rev-parse --path-format=absolute --git-common-dir`
+and take its parent when it ends in `/.git` and its parent is a work tree. Persistent run output defaults to
+`<repo>/.review-loop/runs/<UUID>/` (gitignored); transient scratch stays outside the repo. New-layout review baselines persist as
+`internal/{last-review,review-start,history-start}.tar` archives and are extracted into
+external `scratch_root/mirrors/` on demand; legacy runs retain their expanded internal mirrors.
+When the main checkout cannot be resolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), the run root
+falls back to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` with a notice.
+Explicit run directories win, and existing runs resume in place. Do not run `git clean -x`
+on the workspace while a run is active: it would delete the run.
+
+For JS/TS projects, exclude retained review-pr checkouts under `.review-loop/pr/` from test discovery:
+add `<rootDir>/.review-loop/` to Jest `testPathIgnorePatterns` and `modulePathIgnorePatterns`,
+and `.review-loop/**` to Vitest `exclude` (relative to its project root). These clones are full checkouts.
+
 ## Quick Start
 
 ```
@@ -13,9 +29,29 @@ and security run with lifecycle on, and nothing is delivered until you accept.
 
 Start a new session. The `/review-loop` command is now available in all your projects.
 
-**Requirements (default entry).** macOS only (Linux is not supported for now; ADR-15 amendment); `claude` and
+**Requirements (default entry).** macOS or native Windows (Linux, WSL included, is not supported; ADR-15
+amendment, ADR-20); `claude` and
 `codex` on PATH (codex-cli 0.159.2 or later); a dedicated git worktree for the task and a test command; an
-interactive session (a headless session needs `--detach`); one absolute `CODEX_HOME` per run.
+interactive session (a headless session needs `--detach`, macOS only); one absolute `CODEX_HOME` per run.
+
+**Native Windows (v3.3.0, ADR-20).** Supported in the default efficient mode, with Claude Code on Windows as the
+tested entry (the Codex skills' PowerShell commands are best effort). Prerequisites: Git for Windows (the coordinator
+runs the local test command with its Git Bash; set `CLAUDE_CODE_GIT_BASH_PATH` if it is not found), Python 3 as
+`python` or `py -3`, and Node.js when `claude` or `codex` is installed through npm. The skills run the coordinator as
+`python -X utf8 <plugin>/bin/paired-session`. Refused on Windows: `--strict` (and `"safety_mode": "strict"` in the operator
+profile), `permission-probe` and `--detach`. Claude Code has no Bash sandbox on native Windows, so the Claude roles
+run without it: read-only roles keep their exact command allowlist, Edit/Write denies and the post-turn workspace
+check, and Read deny rules cover the usual credential files (their Bash can still read them). Keep run directories
+and workspaces out of OneDrive-synced folders. Windows setup notes:
+- Git Bash: when Git is not under `C:\Program Files\Git` (a scoop install, say), set `CLAUDE_CODE_GIT_BASH_PATH` to
+  its `bin\bash.exe` and fully quit the Claude desktop app from the tray before reopening it; otherwise the desktop
+  session has no Bash tool.
+- The Claude Code CLI does not share the desktop app's login: run `claude /login` in a terminal once. The native
+  installer may not add `%USERPROFILE%\.local\bin` to PATH.
+- A machine with the Codex desktop app has MCP servers and `notify` in `~/.codex/config.toml`, which the coordinator
+  refuses: use a dedicated `CODEX_HOME` directory with its own `codex login`.
+- The coordinator runs Codex with the elevated Windows sandbox (`windows.sandbox="elevated"`); its first use may ask
+  for administrator approval. If Codex shell calls never return, its sandbox helper may be wedged; restart Windows to clear it.
 
 From v2.10.0 a fresh `/review-loop <work item>` without an `entry` key in
 `.review-loop/config.md` hands off to the paired-session coordinator (the default
@@ -35,7 +71,7 @@ profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
 
 **Safety modes (D-EFF).** Every role runs with the same OS sandboxes in both
-modes. `efficient`, the default, does not require a permission-probe PASS before
+modes (on native Windows the Claude roles have no Claude Code Bash sandbox, and only efficient runs). `efficient`, the default, does not require a permission-probe PASS before
 dispatch, and its evidence guard only records what it would have held. `strict`
 (`--strict`, or `"safety_mode": "strict"` in the operator profile; the
 workspace file cannot set it) also requires the probe PASS and lets the evidence
@@ -210,7 +246,7 @@ flowchart TD
   E -->|"new work / existing plan"| SA
   E -->|"code already written: review-only"| SA
   E -->|"review-pr: report only"| SA
-  SA["Stage A: macOS, CLIs, worktree, test command, WORKITEM.md"] --> M{"safety mode"}
+  SA["Stage A: macOS or Windows, CLIs, worktree, test command, WORKITEM.md"] --> M{"safety mode"}
   M -->|"efficient (default)"| RUN["coordinator run"]
   M -->|"--strict"| PB["permission-probe"] --> RUN
   RUN -->|"main pipeline"| PLAN["PLAN: author drafts, reviewer reviews; revise until approved"]
@@ -260,7 +296,8 @@ The coordinator prints one progress line per event (the role, its verdict and th
 - to resume after a HOLD, once you have answered or fixed what it names; at a PLAN or EXEC round-limit HOLD,
   `resume --add-rounds N` (1-10) continues the same run with N more rounds of that phase;
 - to abort the run (`abort`).
-A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it).
+A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it;
+macOS only, refused on Windows).
 
 ## Example: Rust repo
 
@@ -394,6 +431,10 @@ only where the operator profile or the CLI flags name it:
   global config: after a completed gemini turn, a change of only `trustedWorkspaces` or `model` (agy writes these
   itself) is a NOTE and any other change holds; in the recovery of an uncertain (abandoned) gemini turn any change is
   recorded as a NOTE. A changed `agy --version` between turns is a NOTE (agy updates itself).
+- Scratch: each gemini turn gets its own `TMPDIR` under the run's external scratch root, as the Codex read-only
+  roles do.
+- Windows: gemini is macOS-only. On Windows a gemini role (new or saved run) is refused before any state write;
+  `status`, `abort` and `stop` stay usable.
 
 ### Natural language config examples
 
@@ -448,7 +489,7 @@ ids, GitHub, Slack, Google and Stripe live tokens), and the marker does not exem
 key-named-literal rules apply only to lines the run adds and to a review-pr post body.
 
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
-directory outside the workspace; legacy `.review-loop/sessions/` files are left on disk and never read.
+directory under `<repo>/.review-loop/runs/<UUID>/` (gitignored); legacy `.review-loop/sessions/` files are left on disk and never read.
 
 **Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 4 unless set) end in a HOLD;
 `resume --add-rounds N` continues the same run (L100). An eligible advisory-only PLAN/EXEC REVISE

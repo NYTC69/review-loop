@@ -1,5 +1,78 @@
 # Changelog
 
+### v3.4.0：run 输出放进项目自己的 `.review-loop/`
+
+这是一个小版本，改了 run 输出的默认位置（WI-RUNROOT，owner 经 gg-pipeline 提出）。它不是 v3.3.0 试用期内的修复版本。
+
+**升级须知**
+- 已有的 run 原地继续：在 v3.3.x 及更早版本上开始的 run 仍用原来的 run 目录和内部布局（展开的内部镜像、run 目录里的 role-tmp），不迁移。
+- 明确给出的 `--run-dir` 仍然优先。新默认只影响没有指定 run 目录的新 run。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
+- run 进行中不要在工作区里跑 `git clean -x`，也不要对整个工作区做批量改写：工作区是主 checkout 时，run 目录就在其中（Codex 作者的 workspace-write 也覆盖 `.review-loop/runs/`）。
+- JS/TS 项目：保留的 review-pr 克隆是完整 checkout，放在 `.review-loop/pr/` 下；请在 Jest 的 `testPathIgnorePatterns`、`modulePathIgnorePatterns` 里加 `<rootDir>/.review-loop/`，在 Vitest 的 `exclude` 里加 `.review-loop/**`。
+
+**新的默认位置**
+- `<repo>` 指主 checkout：取 `git rev-parse --path-format=absolute --git-common-dir`，以 `/.git` 结尾且父目录是 work tree 时用它的父目录，所以 lane worktree 和主 checkout 落到同一个地方。解析不出来时（不在 Git 仓库、bare 仓库、submodule 或 separate-git-dir），退回到 `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop`，并给出提示。新脚本 `scripts/project_paths.py` 负责解析。
+- 持久的 run 输出：`<repo>/.review-loop/runs/<UUID>/`。没有 `.review-loop/.gitignore` 时，coordinator 创建它，内容只有 `*` 和 `!config.md`；已有的文件不动。run 根目录在工作区里但没被 git 忽略时，在写 state 之前拒绝。
+- review-pr 克隆：`materialize_pr.py` 的默认根改为 `<repo>/.review-loop/pr/`（只允许这个子目录，并要求它被忽略）；pins 解析、克隆标记、旧根目录的删除和 W10 的只读文件重试都不变。
+- Codex 的独立 `CODEX_HOME`：文档建议放在 `<repo>/.review-loop/codex-home/<lane>/`，由操作者自己准备和登录。
+- 临时文件放在 repo 外：作者的临时目录（`TMPDIR`，Windows 上还有 `TMP`、`TEMP`）、Codex 只读角色的临时目录、permission-probe 树、合成的 Codex home 和解压出来的审查镜像，都放在每个 run 自己的私有 scratch 根下：macOS 是 `/tmp/review-loop-<uid>/<hash>/`，Windows 在用户的系统临时目录下（用用户名代替 uid）。run 进入 ACCEPTED、REPORTED 或 abort 时删除。FIELD-28 的警告只在实际 scratch 位于 Git work tree 里时才出现，所以仓库内的新 run 不会再报它。
+- 审查基线：新布局的 last-review、review-start、history-start 基线以 tar 归档原子写在 run 目录的 `internal/` 下，需要时解压到 scratch 的 `mirrors/`；scratch 被清掉（例如重启）也能从归档恢复。每个 coordinator 进程第一次读取时重新解压，不信任残缺的解压目录。归档拒绝绝对路径和 `..` 成员。scope 变更时，基线归档交给后继 run。
+- 排除：`runs`、`codex-home`、`pr`、`logs` 这四个内部目录不计入被忽略文件的捕获和比较、作者的离线清单和证据 symlink 扫描，所以同一仓库里并行的 run、克隆和日志不会让只读回合误判。
+- permission-probe（FIELD-13 / FIELD-8）：probe 树挪到外部 scratch 后，probe 仍同时监视 scratch 父目录和真实 run 目录的父目录，所以同级 lane 的 run 目录仍要等 probe 锁，run 目录旁边被改动的 operator 文件（例如启动日志）仍按原来的方式提示。
+
+**审查与验收**
+- RR1–RR6（ad78824、73e6de2、1bea9e5、671d6e3、67cd0ad、161be2c）都由 Codex 执行、Codex 审查通过。两轮独立的云端 Opus 审查：第一轮发现仓库内的审查镜像会被 jest/vitest 扫到、`pr/` 和 `logs/` 没有排除；复查确认这两项已修好，又发现残缺的解压目录被当作完整基线（RR5 已修）。CI 41078300125 发现 probe 不再监视真实 run 父目录（FIELD-13/FIELD-8 的保护退化），RR6 修复。
+- CI：run 41092231721（161be2c）全部通过（macOS、Ubuntu、Windows）。
+- 真实 run：e95279fd（固定副本 161be2c，完整 lifecycle，产品默认角色：Codex 作者、Claude 审查、Codex gate），约 25 分钟、14 次调用到 DONE，0 条未关闭发现，ACCEPTED。run 目录落在 fixture 的 `.review-loop/runs/<UUID>/` 下，`.review-loop/.gitignore` 自动创建，fixture 的 `git status` 只显示任务改动；scratch 在 `/tmp/review-loop-<uid>/<hash>/`，ACCEPTED 后已删除；没有 FIELD-28 警告。
+
+### v3.3.0：paired-session 和 review-pr 支持原生 Windows（高效模式）
+
+这是一个小版本，带来新功能：原生 Windows 支持（ADR-20）。它不是 v3.2.0 试用期内的修复版本。
+
+**升级须知**
+- 没有改 run 启动时固定下来的任何值，在 v3.2.x 上开始的 run 换到这一版后可以继续。
+- macOS 上的行为不变：所有 Windows 改动都在 `winplat.IS_WINDOWS` 分支之后，macOS 上的命令、角色设置、回执和写出的文件字节与 v3.2.8 相同（W10 的提示文字和 W11 的回合结束后等待修复除外，见下）；技能里给 macOS 的命令也没有变。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
+- Linux（包括 WSL）仍不支持。各入口的拒绝文字改为 `paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`。
+
+**新功能：原生 Windows**
+- 平台：入口接受 macOS 和原生 Windows（Git Bash 下 `uname -s` 以 `MINGW64_NT-` 或 `MSYS_NT-` 开头；PowerShell 下 `$env:OS` 为 `Windows_NT`）。新模块 `paired_session/winplat.py` 集中处理平台差异：用户标识（Windows 用用户名代替 uid）、私有目录检查（Windows：真实目录、不是 reparse point、位于用户目录或临时目录之下）、进程存活检查（OpenProcess，不用 `os.kill(pid, 0)`）、遇到共享冲突时重试的文件替换、临时目录和 devnull。coordinator 写的文本产物以 UTF-8、LF 写出；协议加载器 `scripts/read_protocol.py` 在 Windows 上同样可用；Windows 标准输出和错误输出使用 UTF-8。
+- 进程树：Windows 上每个角色回合和 coordinator 自己跑的测试都经由独立启动器 `paired_session/winjob.py` 启动，进入一个按回合命名的 Job Object（`Local\review-loop-<tag>-<hex>`）；名字记在回合回执里，超时、中断和重启后的恢复都按名字探测或结束整棵进程树。目标进程退出后，启动器结束它留下的子进程。
+- 锁：run 锁和 worktree 锁在 Windows 上用 `msvcrt.locking` 锁住持久锁文件的第 0 字节（持有时从不删除锁文件），持有者信息从第 1 字节写起；争用时的提示与 macOS 相同。
+- CLI：在 PATH 中按 PATHEXT 解析 `claude` 和 `codex`；npm 安装的 shim 映射为 `node.exe` 加包里的脚本（按 package.json 的 `bin`），原生安装的 `claude.exe` 直接使用；两者都绑定路径和 sha256。命令行超过 CreateProcess 的 32767 字符上限时拒绝并给出实际长度。不经过 cmd.exe。
+- 角色设置：Claude Code 在原生 Windows 上没有 Bash 沙箱，所以 Claude 角色的设置关闭沙箱（`sandbox.enabled`、`failIfUnavailable` 为 false）。只读角色保留 `dontAsk`、精确的 `Bash(<cmd>)` 白名单、Edit/Write 禁止和回合后的只读检查（Windows 上比较内容和存在性，不比较权限位）；作者的 Edit 规则用 Claude Code 的 Windows 写法 `//c/Users/...`；`permissions.deny` 为所有 Claude 角色加上常见凭据文件和目录的 Read 禁止规则（Bash 仍能读到）。Codex 角色的参数只多了 W10 的 Windows 沙箱一项（见下）。
+- 临时目录：只读角色的 scratch 在 Windows 上按路径创建、校验和删除（reparse point 当作自身删除，从不跟随；只读属性先清除）；Codex 作者和只读角色同时拿到 `TMPDIR`、`TMP`、`TEMP`。
+- 命令证据：识别 Codex 在 Windows 上的 PowerShell 包装（`powershell.exe` 或 `pwsh` 的 `-Command`，含常见开关）和 Git Bash 包装（`bash -c`、`bash -lc`），解包后仍要求整条命令等于配置的测试命令；路径接受 `C:\...`、`C:/...`、`/c/...`、`file:///C:/...` 和 UNC，比较时不区分大小写。`-EncodedCommand`、`-File`、`cmd.exe /c` 等形式不识别，结果是 HOLD，不会误批准。
+- 测试执行：coordinator 自己跑测试（quality writers 的基线和检查）时，Windows 上用 Git Bash 执行 `bash -c <测试命令>`（先看 `CLAUDE_CODE_GIT_BASH_PATH`，再从 Git for Windows 的安装位置找，从不用 WSL 的 System32\bash.exe）；找不到时报 `Git for Windows is required for local tests`。文件的可执行位在 Windows 上取自 git 索引；新增 `.gitattributes`，在 `core.autocrlf` 的 checkout 中源码、脚本、JSON 和 Markdown 也保持提交时的 LF 字节（冻结的角色清单和协议加载依赖这些字节）。隔离候选树里被跟踪的 symlink 需要真实链接，没有 symlink 权限（开发者模式）时明确报错。
+- 交付与提交：`scripts/delivery_scope.py` 和 `scripts/security_preflight.py` 在 Windows 上按路径逐级检查（遇到 symlink、junction 或其他 reparse point 时，按 macOS 上拒绝链接的方式处理），读普通文件时前后比较大小和 mtime。Git for Windows 默认 `core.autocrlf=true`，检出的文本文件是 CRLF；判断文件是否改动时，用 Git 实际会存的 blob（按 `git add` 的 text/eol 规则规整，不运行 filter driver），所以没改过的 CRLF 文件不算改动，仓库里原有的敏感文件名仍只记为已有提示，run 中补上的 `.gitignore` 规则照常计入。原始字节的 sha256 和大小仍用来确认审查之后文件没被改过。`auto_commit` 在 Windows 上接受 `core.fileMode=false` 和 `core.autocrlf`，提交的 blob 同样按 `git add` 的规则规整（一个 `git hash-object --stdin-paths` 进程），工作区里已审查的 CRLF 文件保持原样。
+- 拒绝的功能：Windows 上 `--strict`（包括 profile 里的 `"safety_mode": "strict"` 和以 strict 创建的已有 run）、`permission-probe` 和 `--detach` 都在取锁、写 state 之前被拒绝（`REFUSED: ...`，exit 2）；对 strict 的 profile 或 run，`status`、`abort`、`stop` 仍可用。
+- 删除只读文件（W10）：Git for Windows 把 pack/idx 和对象文件设为只读，`shutil.rmtree` 在 Windows 上删不掉（Yuan 实机上 `materialize_pr.py --remove` 报 WinError 5）。Windows 上删除 review-pr 克隆、候选树的元数据目录和审查镜像时，遇到 PermissionError 先清除只读属性再重试一次；macOS 仍直接调用 `shutil.rmtree`。
+- W11：所有平台的 Codex / Claude CLI 发出回合终结事件后仍不退出时，等待 60 秒再结束进程树，成功终结时保留回答和原有检查，Codex `turn.failed` 仍按原失败路径分类；stdin 独立完整写入并关闭，不受短步等待影响；回执记录 `exit_after_completion` 并打印 NOTE。没有终结事件时仍按原超时处理。Windows 上 Codex shell 调用一直不返回可能是沙箱 helper 卡住，重启 Windows 可清除。
+- Codex 沙箱（W10）：Windows 上每个 Codex 角色都加 `-c windows.sandbox="elevated"`。实机上没有 `[windows]` 设置时所有 shell 命令被策略拒绝，`unelevated` 也拒绝运行；macOS 的参数不变。
+- 审查者 HOLD 原因（W10，所有平台，只改提示文字）：审查者或 shadow 回答 HOLD 时，`hold_reason` 和终止进度行在 `reviewer HOLD`（或 `shadow HOLD`）之后附上它自己的说明（它的 finding 摘要，没有时取 `self_run_evidence` 的文字，单行，最多 300 字符）。DOCS 审查者、SECURITY 审查者和 POLISH-Q 专项审查者回答 HOLD 时，原有的 `... returned HOLD without a usable review` 之后同样附上说明。判定、重试和预算逻辑都不变。
+- Codex 配置拒绝提示（W10，所有平台，只改提示文字）：guard 因配置项（MCP servers、notify、插件 MCP 或 app bundle 等）拒绝时，原文字之后加一句修复建议。配置在 `CODEX_HOME` 之下时，建议使用独立的 `CODEX_HOME` 目录并在其中 `codex login`；配置在项目的 `.codex/config.toml` 或系统文件（`/etc/codex/...`）里时，换 `CODEX_HOME` 没有用，建议到指出的那个文件里修改或删除这项设置。permission-probe 的 FAIL 原因不加提示。
+- 技能：各入口给出 Windows 的命令写法（用 `python` 或 `py -3` 代替 `python3`；bundle 目录名用用户名代替 uid；以 `python <plugin>/bin/paired-session` 启动 coordinator）。Claude Code 入口是经过测试的 Windows 路径，Codex 技能的 PowerShell 命令是尽力而为。
+
+**Windows 前提**
+- Git for Windows（Claude Code 的 Bash 工具和 coordinator 的本地测试都用它的 Git Bash）。
+- Python 3（`python` 或 `py -3`）。
+- Node.js：`claude` 或 `codex` 通过 npm 安装时需要。
+- run 目录和工作区不要放在 OneDrive 同步的文件夹里。
+- 装有 Codex 桌面版的机器，`~/.codex/config.toml` 里有 MCP servers 和 notify，coordinator 会拒绝：用独立的 `CODEX_HOME` 并单独 `codex login`（README 的 Windows 说明另列 Git Bash 路径、CLI 登录和 elevated 沙箱首次授权）。
+
+**审查与验收**
+- W1–W8（含修复轮）及此前的文档提交由 Opus 执行、Codex 审查通过。整个 WI 的 Codex 终审第一轮指出 Windows 管道输出不是 UTF-8；W9 由 Codex 修复，Opus 审查为 REVISE（仅测试问题），随后 Opus 完成 W9 r2 测试修复（f85f329），Codex 整体终审第二轮 APPROVE。
+- CI：windows-latest 上 159 个 Windows 测试通过，其中两条用假 CLI 的端到端 run（完整流程到 ACCEPTED，review-pr 到 REPORTED）使用真实的 CRLF 检出、中文任务和中文 run 目录；同一次 CI（run 40379703851，f85f329）全部 308 个 job 通过，包括 macOS/Linux 全量测试。
+- macOS 真实 run（固定副本 v3.3.0-rc1 = f85f329，产品默认：Codex 作者、Claude 审查、Codex gate）：DONE 后 ACCEPTED，14 次调用，约 23 分钟。
+- Yuan 的 Windows 实机验收（Windows 11、PowerShell 5.1、Git for Windows 2.53、Python 3.15、Claude CLI 2.1.310、codex-cli 0.164.0）：5 条标准全部满足，完整流程 run ACCEPTED（交付提交 e910fe0），review-pr run REPORTED（找出一条 HIGH），拒绝的功能提示正确。验收中发现四个现场问题，由 W10 修复：删除临时克隆时只读 pack 文件报 WinError 5；Codex 在 Windows 上需要 elevated 沙箱；HOLD 原因不带审查者的说明；Codex 配置被拒时没有修复建议。
+- W10 由 Opus 执行。Codex 周额度用完期间先由 Opus 子代理审查 APPROVE；额度恢复后 Codex 审查 b3fdcb5..f937109 为 REVISE（DOCS、SECURITY 和专项审查者的 HOLD 也要附说明；`CODEX_HOME` 建议只适用于其下的配置），W10 r2（e1a92ed）修复后 Codex APPROVE。CI run 40651013831（e1a92ed）全部 310 个 job 通过，包括 windows-latest。
+- macOS 真实 run（固定副本 v3.3.0-rc3 = e1a92ed，产品默认：Codex 作者、Claude 审查、Codex gate）：DONE 后 ACCEPTED，16 次调用，约 53 分钟；其间 FINISH 两次遇到 Codex "Selected model is at capacity"，自动重试一次后 HOLD，`resume` 后继续完成。
+- Windows 复验（rc3）：`materialize_pr.py --remove` 删除了含只读 pack 文件的旧克隆和两个新克隆，exit 0。去掉 `[windows] sandbox` 设置后的两次 review-pr 都卡在 EXEC 第一回合，直到 2700 秒超时：Codex 审查者在 elevated 沙箱里的 shell 调用一直不返回，审查者回答 HOLD 后 codex 进程也不退出。把设置加回去也一样卡，所以判断是这台机器上的 Codex 沙箱 helper 卡死，重启 Windows 后恢复。
+- W11 由此而来（Yuan 10-29 同意）：Codex 执行（b2e26d3），Codex 审查 APPROVE；Opus 跨厂商审查 REVISE（POSIX 上超过约 16 KB 的 prompt 在 CLI 晚读 stdin 时会被截断；`turn.failed` 被当成完成），W11 r2（e352dea）修复后 Codex 和 Opus 复审都 APPROVE。CI 发现 3 个原有测试的假进程只实现旧接口，W11 r3（f7d226b）只改这 3 个替身、断言未动，Codex APPROVE。CI run 40770941976（f7d226b）全部通过（一个 macOS job 因 GitHub 上传日志超时重跑一次，测试两次都通过）。
+- macOS 真实 run（固定副本 v3.3.0-rc4 = e352dea，产品代码与 f7d226b 相同，产品默认角色）：run daec4f6e DONE 后 ACCEPTED，14 次调用，约 22 分钟，没有触发 W11 的结束进程。
+- Windows 复验（rc4 = f7d226b，重启 Windows 后）：Codex 沙箱探测在 180 秒内正常返回；专用 `CODEX_HOME` 的 `config.toml` 清空（没有 `[windows]` 设置）后，review-pr run 633189c5 约 5 分钟到 `REPORTED`（报告完整，Codex 审查者共 8 个回合，没有 HOLD，没有作者回合），没有一条 "blocked by policy" 或 "refusing to run unsandboxed"；随后 `materialize_pr.py --remove` 删除这次的新克隆，exit 0。
+
 ### v3.2.8：审查历史扫描不再漏遮罩已豁免名称在连字符组合中的出现
 
 v3.2.0 试用期内的小版本，修复裸厂商或模型名称已获豁免，但同一行的连字符组合（例如 `codex-cli`）仍被误判为审查历史的问题。

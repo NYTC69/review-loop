@@ -1,5 +1,7 @@
 # Efficient safety mode (D-EFF, owner 2026-10-04, amended)
 
+For CODEX_HOME provisioning, run roots and fallback rules, see the [project overview](../../README.md).
+
 Owner decision D-EFF, amended:
 > "A类+B类的…这些要求还是要在以后的review-loop里遵守，但是c类的严格沙箱要求，不需要再加固或者花时间开发了"
 
@@ -37,7 +39,28 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
-- **A(b):** the run dir is not writable by any role. The author's TMPDIR, `run_dir/author-tmp`, holds no records.
+- **A(b):** a Codex author's workspace-write covers `.review-loop/runs/` when the workspace is the main checkout. Under the owner threat model (users and models do not act maliciously), accidental damage is the residual risk; do not run bulk rewrites or `git clean -x` over the workspace during a run. The author's TMPDIR, `<scratch_root>/author-tmp` outside any repo, holds no records
+  (legacy saved runs retain `run_dir/author-tmp`).
+
+**Native Windows exception (v3.3.0, ADR-20 D1).** Claude Code has no Bash sandbox on native Windows, so there
+`_claude_sandbox_settings` sets `sandbox.enabled` and `sandbox.failIfUnavailable` to false; the rest of the settings
+keeps its shape and the macOS settings are byte-identical. Only efficient mode runs: `--strict` (or a strict
+profile, or a saved strict run), `permission-probe` and `--detach` are refused before any lease or state write.
+- Claude read-only roles keep `--restricted --permission-mode dontAsk`, the exact `Bash(<cmd>)` allow rules and the
+  Edit/Write/NotebookEdit/Agent denies, with no OS layer under them; the post-turn read-only workspace check (§4a)
+  still voids, restores and holds. On Windows it compares content and existence, not permission bits.
+- The Claude author's Bash runs unsandboxed: its Edit/Write stay limited by the path rules (written in Claude Code's
+  Windows form `//c/Users/...`), but its Bash can write outside the workspace, the run dir included. The context
+  digest, the global-config check and the other post-turn checks still run; a Bash write to the run dir's records
+  (for example `state.json`) is neither prevented nor detected.
+- Secret-named env vars are not hidden from Claude's Bash. Instead `permissions.deny` gets Read rules for the
+  credential paths the sandbox hid (`~/.aws`, `~/.ssh`, `~/.config/gcloud`, `~/.config/gh`, `~/.azure`,
+  `~/.docker/config.json`, `~/.git-credentials`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.kube/config`) for every
+  Claude role; Bash can still read those files.
+- Codex roles keep their flags and add `-c windows.sandbox="elevated"` (W10: without it every shell command is
+  rejected by policy). Their scratch and the author's temp dir are given as `TMPDIR`, `TMP` and `TEMP`.
+These are accepted residuals under the owner rule: reasonable protection for normal use, assuming users and models do
+not act maliciously.
 
 **Owner question (friction).** Friction must be listed with evidence before any flag is removed, and this change removes none. Recorded so far: the read-only roles' exact `Bash(<cmd>)` allowlist makes a reviewer that runs an unlisted command get a denial, not a run. The supervisor may want to collect real-run evidence on this.
 
@@ -103,9 +126,10 @@ A workspace below the repository top is not a case: the coordinator requires `.g
   file outside the recorded entries, are not detected.
 - The capture is bounded (`IGNORED_LIMIT` entries, `IGNORED_SECONDS`). Past either bound the receipt says `ignored set too large:
   not checked`.
-- A CLI home or cache the CLI writes to inside an ignored workspace path (for example `CODEX_HOME`, `__pycache__`, or a test
+- A CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__` or a test
   runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write) HOLDs every
-  read-only turn, in both modes. Keep such homes and caches outside the workspace.
+  read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
+  are excluded from workspace scans, so the recommended isolated homes may live there.
 
 **An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The
 unrestored record keeps the pre-turn baseline, and dispatch and accept refuse until the workspace matches it again.

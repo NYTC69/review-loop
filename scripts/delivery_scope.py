@@ -3,6 +3,8 @@
 
 Only --output writes a file. Git objects, refs, the index and source files are
 never written. Worktree blobs are hashed as raw bytes, without executing filters.
+On Windows a regular file's oid is the blob Git would store (text/eol cleaning,
+no filter drivers); its sha256 and size stay the raw bytes.
 """
 
 from __future__ import annotations
@@ -31,6 +33,9 @@ GIT_ENV_OVERRIDES = (
     "GIT_PREFIX", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS",
     "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
 )
+# WI-WIN: Windows has no O_DIRECTORY, O_NOFOLLOW or dir_fd; the windows_* helpers below walk by path instead. This script
+# runs standalone, so they copy the checks of paired_session/winplat.py rather than import it.
+IS_WINDOWS = os.name == "nt"
 
 
 class UsageError(Exception):
@@ -183,6 +188,126 @@ def disk_entry(repo: str, path: str, algorithm: str) -> Optional[dict]:
         os.close(directory)
 
 
+def windows_link(info: os.stat_result) -> bool:
+    """WI-WIN: an lstat result that is a symlink, junction or other reparse point."""
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def windows_leaf(repo: str, path: str) -> Optional[str]:
+    """WI-WIN: the absolute leaf path when every directory component of `path` is a real directory (lstat, no link or
+    reparse point); None when one is missing, not a directory or a link, as the POSIX no-follow walk treats them."""
+    cursor = repo
+    for component in path.split("/")[:-1]:
+        cursor = os.path.join(cursor, component)
+        try:
+            info = os.lstat(cursor)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        if not stat.S_ISDIR(info.st_mode) or windows_link(info):
+            return None
+    return os.path.join(cursor, path.split("/")[-1])
+
+
+def windows_disk_entry(repo: str, path: str, algorithm: str, index_entries: Optional[list] = None,
+                       seen: Optional[dict] = None) -> Optional[dict]:
+    """WI-WIN: disk_entry by path, raw bytes (windows_clean_oids then gives a regular file Git's cleaned blob id). A
+    linked or missing parent makes the leaf absent; a symlink leaf hashes its readlink text (backslashes as slashes, as
+    Git for Windows stores a link); a junction or other reparse point leaf is refused; a regular file is read with its
+    size and mtime compared before, during and after, and recorded in `seen`. Windows has no executable bit, so a
+    regular file takes its index entry's mode (Git with core.fileMode=false; 120000 for a link checked out as a plain
+    file with core.symlinks=false), else 100644."""
+    path_name(path)
+    leaf = windows_leaf(repo, path)
+    if leaf is None:
+        return None
+    try:
+        before = os.lstat(leaf)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(before.st_mode):
+        payload = os.fsencode(os.readlink(leaf).replace("\\", "/"))
+        mode, size = "120000", len(payload)
+        blob = hashlib.new(algorithm, f"blob {size}\0".encode("ascii") + payload)
+        raw = hashlib.sha256(payload)
+    elif windows_link(before):
+        raise CaptureError(f"unsupported reparse point entry: {path!r}")
+    elif stat.S_ISDIR(before.st_mode):
+        return None  # Git does not version empty directories.
+    elif stat.S_ISREG(before.st_mode):
+        modes = [entry["mode"] for entry in index_entries or [] if entry["mode"] in {"100644", "100755", "120000"}]
+        mode, size = (modes or ["100644"])[0], before.st_size
+        blob = hashlib.new(algorithm, f"blob {size}\0".encode("ascii"))
+        raw = hashlib.sha256()
+        read = 0
+        with open(leaf, "rb") as source:
+            def unchanged() -> bool:
+                info = os.fstat(source.fileno())
+                return (info.st_size, info.st_mtime_ns) == (size, before.st_mtime_ns)
+
+            if not unchanged():
+                raise CaptureError(f"file changed during capture: {path!r}")
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                blob.update(block)
+                raw.update(block)
+                read += len(block)
+            if not unchanged() or read != size:
+                raise CaptureError(f"file changed during capture: {path!r}")
+    else:
+        raise CaptureError(f"unsupported non-file entry: {path!r}")
+    after = os.lstat(leaf)
+    if (after.st_mode, after.st_size, after.st_mtime_ns, windows_link(after)) != (
+            before.st_mode, before.st_size, before.st_mtime_ns, windows_link(before)):
+        raise CaptureError(f"file changed during capture: {path!r}")
+    if seen is not None:
+        seen[path] = (after.st_size, after.st_mtime_ns)
+    return {"mode": mode, "oid": blob.hexdigest(), "sha256": raw.hexdigest(), "size": size}
+
+
+# As paired_session/candidate_tree.GIT_NO_EXEC: no repository config chooses a program git runs (safecrlf only warns).
+WINDOWS_GIT_NO_EXEC = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull, "-c", "core.pager=cat",
+                       "-c", "diff.external=", "-c", "core.sshCommand=false", "-c", "core.safecrlf=false")
+
+
+def windows_filter_overrides(repo: str) -> list:
+    """WI-WIN: as paired_session/candidate_tree._filter_overrides: blank every filter driver the effective config
+    defines, so hash-object applies Git's text/eol cleaning but never runs a configured clean program."""
+    rows = git(repo, "config", "--includes", "--null", "--get-regexp",
+               r"^filter\..*\.(clean|smudge|process|required)$", codes=(0, 1))
+    names = dict.fromkeys(os.fsdecode(row).split("\n", 1)[0][len("filter."):].rsplit(".", 1)[0]
+                          for row in rows.split(b"\0") if row)
+    if not all(re.fullmatch(r"[A-Za-z0-9_.+-]+", name) for name in names):
+        raise CaptureError("unsupported git filter driver name")
+    return [arg for name in names for arg in ("-c", f"filter.{name}.clean=", "-c", f"filter.{name}.smudge=",
+                                              "-c", f"filter.{name}.process=", "-c", f"filter.{name}.required=false")]
+
+
+def windows_clean_oids(repo: str, worktree: dict, seen: dict, head_paths: dict, index: dict) -> None:
+    """WI-WIN: a regular file's "oid" becomes the blob `git add` would store (core.autocrlf / text / eol cleaning, no
+    filter driver), so a CRLF checkout of an unchanged LF blob classifies as unchanged; "sha256" and "size" stay the raw
+    bytes that bind freshness. A file whose raw bytes already are its index or HEAD blob keeps that id (a CRLF blob
+    committed as is). One git process hashes the rest; each leaf's size and mtime must still be what the raw read saw."""
+    known = {path: {entry["oid"] for entry in index.get(path, [])} | ({head_paths[path]["oid"]} if path in head_paths
+                                                                      else set()) for path in worktree}
+    paths = [path for path, entry in sorted(worktree.items())
+             if entry["mode"] in {"100644", "100755"} and entry["oid"] not in known[path]]
+    if not paths:
+        return
+    env = {**git_env("hash-object"), "GIT_ATTR_NOSYSTEM": "1"}
+    result = subprocess.run(["git", *WINDOWS_GIT_NO_EXEC, *windows_filter_overrides(repo), "hash-object", "--stdin-paths"],
+                            cwd=repo, env=env, input=b"".join(os.fsencode(path) + b"\n" for path in paths),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    oids = result.stdout.decode("ascii", "replace").split()
+    if result.returncode or len(oids) != len(paths):
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise CaptureError(f"git hash-object failed ({result.returncode}): {detail}")
+    for path, oid in zip(paths, oids):
+        leaf = windows_leaf(repo, path)
+        info = os.lstat(leaf) if leaf else None
+        if info is None or (info.st_size, info.st_mtime_ns) != seen[path]:
+            raise CaptureError(f"file changed during capture: {path!r}")
+        worktree[path]["oid"] = oid
+
+
 def read_state(repo: dict) -> dict:
     root = repo["worktree"]
     head = git_line(root, "rev-parse", "--verify", "-q", "HEAD", codes=(0, 1)) or None
@@ -212,11 +337,14 @@ def read_state(repo: dict) -> dict:
             if path.endswith("/"):
                 raise CaptureError(f"nested repositories are unsupported by this manifest version: {path!r}")
             untracked.append(path_name(path))
-    worktree = {}
+    worktree, seen = {}, {}
     for path in sorted(set(head_paths) | set(index) | set(untracked)):
-        entry = disk_entry(root, path, repo["object_format"])
+        entry = (windows_disk_entry(root, path, repo["object_format"], index.get(path), seen) if IS_WINDOWS
+                 else disk_entry(root, path, repo["object_format"]))
         if entry is not None:
             worktree[path] = entry
+    if IS_WINDOWS:
+        windows_clean_oids(root, worktree, seen, head_paths, index)
     index_path = git_line(root, "rev-parse", "--git-path", "index")
     if not os.path.isabs(index_path):
         index_path = os.path.join(root, index_path)
@@ -466,8 +594,9 @@ def validate_output(repo: dict, path: Optional[str]) -> None:
 def emit(document: dict, output: Optional[str]) -> None:
     rendered = json.dumps(document, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
     if output:
-        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as target:
+        # WI-WIN: O_BINARY and newline="\n" keep the artifact LF on Windows (both are no-ops on POSIX).
+        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n" if IS_WINDOWS else None) as target:
             target.write(rendered)
     else:
         sys.stdout.write(rendered)

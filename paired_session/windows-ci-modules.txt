@@ -1,0 +1,13 @@
+test_winplat
+test_winplat_locks
+test_winjob
+test_wincli
+test_winroles
+test_winscratch
+test_winevidence
+test_wintest
+test_winend2end
+test_winscripts
+test_winstdio
+test_winfield
+test_role_completion_wait

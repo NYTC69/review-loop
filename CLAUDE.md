@@ -138,7 +138,8 @@ A role may answer without using its tools. Two defenses:
   the full suite is long, so run single modules while iterating).
 - `git diff --check`.
 
-paired-session runs on macOS only. Every push that changes a file bumps the versions (Plugin cache & version bump).
+paired-session runs on macOS and native Windows (efficient mode only; ADR-20); Linux is not supported. Every push
+that changes a file bumps the versions (Plugin cache & version bump).
 
 ## README snapshots
 

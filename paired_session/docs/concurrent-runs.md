@@ -1,5 +1,21 @@
 # Concurrent runs and isolated Codex homes
 
+For CODEX_HOME provisioning, persistent run roots and fallback rules, see the
+[project overview](../../README.md).
+
+On macOS scratch lives under `/private/tmp/review-loop-<user>/<run-hash>/` (the resolved `/tmp`),
+including extracted workspace mirrors. New-layout persistent baselines are atomic, uncompressed
+`internal/last-review.tar`, `internal/review-start.tar` and (for scope-change handover)
+`internal/history-start.tar` archives. They preserve file modes, empty files and symlinks without
+a walkable source tree in the repo. On the first read of each mirror in a coordinator process, the archive is extracted afresh into
+`<scratch_root>/mirrors/<name>`, replacing any existing tree; `current-review` stays transient.
+After reboot or partial scratch cleanup, a fresh coordinator therefore restores review comparisons. New-layout scratch is removed on ACCEPTED, REPORTED
+or abort; legacy runs keep their original `internal/<mirror>` trees. A missing last-review
+archive omits the optional delta; a missing review-start/history-start archive gives the
+existing FIELD-27 HOLD (restore it or start a new run). A new-layout scope-change successor
+archives an inherited legacy baseline into its own `internal/history-start.tar`, preserving
+the legacy parent's original tree.
+
 Use a separate, absolute `CODEX_HOME` for each concurrently active lane/run.
 Keep each lane's home stable across its permission probe, run and supported
 resume. Do not share that home with another active run or interactive Codex
@@ -36,8 +52,8 @@ Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
 ## Operator preparation, before either lane starts
 
 1. Assign each active lane a distinct worktree, protected run directory and
-   absolute, operator-owned Codex home. Keep the home outside every lane's
-   author-writable workspace and temporary roots, and separate from run artifacts.
+   absolute, operator-owned Codex home. Use `<repo>/.review-loop/codex-home/<lane>/`, separate from run artifacts
+   and temporary roots.
    Avoid symlink aliases that resolve to the same home.
 2. Have the owner provision each home through an explicitly authorized login and
    configuration workflow. Do not copy credentials, tokens or an entire existing
@@ -46,7 +62,7 @@ Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
 3. Select that same home in the environment of the lane's coordinator invocation
    for the existing permission-probe, run and resume workflow. The coordinator
    resolves `CODEX_HOME` at startup and passes it to Codex children (the Codex
-   author sandbox check instead uses a temporary home under the run directory
+   author sandbox check instead uses a temporary home under the external private scratch root
    holding a copy of its `config.toml`). An unset value falls back
    to the shared default home. A relative path is rejected, and when any role
    is Codex a home that is not an existing directory is refused before the
@@ -93,6 +109,13 @@ Source anchors: `Coordinator.__init__`, `probe_passed`, `_probe_cache_key`,
 `../codex_capability_guard.py`.
 
 ## Concurrent permission probes (FIELD-13)
+
+New runs put the Claude author probe tree and OS-denial targets in the per-run
+private scratch root outside every repo. Role TMPDIRs and disposable probe homes
+also live there. Saved runs without `scratch_root` keep their original layout
+on resume. The following FIELD-13 parent-listing description applies to that
+legacy layout; new runs compare the external scratch parent as well as the real run directory's parent. Keep
+launcher logs under `<repo>/.review-loop/logs/`, separate from `runs/`.
 
 The Claude author probe (`_claude_author_probe` in `../coordinator.py`) creates its
 probe tree `paired-session-claude-probe-tree-*` beside the run dir, in the run dir's

@@ -59,7 +59,7 @@ class WorkspaceGitHardeningTests(Fixture):
         self.assertEqual({k: m.exists() for k, m in markers.items()}, {k: True for k in markers})
         for marker in markers.values(): marker.unlink()
         co.state['reviews_completed'] = 1
-        (co.internal / 'last-review').mkdir(exist_ok=True)
+        (co.mirror_base / 'last-review').mkdir(parents=True, exist_ok=True)
         co.materialize_review_context()
         rc.git_snapshot(self.h.workspace)
         co._head_commit(); co._workspace_names(); co._git(['diff', '--stat'])

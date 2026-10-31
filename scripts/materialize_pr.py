@@ -4,8 +4,9 @@
 Each head/base records its OID, source and fetch ref for later materialization.
 Pins have exactly oid, source and fetch_ref (null for unnamed commits).
 Resolution is read-only; errors refuse rather than selecting a local diff.
-With --root the pinned head and base are fetched into a self-contained clone under <root>/pr/<UUID>/, verified, and
-checked out detached (paired_session/docs/review-pr-port.md §2.2); --remove deletes only such a clone.
+With --root (optionally followed by an explicit root) the pinned head and base are fetched into a self-contained clone under <root>/pr/<UUID>/, verified, and
+checked out detached. The default root is the main project checkout's .review-loop/ (or the reported state-root fallback).
+Without --root, resolve pins only. See paired_session/docs/review-pr-port.md §2.2; --remove deletes only such a clone.
 """
 from __future__ import annotations
 
@@ -15,11 +16,17 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import uuid
 from urllib.parse import urlsplit
+
+try:
+    from scripts.project_paths import default_root, ensure_ignore, project_repo
+except ModuleNotFoundError:  # direct script invocation
+    from project_paths import default_root, ensure_ignore, project_repo
 
 
 class ResolutionError(ValueError):
@@ -34,7 +41,8 @@ PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)/?
 REPO = re.compile(r"[\w.-]+/[\w.-]+\Z")
 OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 # Mirror paired_session.candidate_tree.GIT_NO_EXEC for direct script execution.
-GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+DEVNULL = os.devnull if os.name == "nt" else "/dev/null"   # WI-WIN: as paired_session.winplat.devnull_path()
+GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=' + DEVNULL,
                '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'core.sshCommand=false')
 # N1: transports git may use, whatever the repository's protocol.*.allow, url.*.insteadOf or core.gitProxy say (the
 # environment variable overrides them): no ext::/fd:: helper and no git:// proxy command can run.
@@ -57,7 +65,7 @@ def _run(argv: list[str], cwd: Path, network: bool, timeout: int, extra: dict) -
     for key in ("SSH_ASKPASS", "GH_REPO", "GH_HOST"):
         env.pop(key, None)
     if argv[0] == "git":
-        env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+        env.update(GIT_CONFIG_GLOBAL=DEVNULL, GIT_CONFIG_NOSYSTEM="1",
                    GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1",
                    GIT_SSH_COMMAND="ssh -o BatchMode=yes", GIT_OPTIONAL_LOCKS="0",
                    GIT_ALLOW_PROTOCOL=":".join(ALLOWED_PROTOCOLS), **extra)
@@ -67,7 +75,7 @@ def _run(argv: list[str], cwd: Path, network: bool, timeout: int, extra: dict) -
             argv[offset:offset] = ["-c", "credential.helper=", "-c",
                                    "credential.helper=!gh auth git-credential"]
     try:
-        result = subprocess.run(argv, cwd=cwd, env=env, text=True,
+        result = subprocess.run(argv, cwd=cwd, env=env, text=True, encoding='utf-8',
                                 capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ResolutionError(f"{argv[0]} unavailable or timed out") from exc
@@ -282,7 +290,7 @@ def on_branch(dest: Path, oid: str) -> bool:
         return False
 
 
-def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -> dict:
+def materialize(resolution: dict, root: str | Path | None = None, run_id: str | None = None) -> dict:
     """LG2-d2 (§2.2): clone the target into <root>/pr/<UUID>/, fetch the pinned head and base into refs/review/head and
     refs/review/base (each from its own source; by fetch_ref, or by OID when it is null), verify both OIDs, require
     exactly one merge base, and check out the head detached. Every git call keeps the d1 environment protections. On
@@ -294,10 +302,19 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
     run_id = run_id or uuid.uuid4().hex
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise MaterializeError("invalid run id")
+    root = default_root(operator) if root is None else Path(root)
+    repo = project_repo(operator)
+    permitted = repo / ".review-loop" / "pr" if repo is not None else None
     parent = (Path(root).resolve() / "pr").resolve()   # a `pr` symlink is followed before the check below
-    for area in operator_areas(operator):   # §2.2: the operator repository is only read
-        if parent == area or area in parent.parents:
+    for area in operator_areas(operator):   # only the project-local PR subtree may hold clones
+        if (parent == area or area in parent.parents) and parent != permitted:
             raise MaterializeError("--root lies inside the operator repository")
+    if parent == permitted:
+        ensure_ignore(repo)
+        try:
+            command(["git", "check-ignore", "-q", "--", str(parent / run_id)], repo)
+        except ResolutionError as exc:
+            raise MaterializeError("project PR root is not gitignored") from exc
     parent.mkdir(parents=True, exist_ok=True)
     dest = parent / run_id
     dest.mkdir()   # refuses an existing directory; this call made it, so a failure below may delete it whole
@@ -332,9 +349,25 @@ def materialize(resolution: dict, root: str | Path, run_id: str | None = None) -
         git_step("checkout", ["git", "checkout", "--quiet", "--detach", "refs/review/head"], dest)
     except BaseException:   # also a clone killed by its timeout before the marker was written
         if dest.is_dir() and not dest.is_symlink():
-            shutil.rmtree(dest)
+            (rmtree_windows if os.name == "nt" else shutil.rmtree)(dest)
         raise
     return {**resolution, "workspace": str(dest), "run_id": run_id, "merge_base": bases[0]}
+
+
+def rmtree_windows(path: str | Path) -> None:
+    """WI-WIN W10, standalone copy of paired_session.winplat.rmtree: Git for Windows writes pack/idx and object files
+    read-only, which shutil.rmtree cannot delete there (WinError 5); clear the attribute and retry the removal once."""
+    def retry(function, target, exc):
+        if isinstance(exc, PermissionError) and getattr(function, "__name__", "") in ("unlink", "remove", "rmdir"):
+            os.chmod(target, stat.S_IWRITE)
+            function(target)
+            return
+        raise exc
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=lambda function, target, info: retry(function, target, info[1]))
 
 
 def remove(directory: str | Path) -> str:
@@ -348,12 +381,12 @@ def remove(directory: str | Path) -> str:
     if path.parent.name != "pr" or marker.is_symlink() or not marker.is_file() \
             or marker.read_text().strip() != path.name:
         raise MaterializeError("no matching marker; directory kept")
-    shutil.rmtree(path)
+    (rmtree_windows if os.name == "nt" else shutil.rmtree)(path)
     return str(path)
 
 
 def resolve_and_materialize(repo: str | Path, value: str, base: str | None, repository: str | None,
-                            root: str | Path) -> dict:
+                            root: str | Path | None = None) -> dict:
     """§2.1: a pin that moved between resolution and fetch is re-resolved once, then refused."""
     for attempt in (1, 2):
         resolution = resolve(repo, value, base, repository)
@@ -365,12 +398,17 @@ def resolve_and_materialize(repo: str | Path, value: str, base: str | None, repo
 
 
 def main() -> int:
+    # WI-WIN W9: standalone entry; same policy as winplat.configure_stdio (POSIX untouched).
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            if callable(getattr(stream, 'reconfigure', None)):
+                stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--repository", "-R")
     parser.add_argument("--base")
-    parser.add_argument("--root", help="materialize under <root>/pr/<UUID>/ (LG2-d2)")
+    parser.add_argument("--root", nargs="?", const="", help="materialize under <root>/pr/<UUID>/; omitted value uses main checkout .review-loop/")
     parser.add_argument("--remove", metavar="DIR", help="delete a clone made by --root (its marker is required)")
     args = parser.parse_args()
     if bool(args.input) == bool(args.remove):
@@ -378,8 +416,8 @@ def main() -> int:
     try:
         if args.remove:
             result = {"removed": remove(args.remove)}
-        elif args.root:
-            result = resolve_and_materialize(args.repo, args.input, args.base, args.repository, args.root)
+        elif args.root is not None:
+            result = resolve_and_materialize(args.repo, args.input, args.base, args.repository, args.root or None)
         else:
             result = resolve(args.repo, args.input, args.base, args.repository)
     except (ResolutionError, OSError) as exc:   # an OSError (a path replaced mid-run) refuses the same way

@@ -299,7 +299,8 @@ class GeminiAdapterTests(unittest.TestCase):
         self.assertEqual(first['stdin'], json.dumps({'event': 'user', 'message': {'content': prompt}}) + '\n')
         self.assertNotIn(prompt, first['args'])
         self.assertEqual(Path(first['cwd']).resolve(), self.h.workspace.resolve())
-        self.assertEqual(Path(first['TMPDIR']).parent, co.run_dir / 'role-tmp')   # the per-dispatch scratch, as for Codex
+        self.assertEqual(Path(first['TMPDIR']).parent, co.scratch_base / 'role-tmp')   # the per-dispatch scratch, as for Codex (v3.4.0: external scratch_base)
+        self.assertNotEqual(co.scratch_base, co.run_dir)   # a new-layout run keeps it outside the run dir
         receipt = self.receipt(co, 1, 'PLAN', 'reviewer')
         self.assertEqual((receipt['vendor'], receipt['reported_model'], receipt['reported_model_source'], receipt['model_identity']),
                          ('gemini', 'gemini-3.8-flash-medium', 'init', 'MATCH'))
@@ -312,6 +313,47 @@ class GeminiAdapterTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_GEMINI_OTHER_CONVERSATION': 'someone-else'}), \
                 self.assertRaisesRegex(RuntimeError, 'reviewer resumed a different session'):
             co._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())
+
+    def test_the_scratch_flag_names_the_external_scratch_base(self):   # GM1: v3.4.0 scratch layout, as for Codex
+        co = self.coordinator()
+        for flags in (co.reviewer_flags(), co.gate_flags()):
+            self.assertTrue(flags['scratch_tmp'].startswith(str(co.scratch_base / 'role-tmp') + '/'))
+            self.assertNotIn(str(co.run_dir / 'role-tmp'), flags['scratch_tmp'])
+
+    def test_a_lingering_agy_is_ended_after_its_result_event(self):   # GM1: agy rows carry `event`, not `type`
+        script = self.h.root / 'agy-linger.py'
+        row = {'event': 'result', 'result': {'status': 'SUCCESS', 'structured_output': {'status': 'APPROVE'}}}
+        script.write_text('import sys, time\nsys.stdin.buffer.read()\nprint(' + repr(json.dumps(row)) + ', flush=True)\n'
+                          'time.sleep(30)\n', encoding='utf-8')
+        stdout = self.h.root / 'agy-linger.jsonl'
+        with stdout.open('wb') as out:
+            process, job = rc.winplat.spawn_group([sys.executable, str(script)], 'gm1-test', stdin=subprocess.PIPE,
+                                                  stdout=out, stderr=subprocess.DEVNULL)
+        receipt = {'vendor': 'gemini', 'role': 'reviewer'}
+        try:
+            with patch.object(rc, 'EXIT_AFTER_COMPLETION_GRACE_SECONDS', .2), patch.object(rc, 'ROLE_WAIT_STEP_SECONDS', .03), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc.wait_role_turn(process, rc.gemini_stdin('p'), stdout, 10, receipt, job)
+        finally:
+            if process.poll() is None: rc.winplat.kill_group(process.pid, job)
+        self.assertEqual((receipt['exit_after_completion']['killed'], receipt['exit_after_completion']['terminal_type']),
+                         (True, 'result'))
+
+    def test_a_gemini_role_is_refused_on_windows_before_any_state(self):   # GM1: ADR-21 amendment, gemini is not in ADR-20
+        run_dir = self.h.root / 'win-run'
+        args = types.SimpleNamespace(detach=False, action='run', safety_mode=None, run_dir=str(run_dir),
+                                     author_vendor='codex', reviewer_vendor='gemini', gate_vendor=None)
+        with patch.object(rc.winplat, 'IS_WINDOWS', True):
+            self.assertIn('a gemini role is not supported on Windows', rc.windows_refusal(args))
+            for action in ('status', 'abort', 'stop'):
+                self.assertIsNone(rc.windows_refusal(types.SimpleNamespace(**{**vars(args), 'action': action})))
+            self.assertIsNone(rc.windows_refusal(types.SimpleNamespace(**{**vars(args), 'reviewer_vendor': 'claude'})))
+            run_dir.mkdir()   # a saved run's frozen gemini gate counts even when the command line names none
+            (run_dir / 'state.json').write_text(json.dumps({'config': {'safety_mode': 'efficient', 'author_vendor': 'codex',
+                                                                       'reviewer_vendor': 'claude', 'gate_vendor': 'gemini'}}))
+            saved = types.SimpleNamespace(**{**vars(args), 'action': 'resume', 'reviewer_vendor': 'claude'})
+            self.assertIn('a gemini role is not supported on Windows', rc.windows_refusal(saved))
+        self.assertIsNone(rc.windows_refusal(args))   # POSIX: unchanged
 
     def test_a_gemini_gate_approval_counts_the_test_run_from_a_tool_step(self):
         co = self.coordinator()

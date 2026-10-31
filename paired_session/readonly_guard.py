@@ -18,18 +18,24 @@ import stat
 import subprocess
 import time
 from pathlib import Path
+
+try:
+    from paired_session.internal_paths import INTERNAL_WORKSPACE_DIRS
+except ImportError:
+    from internal_paths import INTERNAL_WORKSPACE_DIRS
 from typing import Optional
 
 try:
-    from paired_session import candidate_tree, claude_author_probe
+    from paired_session import candidate_tree, claude_author_probe, winplat
 except ImportError:   # run as a script from the package directory
     import candidate_tree
     import claude_author_probe
+    import winplat
 
 
 def _git(workspace: Path, *args, env: Optional[dict] = None, check: bool = True, input: Optional[str] = None, raw: bool = False) -> str:
     proc = subprocess.run(candidate_tree.git_command(*args, cwd=workspace), cwd=workspace, env={**candidate_tree.git_env(), **(env or {})},
-                          input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='surrogateescape', timeout=300)
+                          input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='surrogateescape', timeout=300)
     if check and proc.returncode:
         raise RuntimeError(f'git {args[0]} failed: {proc.stderr.strip()[:300]}')
     return '' if proc.returncode else proc.stdout if raw else proc.stdout.strip()   # raw: a -z path list keeps edge whitespace
@@ -57,7 +63,11 @@ def marks(workspace: Path) -> dict:
 
 def perms(workspace: Path) -> dict:
     """roperm: the permission bits (st_mode & 0o7777) of every tracked and non-ignored untracked regular file. Git records only
-    the executable bit, so a chmod 0644 -> 0600 is invisible to the tree; one lstat per file, no content read."""
+    the executable bit, so a chmod 0644 -> 0600 is invisible to the tree; one lstat per file, no content read.
+    WI-WIN: NTFS has no such bits, so on Windows nothing is recorded (and restore() never chmods); content and existence are the
+    tree's check, size and mtime of ignored entries the ignored-entry check's."""
+    if winplat.IS_WINDOWS:
+        return {}
     result = {}
     for name in filter(None, _git(workspace, 'ls-files', '-co', '--exclude-standard', '-z', raw=True).split('\0')):
         try: info = os.lstat(workspace / name)
@@ -128,9 +138,34 @@ def _only_cli_created_dir(workspace: Path, before: dict, after: dict) -> bool:
                for path, meta in before.items())
 
 
+
+
+def _internal_entry(name: str) -> bool:
+    return any(name == root or name.startswith(root + '/') for root in INTERNAL_WORKSPACE_DIRS)
+
+
+def _ignored_entries(workspace: Path) -> list:
+    # Git collapses ignored directories. Expand only ancestors of our excluded roots,
+    # using Git again so tracked config.md and nonignored siblings remain outside this set.
+    def listing(prefix=None):
+        args = ['ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z']
+        if prefix is not None:
+            args += ['--', prefix + '/']
+        return [name.rstrip('/') for name in _git(workspace, *args).split('\0') if name]
+    entries = listing()
+    if '.review-loop' in entries:
+        entries.remove('.review-loop')
+        for child in (workspace / '.review-loop').iterdir():
+            name = child.relative_to(workspace).as_posix()
+            if not _internal_entry(name):
+                entries.extend(listing(name) if child.is_dir() and not child.is_symlink() else
+                               [name] if _git(workspace, 'check-ignore', '--', name, check=False) else [])
+    return sorted({name for name in entries if not _internal_entry(name)})
+
+
 def ignored_changes(workspace: Path, recorded: dict) -> list:
     """The recorded ignored entries (as git lists them; a collapsed directory is one entry) that changed or are gone."""
-    changed = {name for name, meta in (recorded.get('ignored_meta') or {}).items() if _lstat(workspace / name) != meta}
+    changed = {name for name, meta in (recorded.get('ignored_meta') or {}).items() if not _internal_entry(name) and _lstat(workspace / name) != meta}
     if '.claude' in changed and (before := recorded.get('ignored_claude')):
         after = _claude_listing(workspace)
         if after is not None and _only_cli_created_dir(workspace, before, after): changed.discard('.claude')
@@ -141,7 +176,7 @@ def capture(workspace: Path, keep: Path) -> dict:
     keep.mkdir(parents=True, exist_ok=True)
     index = _index_path(workspace)
     if index.exists(): shutil.copy2(index, keep / 'index')
-    ignored = [name.rstrip('/') for name in _git(workspace, 'ls-files', '-o', '-i', '--exclude-standard', '--directory', '-z').split('\0') if name]
+    ignored = _ignored_entries(workspace)
     meta, deadline = {}, time.monotonic() + IGNORED_SECONDS
     for name in ignored[:IGNORED_LIMIT]:
         if time.monotonic() > deadline: break
@@ -160,7 +195,8 @@ def evidence(workspace: Path, recorded: dict, keep: Path, path: Path) -> dict:
     lines += [f'mode: {name} {recorded["perms"][name]:04o} -> {stat.S_IMODE(os.lstat(workspace / name).st_mode):04o}'
               for name in perm_changes(workspace, recorded)]   # roperm: bits the git diff below does not show
     diff =_git(workspace, 'diff', '--binary', '--no-ext-diff', '--no-textconv', recorded['tree'], now['tree'], check=False)
-    path.write_text('\n'.join(lines) + '\n\n' + diff + '\n', errors='surrogateescape')
+    with open(path, 'w', encoding='utf-8', errors='surrogateescape', newline='') as handle:   # WI-WIN: UTF-8 and LF everywhere
+        handle.write('\n'.join(lines) + '\n\n' + diff + '\n')
     return now
 
 

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 PROBE = 'claude-author-filesystem-v1'
 TREE_PREFIX = 'paired-session-claude-probe-tree-'   # FIELD-13 E: outside the /tmp/paired-session-author-probe-* glob below, so a tree in /tmp is never a host-wide name
-NO_SCHEMA = SimpleNamespace(read_text=lambda: '{}')   # lets the coordinator build an author argv just to read its surface
+NO_SCHEMA = SimpleNamespace(read_text=lambda encoding=None: '{}')   # lets the coordinator build an author argv just to read its surface
 SETTLE_SECONDS = 1.0   # the tree is listed twice this far apart: a late or detached write shows up as a difference
 # Claude Code's permission-denied tool_result wording ("Claude requested permissions to <use Bash|write to PATH>, but you haven't granted
 # it yet"), as the reviewer probe in coordinator.py and the test_real_coordinator.py fixture already match it. The repo records no CLI
@@ -145,9 +145,9 @@ def hardlink_refused(rows: dict, ws: Path, sentinel_ino: int) -> bool:
     return rows['link_hardlink']['denied'] and not on_sentinel
 
 
-def listing(base: Path, parent: Path, skip: set) -> dict:
+def listing(base: Path, parent: Path, skip: set, extra_parents: tuple = ()) -> dict:
     """Kind, inode, size, mtime and link target of the whole probe tree (nothing followed; `.git` skipped, the workspace dir's own mtime
-    ignored), and, without descending or dir mtimes (other runs share them), of the entries beside it in `parent` and the /tmp probe names."""
+    ignored), and, without descending or dir mtimes (other runs share them), of the entries in `parent` and `extra_parents`, and the /tmp probe names."""
     snap, ws = {}, base / 'workspace'
     def add(path: Path, tree: bool):
         try: info = os.lstat(path)
@@ -160,8 +160,9 @@ def listing(base: Path, parent: Path, skip: set) -> dict:
             for name in sorted(os.listdir(path)):
                 if not (path == ws and name == '.git'): add(path / name, True)
     add(base, True)
-    for name in sorted(os.listdir(parent)):
-        if parent / name not in skip: add(parent / name, False)
+    for directory in dict.fromkeys((parent, *extra_parents)):
+        for name in sorted(os.listdir(directory)):
+            if directory / name not in skip: add(directory / name, False)
     for name in sorted(glob.glob('/tmp/paired-session-author-probe-*')): add(Path(name), False)
     return snap
 

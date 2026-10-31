@@ -675,7 +675,7 @@ class RealCoordinatorTests(unittest.TestCase):
         config = self.test_home / '.codex/config.toml'
         original = config.read_text()
         before = co.author_flags()['codex_config_sha256']
-        for path in (self.run_dir / 'paired-session-author-probe-abc' / 'workspace', self.workspace):
+        for path in (co.scratch_base / 'paired-session-author-probe-abc' / 'workspace', self.workspace):
             with config.open('a') as handle:
                 handle.write('\n[projects.' + json.dumps(str(path)) + ']\ntrust_level = "trusted"\n')
         self.assertEqual(co.author_flags()['codex_config_sha256'], before)
@@ -721,7 +721,7 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertIn('-P', invocation['args'])
         self.assertEqual(denied['copied_policy_files'], ['config.toml'])
         self.assertEqual(denied['source_config_sha256'], denied['copy_config_sha256'])
-        self.assertEqual(Path(invocation['codex_home']).parent, self.run_dir)
+        self.assertEqual(Path(invocation['codex_home']).parent, co.scratch_base)
         self.assertFalse(Path(invocation['codex_home']).exists())
         self.assertEqual(invocation['codex_home_entries'], ['config.toml'])
         self.assertIn('--log-denials', invocation['args'])
@@ -933,6 +933,8 @@ if args and args[0] == "sandbox":
     fs = config.get("permissions." + profile + ".filesystem", "")
     home = Path(os.environ.get("CODEX_HOME", "/nonexistent")).resolve()
     test_root = Path(os.environ.get("FAKE_CODEX_TEST_ROOT", "/nonexistent")).resolve()
+    scratch_home = (home.name.startswith("codex-sandbox-home-") and
+                    home.parent == Path(os.environ.get("TMPDIR", "/nonexistent")).resolve().parent)
     expected_fs = {{':root': 'read', ':tmpdir': 'write',
                    **{{str(Path(root).resolve()): 'write' for root in config.get('sandbox_workspace_write.writable_roots', [])}},
                    ':workspace_roots': {{'.': 'write', '.git': 'read', '.agents': 'read', '.codex': 'read', '.aws': 'read'}}}}
@@ -943,7 +945,7 @@ if args and args[0] == "sandbox":
             config.get("sandbox_workspace_write.network_access") is not False or
             config.get("sandbox_workspace_write.exclude_slash_tmp") is not True or
             config.get("sandbox_workspace_write.exclude_tmpdir_env_var") is not False or
-            test_root not in home.parents or not (home / "config.toml").is_file()):
+            (test_root not in home.parents and not scratch_home) or not (home / "config.toml").is_file()):
         print("error: unsupported synthetic author policy", file=sys.stderr); sys.exit(2)
     target = Path(command[-1]).resolve() if command else None
     cwd = Path(args[args.index("-C") + 1]).resolve() if "-C" in args else Path.cwd().resolve()
@@ -1131,6 +1133,75 @@ sys.exit(result.returncode)
             '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), *extra])
         return rc.Coordinator(args)
 
+    def test_completion_kill_returncode_keeps_normal_answer_and_checks(self):
+        co = self.coordinator()
+        original_wait = rc.wait_role_turn
+
+        def completed_kill(process, prompt, path, timeout, receipt, job):
+            original_wait(process, prompt, path, timeout, receipt, job)
+            receipt['exit_after_completion'] = {'waited_s': 60, 'killed': True, 'terminal_type': 'turn.completed'}
+            process.returncode = -9   # the real linger/kill is covered by test_role_completion_wait
+
+        with patch.object(rc, 'wait_role_turn', side_effect=completed_kill):
+            result = co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        self.assertIsInstance(result, dict)
+        receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+        self.assertEqual(receipt['returncode'], -9)
+        self.assertTrue(receipt['exit_after_completion']['killed'])
+        self.assertIn('snapshot_after', receipt)
+        self.assertEqual(receipt['global_config_changes']['status'], 'PASS')
+        self.assertTrue(receipt['invocation_budget_counted'])
+
+    def test_failed_terminal_kill_retains_exit_failure_classification(self):
+        for code, stderr, expected in ((-9, '', 'CLI exit -9'),
+                                       (1, '429 too many requests', 'rate_limited'),
+                                       (1, 'Selected model is at capacity', 'transient provider error')):
+            with self.subTest(code=code, stderr=stderr):
+                self.run_dir = self.root / ('failure-' + str(code) + '-' + str(len(stderr)))
+                co = self.coordinator()
+                original_wait = rc.wait_role_turn
+
+                def failed_kill(process, prompt, path, timeout, receipt, job):
+                    original_wait(process, prompt, path, timeout, receipt, job)
+                    with path.open('a') as stream:
+                        stream.write(json.dumps({'type': 'turn.failed'}) + '\n')
+                    path.with_name(path.name.replace('.stdout.jsonl', '.stderr.log')).write_text(stderr)
+                    receipt['exit_after_completion'] = {
+                        'waited_s': 60, 'killed': True, 'terminal_type': 'turn.failed'}
+                    process.returncode = code
+
+                with patch.object(rc, 'wait_role_turn', side_effect=failed_kill), \
+                        patch.object(co, '_collect', wraps=co._collect) as collect, \
+                        patch.object(rc, 'classify_transient_failure', wraps=rc.classify_transient_failure) as transient:
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+                collect.assert_not_called()   # the fake's interim agent_message must not become the answer
+                if 'capacity' in stderr:
+                    transient.assert_called_once()
+                receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
+                self.assertIn('snapshot_after', receipt)
+                self.assertEqual(receipt['global_config_changes']['status'], 'PASS')
+
+    def test_role_wait_baseexception_closes_stdin_after_reaping(self):
+        co = self.coordinator()
+        original_wait = rc.wait_role_turn
+        pipes = []
+
+        def interrupted_wait(process, prompt, path, timeout, receipt, job):
+            pipes.append(process.stdin)
+            original_process_wait = process.wait
+            def wait(timeout=None):
+                if timeout is not None:
+                    raise KeyboardInterrupt()
+                return original_process_wait()
+            with patch.object(process, 'wait', side_effect=wait):
+                original_wait(process, b'x' * (256 * 1024), path, timeout, receipt, job)
+
+        with patch.object(rc, 'wait_role_turn', side_effect=interrupted_wait):
+            with self.assertRaises(KeyboardInterrupt):
+                co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
+        self.assertTrue(pipes[0].closed)
+
     def test_failed_first_persistent_claude_turn_rotates_session(self):
         for role, flags in (('author', ['--author-vendor', 'claude']),
                             ('reviewer', ['--reviewer-vendor', 'claude'])):
@@ -1201,15 +1272,17 @@ sys.exit(result.returncode)
 
     def test_timeout_race_with_positive_rate_limit_exit_remains_counted(self):
         co = self.coordinator()
+        co.args.timeout = .01   # W11 r2: short-step wait retries until the actual outer deadline
 
         class TimeoutRaceProcess:
             pid = 12345
             returncode = None
 
-            def communicate(self, *_args, **_kwargs):
-                raise subprocess.TimeoutExpired('mock-cli', 1)
+            stdin = io.BytesIO()
 
-            def wait(self):
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired('mock-cli', timeout)
                 self.returncode = 7
                 return self.returncode
 
@@ -4223,11 +4296,11 @@ sys.exit(result.returncode)
             co = rc.Coordinator(args)
             self.assertIn(str(root / 'support'), co._fresh_scan_run_paths())
             (co.context / 'delta-since-last-review.patch').write_text(
-                f'diff --git a{co.run_dir}/internal/current-review/CLAUDE.md '
-                f'b{co.run_dir}/internal/current-review/CLAUDE.md\n'
+                f'diff --git a{co.mirror_base}/current-review/CLAUDE.md '
+                f'b{co.mirror_base}/current-review/CLAUDE.md\n'
                 f'+++ b{root}/support/docs/CLAUDE.md\n'
-                f'diff --git a{co.run_dir}/internal/current-review/Makefile '
-                f'b{co.run_dir}/internal/current-review/Makefile\n'
+                f'diff --git a{co.mirror_base}/current-review/Makefile '
+                f'b{co.mirror_base}/current-review/Makefile\n'
                 f'+++ b{root}/support/paired_session/Makefile\n'
                 ' context from CLAUDE.md if available\n')
             co.assert_fresh_prompt('shadow', 'Clean prompt')
@@ -4640,7 +4713,7 @@ sys.exit(result.returncode)
                             for name in ('external_tmpdir_denied', 'slash_tmp_denied')))
         invocations = [json.loads(line) for line in sandbox_log.read_text().splitlines()]
         self.assertEqual(len(invocations), 4)
-        expected_tmpdir = self.run_dir / 'author-tmp'
+        expected_tmpdir = Path(json.loads((self.run_dir / 'state.json').read_text())['scratch_root']) / 'author-tmp'
         for invocation in invocations:
             self.assertIn('--log-denials', invocation['args'])
             self.assertEqual(invocation['tmpdir'], str(expected_tmpdir))
@@ -6525,12 +6598,12 @@ sys.exit(result.returncode)
         self.assertTrue(any('resume' in row['command'] for row in authors))
         for row in authors:
             command = row['command']
-            self.assertEqual(row['environment_overrides']['TMPDIR'], str(self.run_dir / 'author-tmp'))
+            self.assertEqual(row['environment_overrides']['TMPDIR'], str(Path(state['scratch_root']) / 'author-tmp'))
             self.assertIn('--ignore-rules', command)
             self.assertIn('sandbox_mode="workspace-write"', command)
             self.assertIn('approval_policy="never"', command)
             for setting in ('sandbox_workspace_write.writable_roots=' +
-                            json.dumps([str((self.run_dir / 'author-tmp').resolve())]),
+                            json.dumps([str((Path(state['scratch_root']) / 'author-tmp').resolve())]),
                             'sandbox_workspace_write.exclude_tmpdir_env_var=false',
                             'sandbox_workspace_write.exclude_slash_tmp=true'):
                 self.assertIn(setting, command)

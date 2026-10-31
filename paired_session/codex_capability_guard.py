@@ -1,7 +1,7 @@
 """Read-only conservative scan of active Codex capability configuration."""
 import hashlib
 import json
-import os, pwd
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +11,23 @@ from pathlib import Path
 _CAPABILITIES = {'mcp_servers', 'notify', 'profile', 'permissions', 'default_permissions'}
 _REQUIREMENTS = {'sandbox_mode', 'approval_policy', 'allowed_sandbox_modes', 'features',
                  'allowed_permission_profiles', 'permissions'}
+# W10: the Codex desktop app writes MCP servers and notify into ~/.codex/config.toml (Yuan's Windows acceptance run)
+CONFIG_HINT = '; use a dedicated CODEX_HOME directory with its own `codex login` (see README)'
+# W10 r2: a project .codex/config.toml or a system (/etc/codex) file stays active whatever CODEX_HOME is
+SOURCE_HINT = '; change or remove that setting in the named project or system file (CODEX_HOME does not cover it)'
+
+
+def refusal(result, code_home):
+    """The refusal text of a FAIL: its issues joined, then a hint per kind of config finding (`... configured in <path>`):
+    CONFIG_HINT for one under code_home (config, plugin cache), SOURCE_HINT for a project or system file."""
+    home = Path(code_home).resolve()
+    sources = [Path(issue.split(' configured in ', 1)[1]) for issue in result['issues'] if ' configured in ' in issue]
+    text = '; '.join(result['issues'])
+    if any(home in source.parents for source in sources):
+        text += CONFIG_HINT
+    if any(home not in source.parents for source in sources):
+        text += SOURCE_HINT
+    return text
 
 
 def _root_key(line):
@@ -93,6 +110,7 @@ def inspect(code_home, workspace, *, mdm_run=None, platform=None, managed_root=N
                 issues.append('cannot inspect plugin capability bundle: ' + str(path))
     if (platform or sys.platform) == 'darwin':
         managed = Path(managed_root or '/Library/Managed Preferences')
+        import pwd   # WI-WIN: POSIX-only module, needed on macOS only
         user = pwd.getpwuid(os.getuid()).pw_name
         paths = (managed / 'com.openai.codex.plist', managed / user / 'com.openai.codex.plist',
                  Path('/Library/Preferences/com.openai.codex.plist'))

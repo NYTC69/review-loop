@@ -388,6 +388,46 @@ The separate removals of gate off, round-limit override acceptance, strict Claud
 Threat model: reasonable safeguards within the task's scope, assuming users and models do not act maliciously or cross boundaries. The purpose is not absolute safety or exhaustive worst-case hardening; reviewers should assess this owner-approved scope.
 
 
+## ADR-20: native Windows support (owner 2026-10-26)
+
+Owner request (Yuan, 2026-10-26): "要支持在windows上跑这个插件 … 你直接开一个wi, 把这个支持加一下吧." Target host: native
+Windows, Claude Code desktop, PowerShell; paired-session full runs and review-pr. Plan:
+`.compass/results/2026-10-26_wi-win_plan.md` (WI-WIN, batches W1-W7, then W8-W9 from the windows-latest runs and the final gate). Every Windows change sits behind
+`winplat.IS_WINDOWS`; the macOS code paths and bytes are unchanged.
+
+Decisions:
+- D1 Read-only Claude roles on Windows: Claude Code has no Bash sandbox on native Windows. They run with the sandbox
+  off (`sandbox.enabled` and `failIfUnavailable` false), keep Edit/Write denied and the exact Bash allowlist, and keep
+  the post-turn read-only workspace check (a change voids the turn, restores and HOLDs). Strict mode refuses on Windows.
+- D2 `--detach` is not supported on Windows in v1 and refuses with a clear message. A turn's process tree is still
+  killed on timeout, through a named Job Object per turn.
+- D3 Minor version v3.3.0. Gate: cross-vendor review, green CI (the macOS/Linux jobs plus a windows-latest job with fake
+  CLIs), one macOS real run and a real Windows run by Yuan.
+- D4 Linux, WSL included, stays unsupported; only native Windows is added. `permission-probe` refuses on Windows too
+  (it verifies the Bash sandbox that Windows lacks).
+
+Accepted residuals (owner threat model below):
+- No OS sandbox for Claude roles on Windows: the Claude author's Bash is unsandboxed and can write outside the
+  workspace, the run dir included; read-only roles rely on the permission rules and the post-turn check.
+- In `dontAsk` mode Claude Code may auto-approve its built-in read-only Bash commands beyond the exact allowlist; with
+  no sandbox under them they run unconfined (read-only by design).
+- Credential files stay readable by Bash: the Read deny rules added on Windows cover the Read tool only, and secret env
+  vars are not hidden from Bash.
+- Path-based scratch removal on Windows (lstat, then act; reparse points are removed as themselves, never followed),
+  without the POSIX fd-relative walk.
+- The Job Object launcher ends a turn's leftover processes when the turn's CLI exits (a POSIX author turn's leftovers
+  keep running); a launcher killed from outside drops the job name, and a probe then reports the turn gone.
+
+Verification plan: the windows-latest CI job runs the Windows test modules (`paired_session/windows-ci-modules.txt`)
+and the W7 fake-CLI end-to-end runs (ACCEPTED and REPORTED); the macOS/Linux jobs stay green; one macOS real run is
+ACCEPTED; Yuan's real Windows runs from PowerShell steps (one paired-session run ACCEPTED with a Claude author and a
+Codex reviewer, one review-pr run REPORTED) are recorded as release evidence in the CHANGELOG.
+
+Threat model (owner, verbatim): "你得和reviewer讲清楚，我们的目的不是做到绝对的安全，而是默认用户和模型不会做坏事。不会越界，所以只做合理范围内的防护，不能死磕边界情况，和最坏情况".
+Where a POSIX hardening (0700 + uid ownership, O_NOFOLLOW fd walks, unlink-while-locked) has no cheap Windows
+equivalent, Windows uses a simple reasonable check (a real directory, not a reparse point, under the user's profile or
+temp directory) instead of an ACL/SID layer.
+
 ## ADR-21: WI-GEM — Gemini (Antigravity CLI `agy`) as a third paired-session vendor (owner 2026-10-29)
 
 Context: Yuan has a Google AI Pro plan and wants a third agent that keeps a run going when the Codex or the Claude quota runs out, and a path to adopt future Gemini models by changing a model id. Gemini CLI personal OAuth is shut down; the client is `agy` (Antigravity CLI). A 2026-10-29 spike passed non-interactive auth, `--json-schema`, `--conversation <id>`, tool steps in stream-json and read-only under `--sandbox`. The coordinator hard-codes two vendors.
@@ -411,3 +451,5 @@ Threat model: reasonable safeguards within the task's scope, assuming users and 
 Amendment 2026-10-29 (B1 fix 7902669, V317-FB contract): codex_bin and claude_bin stay always bound and required; gemini_bin is bound and required only when a role runs gemini or the saved run froze it.
 
 Amendment 2026-10-29 (B3a, live agy test): the read-only settings also allow read_file(*); headless agy denies reads outside the workspace otherwise, and reviews read run/context files there.
+
+Amendment 2026-11-01 (GM1, merge onto v3.4.0): gemini is not part of ADR-20. On native Windows a gemini role, named on the command line, in the profile or frozen in a saved run, is refused before any lease or state write (`REFUSED: a gemini role is not supported on Windows ...`); `status`, `abort` and `stop` stay usable. Gemini read-only turns use the v3.4.0 scratch layout like the Codex read-only roles: the per-dispatch TMPDIR sits under the run's external `scratch_base` (legacy runs keep `run_dir/role-tmp`), and the INTERNAL_WORKSPACE_DIRS exclusions apply to them unchanged because the read-only checks key on the role, not the vendor.

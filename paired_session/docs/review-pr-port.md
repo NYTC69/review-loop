@@ -94,7 +94,7 @@ therefore add `-c credential.helper= -c 'credential.helper=!gh auth git-credenti
 No hook and no filter driver from the operator's configuration runs (for example an LFS smudge with network access).
 Attributes in the PR cannot define drivers. LFS pointers stay pointers; their content is not reviewed and the report
 says so.
-1. Create `<run root>/pr/<UUID>/` outside every product worktree, next to the run directories (PSE "Work item").
+1. Create `<repo>/.review-loop/pr/<UUID>/` by default (gitignored), next to the run directories under the main checkout's `.review-loop/`. Resolve `<repo>` using `git rev-parse --path-format=absolute --git-common-dir` and its parent when it ends in `/.git`; when unresolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), report fallback to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop`. An explicit root wins; `--remove` accepts marker-bearing clones under both roots (PSE "Work item").
 2. Run `git clone --no-checkout --reference-if-able <operator repo> --dissociate <target repository URL> <dir>`.
    - The operator's objects only speed up the clone; `--dissociate` copies what the clone needs, so it does not depend
      on alternates.

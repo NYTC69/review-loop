@@ -17,6 +17,10 @@ import subprocess
 import tempfile
 import unicodedata
 import uuid
+try:
+    from paired_session import winplat
+except ModuleNotFoundError:
+    import winplat
 
 
 class CandidateError(ValueError):
@@ -24,7 +28,7 @@ class CandidateError(ValueError):
 
 
 # Git config that stops a repo (whose .git/config an author may have written) from choosing a program git runs.
-GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat',
+GIT_NO_EXEC = ('-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=' + winplat.devnull_path(), '-c', 'core.pager=cat',
                '-c', 'diff.external=', '-c', 'core.sshCommand=false')
 NO_EXT_DIFF = ('--no-ext-diff', '--no-textconv')
 
@@ -32,7 +36,7 @@ EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
 @functools.lru_cache(maxsize=None)
 def _attr_source():   # git >= 2.40: read attributes from the empty tree, so no workspace .gitattributes can select a filter driver
-    try: version = tuple(int(part) for part in subprocess.run(['git', '--version'], stdout=subprocess.PIPE, text=True).stdout.split()[2].split('.')[:2])
+    try: version = tuple(int(part) for part in subprocess.run(['git', '--version'], stdout=subprocess.PIPE, text=True, encoding='utf-8').stdout.split()[2].split('.')[:2])
     except (OSError, IndexError, ValueError): return ()
     return ('--attr-source=' + EMPTY_TREE,) if version >= (2, 40) else ()
 
@@ -41,8 +45,8 @@ def git_env():
     return {**os.environ, 'GIT_ATTR_NOSYSTEM': '1', 'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': 'none'}   # no lazy fetch, no transport helper (ext::)
 
 def _filter_overrides(cwd):   # G1: blank every filter driver the effective config defines, whatever attribute source selects it
-    proc = run_bounded(['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=/dev/null', 'config', '--includes', '--null', '--get-regexp',
-                        r'^filter\..*\.(clean|smudge|process|required)$'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='replace', timeout=10)
+    proc = run_bounded(['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=' + winplat.devnull_path(), 'config', '--includes', '--null', '--get-regexp',
+                        r'^filter\..*\.(clean|smudge|process|required)$'], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', timeout=10)
     names = dict.fromkeys(row.split('\n', 1)[0][len('filter.'):].rsplit('.', 1)[0] for row in proc.stdout.split('\0') if row)
     if not all(re.fullmatch(r'[A-Za-z0-9_.+-]+', name) for name in names):
         raise RuntimeError('unsupported git filter driver name')   # a RuntimeError, so the drive loop HOLDs on it
@@ -54,7 +58,47 @@ def run_bounded(command, timeout=60, **kwargs):   # a FIFO or a stuck read in th
 
 
 def git_command(*args, cwd=None):   # a workspace call passes cwd so its filter drivers are neutralised too
-    return ['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=/dev/null', *_attr_source(), *(_filter_overrides(cwd) if cwd else ()), *args]
+    return ['git', *GIT_NO_EXEC, '-c', 'core.attributesFile=' + winplat.devnull_path(), *_attr_source(), *(_filter_overrides(cwd) if cwd else ()), *args]
+
+
+def windows_git_modes(workspace: Path) -> dict:
+    """Windows modes come from Git, never extension-synthesized st_mode; index wins over HEAD."""
+    modes = {}
+    for args in (('ls-files', '--stage', '-z'), ('ls-tree', '-r', '-z', 'HEAD')):
+        result = run_bounded(git_command(*args, cwd=workspace), cwd=workspace,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode:
+            if args[0] == 'ls-tree':  # unborn repository
+                continue
+            raise CandidateError('cannot read Windows Git index modes: ' + result.stderr.decode(errors='replace'))
+        for record in result.stdout.split(b'\0'):
+            if not record:
+                continue
+            metadata, path = record.split(b'\t', 1)
+            fields = metadata.split()
+            if args[0] == 'ls-files' and fields[2] != b'0':
+                raise CandidateError('Windows Git index has unmerged paths')
+            modes.setdefault(os.fsdecode(path), fields[0].decode())
+    return modes
+
+
+def _windows_checkout_links(root, entries):
+    """Git's no-privilege checkout makes link text files; isolated candidates need real links."""
+    if not winplat.IS_WINDOWS:
+        return
+    for mode, _, name in entries:
+        if mode != '120000':
+            continue
+        path = root / name
+        if path.is_symlink():
+            continue
+        target = path.read_bytes().decode('utf-8', 'surrogateescape')
+        path.unlink()
+        try:
+            path.symlink_to(target, target_is_directory=(path.parent / target).is_dir())
+        except OSError as exc:
+            raise CandidateError('Windows candidate requires creating symlink ' + name +
+                                 '; enable Developer Mode or grant symlink privilege: ' + str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -105,13 +149,13 @@ def _git_env(**overrides):
 def _git(args, *, cwd=None, env=None):
     command = ['git', *GIT_NO_EXEC,
                '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
-               '-c', 'core.attributesFile=/dev/null', '-c', 'core.ignorecase=false',
-               '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=true',
-               '-c', 'core.filemode=true', '-c', 'core.autocrlf=false',
+               '-c', 'core.attributesFile=' + winplat.devnull_path(), '-c', 'core.ignorecase=false',
+               '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=false' if winplat.IS_WINDOWS else 'core.symlinks=true',
+               '-c', 'core.filemode=false' if winplat.IS_WINDOWS else 'core.filemode=true', '-c', 'core.autocrlf=false',
                '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
                '-c', 'transfer.fsckObjects=true', *args]
     result = subprocess.run(command, cwd=cwd, env=env or _git_env(),
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         raise CandidateError('git candidate operation failed: ' + result.stderr.strip())
     return result.stdout.strip()
@@ -120,9 +164,9 @@ def _git(args, *, cwd=None, env=None):
 def _git_bytes(args, *, env, input_bytes=None):
     command = ['git', *GIT_NO_EXEC,
                '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true',
-               '-c', 'core.attributesFile=/dev/null', '-c', 'core.ignorecase=false',
-               '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=true',
-               '-c', 'core.filemode=true', '-c', 'core.autocrlf=false',
+               '-c', 'core.attributesFile=' + winplat.devnull_path(), '-c', 'core.ignorecase=false',
+               '-c', 'core.precomposeunicode=false', '-c', 'core.symlinks=false' if winplat.IS_WINDOWS else 'core.symlinks=true',
+               '-c', 'core.filemode=false' if winplat.IS_WINDOWS else 'core.filemode=true', '-c', 'core.autocrlf=false',
                '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
                '-c', 'transfer.fsckObjects=true', *args]
     result = subprocess.run(command, env=env, input=input_bytes,
@@ -284,7 +328,7 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
         raise CandidateError('candidate scratch must be outside workspace/worktrees, run and Git directories')
     for key in ('core.sparseCheckout', 'core.ignoreStat'):
         proc = subprocess.run(['git', '-C', str(workspace), 'config', '--bool', key], env=env,
-                              text=True, capture_output=True)
+                              text=True, encoding='utf-8', capture_output=True)
         if proc.returncode == 0 and proc.stdout.strip() == 'true':
             raise CandidateError('candidate admission refuses sparse or ignored-stat index')
     labels = _git(['ls-files', '-v', '-z'], cwd=workspace, env=env).split('\0')
@@ -318,6 +362,8 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
         _git(['checkout-index', '--all', '--prefix=' + str(root) + os.sep], env=scratch_env)
         if _git(['write-tree'], env=scratch_env) != tree:
             raise CandidateError('isolated index differs from frozen parent tree')
+        if winplat.IS_WINDOWS:
+            _windows_checkout_links(root, entries)
         _validate_checkout(root)
         _exact_paths(root, entries)
         blobs = _indexed_blobs(scratch_env, entries)
@@ -326,7 +372,7 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
             actual = os.fsencode(os.readlink(target)) if mode == '120000' else target.read_bytes()
             if actual != blobs[oid] or _object_oid(actual, object_format) != oid:
                 raise CandidateError('candidate checkout bytes differ from indexed blob: ' + path)
-            if mode in ('100644', '100755') and bool(target.stat().st_mode & 0o111) != (mode == '100755'):
+            if not winplat.IS_WINDOWS and mode in ('100644', '100755') and bool(target.stat().st_mode & 0o111) != (mode == '100755'):
                 raise CandidateError('candidate checkout mode differs from indexed blob: ' + path)
         if (_git(['rev-parse', '--verify', 'HEAD'], cwd=workspace, env=env) != head or
                 hashlib.sha256(live_index.read_bytes()).hexdigest() != index_hash or
@@ -340,8 +386,8 @@ def prepare_candidate_baseline(workspace: Path, run_dir: Path, candidate_parent:
                                  object_format, tuple(entries))
     except BaseException:
         for path in (candidate_base, metadata_base):
-            if path is not None:
-                shutil.rmtree(path, ignore_errors=True)
+            if path is not None:   # W10: on Windows the fetched objects are read-only
+                (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(path, ignore_errors=True)
         raise
 
 
@@ -351,6 +397,11 @@ def _candidate_files(baseline: CandidateBaseline) -> dict[str, tuple[str, bytes]
     if not stat.S_ISDIR(mode) or (root.lstat().st_dev, root.lstat().st_ino) != baseline.root_identity:
         raise CandidateError('candidate root identity changed')
     _validate_checkout(root)
+    modes = {}
+    if winplat.IS_WINDOWS:
+        env = _git_env(GIT_DIR=str(baseline.git_dir), GIT_INDEX_FILE=str(baseline.index), GIT_WORK_TREE=str(root))
+        modes = {path: mode for mode, _, path in baseline.parent_entries}
+        modes.update({path: mode for mode, _, path in _index_entries(env)})
     found = {}
     for path in root.rglob('*'):
         info = path.lstat()
@@ -360,6 +411,11 @@ def _candidate_files(baseline: CandidateBaseline) -> dict[str, tuple[str, bytes]
         if stat.S_ISLNK(info.st_mode):
             found[relative] = ('120000', os.fsencode(os.readlink(path)))
         elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            if winplat.IS_WINDOWS:
+                data = winplat.read_regular_file_nofollow(path)
+                mode = modes.get(relative, '100644')
+                found[relative] = (mode if mode in ('100644', '100755') else '100644', data)
+                continue
             if not hasattr(os, 'O_NOFOLLOW'): raise CandidateError('no nofollow file reads on this platform')
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, 'rb') as handle:
@@ -567,6 +623,8 @@ def rebuild_candidate_from_oid(baseline: CandidateBaseline,
                        GIT_WORK_TREE=str(root), GIT_CEILING_DIRECTORIES=str(base))
         _git(['read-tree', revision.tree_oid], env=env)
         _git(['checkout-index', '--all', '--prefix=' + str(root) + os.sep], env=env)
+        if winplat.IS_WINDOWS:
+            _windows_checkout_links(root, _index_entries(env))
         separate = root.stat().st_dev not in {
             baseline.git_dir.stat().st_dev, index.stat().st_dev,
             baseline.workspace.stat().st_dev,

@@ -33,27 +33,41 @@ the first command that runs `bin/paired-session`):
 
 ## Stage A checks
 
-On every entry, first check the host and the CLIs: a host that is not macOS
-(`uname -s` is not `Darwin`) is refused with
-`<entry>: paired-session needs macOS; Linux and other hosts are not supported` (`<entry>` is the
+On every entry, first check the host and the CLIs. Supported hosts are macOS
+(`uname -s` is `Darwin`) and native Windows (under Git Bash, which Claude Code's
+Bash tool uses there, `uname -s` starts with `MINGW64_NT-` or `MSYS_NT-`;
+in PowerShell `$env:OS -eq 'Windows_NT'`). Any other host, Linux and
+WSL (`uname -s` is `Linux`) included, is refused with
+`<entry>: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported` (`<entry>` is the
 handing-off entry's name, or `paired-session` when this skill was invoked directly),
-and both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
+and both `codex` and `claude` must be on PATH (`command -v`; PowerShell:
+`Get-Command`), whatever vendors the
 resolved roles use: the coordinator binds both binaries at run start (the
 review-loop entry has already checked both on a handoff).
-`agy` (`gemini_bin`) is needed only when a role runs gemini (ADR-21).
+`agy` (`gemini_bin`) is needed only when a role runs gemini (ADR-21); on Windows the coordinator refuses a gemini role.
+On Windows, invoke Python snippets and scripts with `python -X utf8` (or `py -3 -X utf8`) so piped paths and content use UTF-8.
+
+On Windows only the default efficient mode runs: the coordinator refuses
+`--strict` (or `"safety_mode": "strict"` in the profile), `permission-probe` and
+`--detach`, so never choose them there, and report such a refusal verbatim. Git
+for Windows (its Git Bash) is required, and the run directory and the workspace
+must not be in a OneDrive-synced folder.
 Identify the intended Git worktree. Use a dedicated task worktree; preserve
 unrelated user changes and do not switch away from a dirty checkout. If a
 dedicated worktree is unavailable, ask before creating one. Determine the
 project's test command from its docs/manifests and ask only if it cannot be
 established safely. When a Claude role (reviewer or gate) runs it, the command
 must be one exact command without `$(`, backticks, `|`, `;`, `&&`, redirection
-or loops; otherwise ask for a `/bin/bash /absolute/path/script.sh` form. A
+or loops; otherwise ask for a `/bin/bash /absolute/path/script.sh` form (on
+Windows `bash ./script.sh`; there Codex roles run commands in PowerShell and
+Claude roles and the coordinator's own test run in Git Bash, so prefer a command
+that runs the same in both, such as `python -m pytest -q`). A
 declined or unanswered question is a failed stage A check. Under `--handsfree`
 or `handsfree: true` nobody answers, so any such question is a failed stage A
 check, reported as `stage A failure: handsfree cannot answer (<question>)`.
-Before `run`, the product worktree must contain no file the entry skills
-created: protocol bundles go to the temp root and the run directory lives
-outside the worktree. Report any other untracked, non-ignored file in it (`git
+Before `run`, entry-created files in the product worktree must be gitignored:
+protocol bundles go to the temp root and persistent run output goes to
+`<repo>/.review-loop/runs/<UUID>/`. Report any other untracked, non-ignored file in it (`git
 status --porcelain --untracked-files=all`) in stage A or with the start line:
 it becomes part of the reviewed change and, with `auto_commit`, of the
 delivered commit.
@@ -111,10 +125,15 @@ withdrawn, and operator-withdrawn rows stay withdrawn.
 
 ## Work item
 
-Write `WORKITEM.md` in the run directory the host skill names (always outside
-the product worktree, and best outside any git repository: tools that refuse
-scratch space inside a repository then fall back to /tmp, which the Codex
-read-only sandbox denies; `run` warns about it) with goal, acceptance criteria, scope, and verification.
+Write `WORKITEM.md` in `<repo>/.review-loop/runs/<UUID>/` with goal, acceptance criteria, scope, and verification.
+Resolve `<repo>` with `git rev-parse --path-format=absolute --git-common-dir`, taking its parent
+when it ends in `/.git`: this is the main checkout, including for lane worktrees.
+Use `scripts/project_paths.py <workspace>` to resolve the root and create `.review-loop/.gitignore`
+(`*`, `!config.md`) only when missing. When unresolved (not a Git repo, a bare repo or a submodule/separate-git-dir checkout), report
+fallback to `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG uses `$HOME/.local/state`).
+An explicit operator-chosen run dir wins. Resume existing runs at their original `--run-dir`; no migration.
+Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x` on the
+workspace while a run is active: it would delete the run.
 The first line is the title, `# <one-line summary of the task>`: `accept` uses it as the commit title and the delivery report names the work item with it, so never a generic heading such as `# Work item`.
 Add a `secret-scan-allow: <path or glob>` line (one per path) only when the user says a secret-like literal under that path is a deliberate test fixture; the coordinator's secret scan otherwise blocks it.
 Declare exemptions before starting the run. If a deliberate fixture or false positive appears later, start a new run with the exemption; resume uses the frozen work item.
@@ -213,8 +232,10 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
     only when the user names one), with no materialization.
   - a PR number or GitHub PR URL, or a local or remote ref: run
     `python3 <support-root>/scripts/materialize_pr.py <input> --repo <operator repo> --root <run root>`,
-    plus `-R <owner/repo>` or `--base <ref>` when the user gives them. It pins the head and base OIDs,
-    clones them into `<run root>/pr/<UUID>/` (never the operator's checkout) and prints one JSON object;
+    resolving `<run root>` from the operator project before switching to the clone. Omitting the
+    value after `--root` uses that project default; omitting `--root` entirely only resolves pins.
+    Add `-R <owner/repo>` or `--base <ref>` when the user gives them. It pins the head and base OIDs,
+    clones them into `<run root>/pr/<UUID>/` (under the project's gitignored `.review-loop/pr/` by default) and prints one JSON object;
     its `workspace` is the clone and `merge_base` the review base. `REFUSED: <reason>` (exit 2) is a
     failed stage A check.
 - Size (Q-R10): in the clone, `git diff --shortstat <merge_base> HEAD`. Above about 100 files or 5,000
@@ -273,7 +294,8 @@ Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, 
 and goes to `permission-probe` and `run` alike:
 both modes keep every sandbox; the default `efficient` mode does not require
 the probe PASS and its evidence guard only logs, while `--strict` restores
-both (`paired_session/docs/efficient-mode.md`). An efficient run needs no probe waiver. The run is strict when the user asked for
+both (`paired_session/docs/efficient-mode.md`; on Windows the Claude roles run without the Claude Code Bash
+sandbox, which native Windows lacks, and strict is refused). An efficient run needs no probe waiver. The run is strict when the user asked for
 `--strict` or the operator profile sets `"safety_mode": "strict"`; read the
 profile before choosing the flow.
 - Default (efficient): no permission probe; the first coordinator command is

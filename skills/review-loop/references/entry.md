@@ -34,7 +34,9 @@ reported to the user and never falls back to legacy.
 **Stage A checks (before the first `bin/paired-session` command).** Read-only, the same whether the key is set or
 absent; nothing falls back (there is no legacy route). A failed check refuses: print
 `review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
-- Host: `uname -s` is not `Darwin` → `review-loop: paired-session needs macOS; Linux and other hosts are not supported` (no reason wrapper).
+- Host: `uname -s` is neither `Darwin` (macOS) nor native Windows Git Bash (starts with `MINGW64_NT-` or `MSYS_NT-`) → `review-loop: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported` (no reason wrapper).
+  On Windows only the default efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git for
+  Windows is required, and run directories and workspaces stay out of OneDrive-synced folders.
 - CLIs: both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
   resolved roles use: the coordinator binds both binaries at run start; a missing one is refused
   with the reason `needs <cli> for paired-session program binding`. `agy` is needed only when a role runs
