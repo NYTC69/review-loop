@@ -1,5 +1,35 @@
 # Changelog
 
+### v3.5.0：gemini（Antigravity CLI `agy`）作为只读角色的可选第三家 vendor
+
+这是一个小版本，带来新功能：ADR-21（WI-GEM）。没有选 gemini 的 run 行为不变。
+
+**升级须知**
+- 默认角色不变（Codex 作者、Claude 审查、gate 跟作者同一家）。只有操作者的 profile 或命令行指定 gemini 时才会用到它。
+- 没有改 codex 和 claude run 启动时固定下来的值：`agents/*.md` 和 gate prompt 没变，codex、claude 角色的参数逐字节相同，`codex_bin`、`claude_bin` 照旧绑定；`gemini_bin` 只在有角色用 gemini 时绑定。v3.4.x 上开始的 run 可以继续。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果要重新 probe 一次（这项检查绑定插件版本号）。
+- `allowed_models` 现在接受 `gemini` 这个 key（以前当作未知 vendor 拒绝）。
+
+**新功能：gemini 只读角色**
+- 可以用 gemini 的角色：reviewer（shadow 和 reviewer 的 stage review 跟着它）、gate，以及 POLISH-Q 的 specialist（它们走 reviewer）。设置方式：profile 里写 `reviewer_vendor: gemini` / `gate_vendor: gemini`，或者命令行 `--reviewer-vendor gemini` / `--gate-vendor gemini`，同时给 `--reviewer-model` / `--gate-model`。gemini 没有默认模型，模型必须写明，例如 `gemini-3.8-flash-medium`，或 `agy models` 列出的任意 id。agy 也提供 `claude-*` 和 `gpt-oss` 模型；vendor 指的是跑这个角色的 CLI，run 会记下 vendor 和模型。
+- 程序：`--gemini-bin`（profile key `gemini_bin`，默认 `agy`）。agy 的安装和登录由操作者自己完成：agy 没有 `login` 子命令，第一次交互运行 `agy` 时登录（通过 SSH 时 token 存在文件里）；个人 Gemini CLI 的 OAuth 登录已经不能用了。
+- 只读：agy 带 `--sandbox` 运行，用只对本次会话生效的 settings 禁止写文件、URL 和 MCP，允许 shell 命令和读文件；agy 在回合里拒绝过任何动作，这个回合就算失败。每个 gemini 回合在 run 的外部 scratch 根下有自己的 `TMPDIR`，和 Codex 只读角色一样。
+- 全局配置：每个 gemini 回合前后给 `~/.gemini/antigravity-cli/settings.json` 拍快照。回合正常结束后，如果只变了 `trustedWorkspaces` 或 `model`（agy 自己会写）就记 NOTE，其他变化就 HOLD；恢复一个不确定（被放弃）的 gemini 回合时，任何变化都只记 NOTE。两次回合之间 `agy --version` 变了也只记 NOTE（agy 会自己升级）。
+- 有 gemini 角色的 run 里，coordinator 扫描审查历史残留时会多查一个名字 Gemini，给作者的提示里也会列上它；codex 和 claude 的 run 不变。
+
+**限制**
+- 作者不能是 gemini（`author_vendor: gemini` 会被拒绝）。finisher、docs writer、POLISH-Q writer 都按作者角色跑，所以也不能是 gemini。
+- gemini 只支持高效模式：有 gemini 角色时 `--strict` 或 `"safety_mode": "strict"` 会被拒绝；reviewer 或 gate 是 gemini 时，`permission-probe` 也会被拒绝（高效模式不需要 probe）。
+- 只支持 macOS。在 Windows 上，只要有 gemini 角色（命令行、profile，或已保存 run 固定下来的值），在写任何 lease 或 state 之前就拒绝；`status`、`abort`、`stop` 照常能用。
+- agy 没有隔离 home 的办法，所以只给它的 settings.json 拍快照，不读每个对话的目录和 OAuth token。
+
+**审查与验收**
+- 各批次由 Codex（gpt-6.1-sol）审查：B1（eca9da6，修复 7902669）APPROVE；B2a（5583b03，修复 64ed0dc）第一轮 REVISE、第二轮 APPROVE，CI 修复 69e8a3e；B2b（628f957）APPROVE；B3a（289dbbb、e454043，修复 af0cfc8）第一轮 REVISE、第二轮 APPROVE；ADR 改号（7f6ee98）确认是纯改名。
+- 合并 v3.4.0（b06f407）由 Opus 独立审查 APPROVE；合并时的集成修复包括：agy 回合用 `event` 判断结束行、gemini 只读 scratch 跟 v3.4.0 布局走、Windows 拒绝 gemini。之后合并 v3.4.1（9e30ccd），没有冲突。
+- CI：run 41217393590（b06f407）和 41224454030（9e30ccd）全部通过（macOS、Ubuntu、Windows）；41224454030 有一个 macOS job 因为 runner 日志故障重跑了一次。
+- 真实 run：6f497f93（合并前，固定副本 af0cfc8；Codex 作者，reviewer 和 gate 用 gemini `gemini-3.8-flash`，完整 lifecycle）：10 个 gemini 回合都有工具调用（PLAN/EXEC 审查、shadow、gate、4 个 POLISH-Q specialist、DOCS、SECURITY），14 次调用，ACCEPTED。85f8ba20（9e30ccd；Claude 作者，reviewer 和 gate 用 gemini `gemini-3.8-flash`）：8 个 gemini 回合（PLAN/EXEC reviewer、shadow、gate、4 个 POLISH-Q specialist）都成功，都有工具调用，中途 agy 自己从 1.4.10 升到 1.4.12，只记了 NOTE；第 9 个 gemini 回合（DOCS reviewer）因为 Gemini 个人额度用完（CLI exit 3）而 HOLD，原因是额度，不是缺陷。
+- Sol 审查：待补（Codex 额度 11-04 恢复后）。
+
 ### v3.4.1：修复 Claude 作者用不了仓库内 run 目录的问题（v3.4.0 回归）
 
 这是修复现场问题的补丁版本。
