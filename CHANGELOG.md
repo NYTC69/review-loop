@@ -1,5 +1,31 @@
 # Changelog
 
+### v3.4.0：run 输出放进项目自己的 `.review-loop/`
+
+这是一个小版本，改了 run 输出的默认位置（WI-RUNROOT，owner 经 gg-pipeline 提出）。它不是 v3.3.0 试用期内的修复版本。
+
+**升级须知**
+- 已有的 run 原地继续：在 v3.3.x 及更早版本上开始的 run 仍用原来的 run 目录和内部布局（展开的内部镜像、run 目录里的 role-tmp），不迁移。
+- 明确给出的 `--run-dir` 仍然优先。新默认只影响没有指定 run 目录的新 run。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果不能沿用，要重新 probe 一次（这项检查绑定插件版本号）。
+- run 进行中不要在工作区里跑 `git clean -x`，它会删掉 run 目录。
+- JS/TS 项目：保留的 review-pr 克隆是完整 checkout，放在 `.review-loop/pr/` 下；请在 Jest 的 `testPathIgnorePatterns`、`modulePathIgnorePatterns` 里加 `<rootDir>/.review-loop/`，在 Vitest 的 `exclude` 里加 `.review-loop/**`。
+
+**新的默认位置**
+- `<repo>` 指主 checkout：取 `git rev-parse --path-format=absolute --git-common-dir`，以 `/.git` 结尾且父目录是 work tree 时用它的父目录，所以 lane worktree 和主 checkout 落到同一个地方。解析不出来时（不在 Git 仓库、bare 仓库、submodule 或 separate-git-dir），退回到 `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop`，并给出提示。新脚本 `scripts/project_paths.py` 负责解析。
+- 持久的 run 输出：`<repo>/.review-loop/runs/<UUID>/`。没有 `.review-loop/.gitignore` 时，coordinator 创建它，内容只有 `*` 和 `!config.md`；已有的文件不动。run 根目录在工作区里但没被 git 忽略时，在写 state 之前拒绝。
+- review-pr 克隆：`materialize_pr.py` 的默认根改为 `<repo>/.review-loop/pr/`（只允许这个子目录，并要求它被忽略）；pins 解析、克隆标记、旧根目录的删除和 W10 的只读文件重试都不变。
+- Codex 的独立 `CODEX_HOME`：文档建议放在 `<repo>/.review-loop/codex-home/<lane>/`，由操作者自己准备和登录。
+- 临时文件放在 repo 外：角色的 TMPDIR/TMP/TEMP、作者临时目录、permission-probe 树、合成的 Codex home 和解压出来的审查镜像，都放在每个 run 自己的私有 scratch 根 `/tmp/review-loop-<uid>/<hash>/` 下（Windows 用用户名）。run 进入 ACCEPTED、REPORTED 或 abort 时删除。FIELD-28 的警告只在实际 scratch 位于 Git work tree 里时才出现，所以仓库内的新 run 不会再报它。
+- 审查基线：新布局的 last-review、review-start、history-start 基线以 tar 归档原子写在 run 目录的 `internal/` 下，需要时解压到 scratch 的 `mirrors/`；scratch 被清掉（例如重启）也能从归档恢复。每个 coordinator 进程第一次读取时重新解压，不信任残缺的解压目录。归档拒绝绝对路径和 `..` 成员。scope 变更时，基线归档交给后继 run。
+- 排除：`runs`、`codex-home`、`pr`、`logs` 这四个内部目录不计入被忽略文件的捕获和比较、作者的离线清单和证据 symlink 扫描，所以同一仓库里并行的 run、克隆和日志不会让只读回合误判。
+- permission-probe（FIELD-13 / FIELD-8）：probe 树挪到外部 scratch 后，probe 仍同时监视 scratch 父目录和真实 run 目录的父目录，所以同级 lane 的 run 目录仍要等 probe 锁，run 目录旁边被改动的 operator 文件（例如启动日志）仍按原来的方式提示。
+
+**审查与验收**
+- RR1–RR6（ad78824、73e6de2、1bea9e5、671d6e3、67cd0ad、161be2c）都由 Codex 执行、Codex 审查通过。两轮独立的云端 Opus 审查：第一轮发现仓库内的审查镜像会被 jest/vitest 扫到、`pr/` 和 `logs/` 没有排除；复查确认这两项已修好，又发现残缺的解压目录被当作完整基线（RR5 已修）。CI 41078300125 发现 probe 不再监视真实 run 父目录（FIELD-13/FIELD-8 的保护退化），RR6 修复。
+- CI：run 41092231721（161be2c）全部通过（macOS、Ubuntu、Windows）。
+- 真实 run：e95279fd（固定副本 161be2c，完整 lifecycle，产品默认角色：Codex 作者、Claude 审查、Codex gate），约 25 分钟、14 次调用到 DONE，0 条未关闭发现，ACCEPTED。run 目录落在 fixture 的 `.review-loop/runs/<UUID>/` 下，`.review-loop/.gitignore` 自动创建，fixture 的 `git status` 只显示任务改动；scratch 在 `/tmp/review-loop-<uid>/<hash>/`，ACCEPTED 后已删除；没有 FIELD-28 警告。
+
 ### v3.3.0：paired-session 和 review-pr 支持原生 Windows（高效模式）
 
 这是一个小版本，带来新功能：原生 Windows 支持（ADR-20）。它不是 v3.2.0 试用期内的修复版本。
