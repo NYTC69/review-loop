@@ -1,5 +1,26 @@
 # Changelog
 
+### v3.4.1：修复 Claude 作者用不了仓库内 run 目录的问题（v3.4.0 回归）
+
+这是修复现场问题的补丁版本。
+
+**问题**
+- v3.4.0 把新 run 的默认目录放进 `<repo>/.review-loop/runs/<UUID>/`。作者是 Claude、workspace 又是主 checkout 时，context 目录落在 workspace 里，第一次派发作者就被拒绝：`REFUSED: the workspace must not be ... hold the context dir ...`。Codex 作者不受影响；v3.4.0 的真实 run 用的是 Codex 作者，所以没有发现。
+
+**修复**
+- Claude 作者的编辑规则不再拒绝 v3.4.0 认可的仓库内布局（被 git 忽略的 `<ws>/.review-loop/runs/<id>/`，context 在它里面）；其他情况照旧拒绝（context 在 workspace 里但不在这个布局下、run 目录在 `.review-loop/runs` 之外等）。
+- run 目录对 Claude 作者仍受保护，规则原本就有，不依赖 run 目录在 workspace 之外：settings 里的 `Edit(//<run_dir>/**)` 禁止（也覆盖 Write）、context 的 `--disallowedTools` 禁止、Bash 沙箱的 `denyWrite`（原生 Windows 上没有 Bash 沙箱，只有 Edit/Write 禁止，同 v3.3.0）。Claude Code 的 deny 优先于 allow。同目录下其他 run 的目录不在保护范围内（Codex 作者在这个布局下连自己的 run 目录也可写，见 v3.4.0），按 owner 的威胁模型可以接受。
+- 严格模式的 Claude 作者 permission-probe 在仓库内布局下照常 PASS 并绑定实际规则。
+
+**升级须知**
+- 没有改 run 启动时固定下来的值；v3.4.0 上开始的 run 可以继续。v3.4.0 期间为 Claude 作者明确指定的 workspace 外 `--run-dir` 仍然有效。
+- 和每次升级版本一样，严格模式下旧的 Claude 作者 permission-probe 结果要重新 probe 一次。
+
+**审查与验收**
+- 369471b 由 Opus 执行、Sol（gpt-6.1-sol）审查 APPROVE。新测试：Claude 作者用仓库内默认 run 目录的 fake run 到 ACCEPTED（不带修复时复现现场拒绝）、布局以外的拒绝仍然成立、仓库内布局下 probe PASS；没有改动既有断言。
+- CI：run 41220399650（369471b）全部通过（macOS、Ubuntu、Windows）。
+- 真实 run：0b7694e0（Claude Opus 作者和 reviewer、Codex gate，完整 lifecycle），14 次调用到 DONE，ACCEPTED；run 目录在 fixture 的 `.review-loop/runs/` 下，scratch 在 accept 后已删除。
+
 ### v3.4.0：run 输出放进项目自己的 `.review-loop/`
 
 这是一个小版本，改了 run 输出的默认位置（WI-RUNROOT，owner 经 gg-pipeline 提出）。它不是 v3.3.0 试用期内的修复版本。
