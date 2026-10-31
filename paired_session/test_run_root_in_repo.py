@@ -110,6 +110,59 @@ class RunRootTests(unittest.TestCase):
         co._mirror_workspace(mirror)
         self.assertFalse((mirror / '.review-loop/runs').exists())
 
+    def test_claude_author_with_the_in_repo_run_dir_reaches_accepted(self):   # CA1 (v3.4.1): the v3.4.0 regression
+        self.run_dir = self.workspace / '.review-loop/runs/claude-author'
+        flags = ('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'codex', '--polish-round', 'off')
+        result = self.run_coordinator(*flags)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('REFUSED', result.stdout)
+        accepted = self.run_operator_action('accept', *flags, '--reason', 'CA1 fixture accepted')
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.addCleanup(shutil.rmtree, Path(state['scratch_root']), True)
+        self.assertEqual(state['acceptance_state'], 'ACCEPTED')
+        authors = [t for t in state['turns'] if t['role'] == 'author']
+        self.assertTrue(authors)
+        run_rule = 'Edit(//' + self.run_dir.resolve().as_posix().lstrip('/') + '/**)'
+        context_rule = 'Edit(//' + (self.run_dir.resolve() / 'context').as_posix().lstrip('/') + '/**)'
+        for turn in authors:
+            argv = turn['command']
+            allowed = argv[argv.index('--allowedTools') + 1].split(',')
+            self.assertIn('Edit(//' + self.workspace.resolve().as_posix().lstrip('/') + '/**)', allowed)
+            denied = [argv[i + 1] for i, v in enumerate(argv) if v == '--disallowedTools']
+            self.assertIn(context_rule, denied)
+            settings = json.loads(argv[argv.index('--settings') + 1])
+            self.assertIn(run_rule, settings['permissions']['deny'])      # the run dir (and its context) stay denied to Edit/Write
+            self.assertIn(str(self.run_dir.resolve()), settings['sandbox']['filesystem']['denyWrite'])   # and to Bash
+
+    def test_claude_author_refusals_outside_the_admitted_layout_hold(self):
+        self.run_dir = self.workspace / '.review-loop/runs/rules'
+        co = self.coordinator('--author-vendor', 'claude')
+        ws = self.workspace.resolve()
+        allow, deny = co._claude_author_edit_rules()
+        self.assertEqual(allow, ['Edit(//' + ws.as_posix().lstrip('/') + '/**)'])
+        self.assertIn('Edit(//' + co.context.resolve().as_posix().lstrip('/') + '/**)', deny)
+        self.assertIn('Edit(//' + co.run_dir.resolve().as_posix().lstrip('/') + '/**)',
+                      co._claude_sandbox_settings('author')['permissions']['deny'])
+        for bad in (co.run_dir, co.context, co.run_dir / 'ws', ws / '.review-loop' / 'runs', Path('/'), Path.home().resolve()):
+            with self.subTest(workspace=bad), self.assertRaisesRegex(ValueError, 'workspace must not'):
+                co._claude_author_edit_rules(bad)
+        real_context = co.context
+        try:
+            for context in (ws / 'context', ws / '.review-loop' / 'context', ws / '.review-loop' / 'runs' / 'other' / 'context'):
+                co.context = context      # a context inside the workspace but not under the admitted run dir is still refused
+                with self.subTest(context=context), self.assertRaisesRegex(ValueError, 'hold the context dir'):
+                    co._claude_author_edit_rules()
+        finally:
+            co.context = real_context
+        real_run = co.run_dir
+        try:
+            co.run_dir, co.context = ws / 'run', ws / 'run' / 'context'   # an in-workspace run dir outside .review-loop/runs/
+            with self.assertRaisesRegex(ValueError, 'hold the context dir'):
+                co._claude_author_edit_rules()
+        finally:
+            co.run_dir, co.context = real_run, real_context
+
     def test_external_mirrors_missing_resume_and_no_workspace_copies_in_repo(self):
         self.run_dir = self.workspace / '.review-loop/runs/mirrors'
         co = self.coordinator()

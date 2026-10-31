@@ -3306,8 +3306,12 @@ class Coordinator:
         workspace, context = Path(workspace or self.workspace).resolve(), self.context.resolve()
         home = Path.home().resolve()
         homes = [home / name for name in ('.claude', '.codex', '.ssh', '.aws')]
-        roots = [context, self.run_dir.resolve(), *homes]
-        if (re.search(r'[*?\[\]{}(),]', str(workspace)) or workspace in context.parents or workspace in (home, *home.parents)
+        run_dir = self.run_dir.resolve()
+        roots = [context, run_dir, *homes]
+        # CA1 (v3.4.1): the v3.4.0 run root <ws>/.review-loop/runs/<id> (gitignored, admitted by prepare_run_directory) may hold
+        # the context; the settings deny Edit(//run_dir/**) and the Bash denyWrite on run_dir protect it (deny overrides allow).
+        in_repo_run = (workspace / '.review-loop' / 'runs') in run_dir.parents and run_dir in context.parents
+        if (re.search(r'[*?\[\]{}(),]', str(workspace)) or workspace in context.parents and not in_repo_run or workspace in (home, *home.parents)
                 or any(root == workspace or root in workspace.parents for root in roots)):
             raise ValueError('the workspace must not be the filesystem root, the home dir or an ancestor of it, hold the context dir, '
                              'sit inside the context, run dir or a denied home dir (~/.claude, ~/.codex, ~/.ssh, ~/.aws), '
