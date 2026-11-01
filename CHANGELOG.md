@@ -26,9 +26,10 @@
 **审查与验收**
 - 各批次由 Codex（gpt-6.1-sol）审查：B1（eca9da6，修复 7902669）APPROVE；B2a（5583b03，修复 64ed0dc）第一轮 REVISE、第二轮 APPROVE，CI 修复 69e8a3e；B2b（628f957）APPROVE；B3a（289dbbb、e454043，修复 af0cfc8）第一轮 REVISE、第二轮 APPROVE；ADR 改号（7f6ee98）确认是纯改名。
 - 合并 v3.4.0（b06f407）由 Opus 独立审查 APPROVE；合并时的集成修复包括：agy 回合用 `event` 判断结束行、gemini 只读 scratch 跟 v3.4.0 布局走、Windows 拒绝 gemini。之后合并 v3.4.1（9e30ccd），没有冲突。
-- CI：run 41217393590（b06f407）和 41224454030（9e30ccd）全部通过（macOS、Ubuntu、Windows）；41224454030 有一个 macOS job 因为 runner 日志故障重跑了一次。
+- CI：run 41217393590（b06f407）和 41224454030（9e30ccd）全部通过（macOS、Ubuntu、Windows）；41224454030 有一个 macOS job 因为 runner 日志故障重跑了一次。审查修复之后的 3c59322 由 run 41255111478 测过，全部通过。
 - 真实 run：6f497f93（合并前，固定副本 af0cfc8；Codex 作者，reviewer 和 gate 用 gemini `gemini-3.8-flash`，完整 lifecycle）：10 个 gemini 回合都有工具调用（PLAN/EXEC 审查、shadow、gate、4 个 POLISH-Q specialist、DOCS、SECURITY），14 次调用，ACCEPTED。85f8ba20（9e30ccd；Claude 作者，reviewer 和 gate 用 gemini `gemini-3.8-flash`）：8 个 gemini 回合（PLAN/EXEC reviewer、shadow、gate、4 个 POLISH-Q specialist）都成功，都有工具调用，中途 agy 自己从 1.4.10 升到 1.4.12，只记了 NOTE；第 9 个 gemini 回合（DOCS reviewer）因为 Gemini 个人额度用完（CLI exit 3）而 HOLD，原因是额度，不是缺陷。
 - 发布审查：Codex 额度用完，owner 11-01 决定由 Opus 代替 Sol 审查整个发布改动（8a6b7b3..541128e，与作者同一家），结论是代码没有阻断项。按审查建议做了两处小改动：agy 的退出码只从 run_command 输出的第一行读取，命令自己打印的同样文字不能冒充退出码（新增测试）；文档里的模型示例改成真实 run 用过的 `gemini-3.8-flash`。owner 认可 6f497f93 和 85f8ba20 作为 G11 的真实 run 证据（85f8ba20 没跑到 ACCEPTED，原因是额度），记在 ADR-21 的 amendment 里。
+- 终审：一个全新的 Opus 审了 8a6b7b3..3c59322，APPROVE；test_gemini_vendor 和 test_operator_roles 共 176 个测试通过。
 
 ### v3.4.1：修复 Claude 作者用不了仓库内 run 目录的问题（v3.4.0 回归）
 
