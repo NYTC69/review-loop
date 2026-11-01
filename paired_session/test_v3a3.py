@@ -9,9 +9,13 @@ import unittest
 from unittest.mock import patch
 
 from paired_session import coordinator as rc
+from paired_session import scratch_test_helpers
 
 
 class PolishRoundCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        scratch_test_helpers.isolate_scratch(self)   # WI-HYG
+
     def test_operator_profile_and_cli_on_start_a_run(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
