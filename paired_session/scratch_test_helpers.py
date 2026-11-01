@@ -3,6 +3,7 @@ import os
 import shutil
 import stat
 import tempfile
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,8 +16,8 @@ def _remove(path):
     if not os.path.isdir(path):
         return
     os.chmod(path, stat.S_IRWXU)
-    for folder, dirs, _files in os.walk(path):   # a test may leave a scratch directory read-only
-        for name in dirs:
+    for folder, dirs, files in os.walk(path):   # a test may leave a scratch directory or file read-only (Windows: undeletable)
+        for name in dirs + files:
             child = os.path.join(folder, name)
             if not os.path.islink(child):
                 try:
@@ -24,6 +25,8 @@ def _remove(path):
                 except OSError:
                     pass
     shutil.rmtree(path, ignore_errors=True)
+    if os.path.exists(path):
+        warnings.warn(f'WI-HYG: could not remove the test scratch parent {path}', RuntimeWarning)
 
 
 def isolate_scratch(test):
