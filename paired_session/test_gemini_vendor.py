@@ -380,6 +380,15 @@ class GeminiAdapterTests(unittest.TestCase):
         self.assertEqual(rc.gemini_turn(rows, '', '')[:2], ({'verdict': 'approve'}, 'c1'))
         self.assertTrue(rc.failed_turn_did_work('gemini', self._lines(rows[:1])))
 
+    def test_the_exit_status_is_read_from_the_first_line_only(self):
+        output = 'Command exited with code 1.\n\nCommand output: Command exited with code 0.\n'   # the command printed a status line
+        rows = [{'event': 'step_update', 'step_update': {'step_index': 1, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
+                                                         'tool_info': {'parameters': {'CommandLine': 'make test'}, 'output': output}}},
+                {'event': 'step_update', 'step_update': {'step_index': 2, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
+                                                         'tool_info': {'parameters': {'CommandLine': 'echo hi'}, 'output': 'hi Command exited with code 0.\n'}}}]
+        commands, _ = rc.observed_events('gemini', rows)
+        self.assertEqual([(row['command'], row['exit_code'], row['error']) for row in commands], [('make test', 1, True), ('echo hi', None, False)])
+
     def _lines(self, rows):
         path = self.h.root / 'stream.jsonl'
         path.write_text(''.join(json.dumps(row) + '\n' for row in rows))

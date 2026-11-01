@@ -422,7 +422,7 @@ only where the operator profile or the CLI flags name it:
   `"safety_mode": "strict"` is refused, and `permission-probe` with a gemini reviewer or gate is refused (efficient
   mode needs no probe).
 - Models: gemini has no default model, so `reviewer_model` / `gate_model` is required, for example
-  `gemini-3.8-flash-medium` or any id `agy models` lists. agy also serves `claude-*` and `gpt-oss` ids; the vendor
+  `gemini-3.8-flash` (with `reviewer_effort` / `gate_effort`, default `medium`) or any id `agy models` lists. agy also serves `claude-*` and `gpt-oss` ids; the vendor
   is the CLI that runs the role, and the run records vendor and model. `allowed_models` accepts the key `gemini`.
 - Programs: `codex` and `claude` are still bound and required at run start; `agy` is bound and required only when a
   role runs gemini.
