@@ -3,12 +3,14 @@ the run directory were inside it too; the project's own scratch check refused th
 Codex read-only sandbox denies, and the gate probe's test command failed. run, resume and permission-probe now warn (stderr,
 a warning only) when the run directory is inside a git work tree."""
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from paired_session import scratch_test_helpers as sth
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -29,6 +31,27 @@ class GitWorkTreeRootTests(unittest.TestCase):
         self.assertEqual(rc.git_work_tree_root(root / 'repo' / 'a' / 'runs'), root / 'repo')
         self.assertEqual(rc.git_work_tree_root(root / 'worktree'), root / 'worktree')
         self.assertIsNone(rc.git_work_tree_root(root / 'outside'))
+
+
+class NewScratchRootTests(unittest.TestCase):   # WI-HYG: the real selection, without the test-only parent
+    def test_the_real_scratch_root_is_private_stable_and_outside_any_repository(self):
+        run = Path(__file__).parent / 'test-tmp' / 'wi-hyg-run'   # a run directory inside this checkout
+        with patch.dict(os.environ):
+            os.environ.pop(sth.ENV, None)
+            root = rc.new_scratch_root(run)
+            self.addCleanup(shutil.rmtree, root, True)
+            self.assertEqual(rc.new_scratch_root(run), root)
+        self.assertEqual(root.parent.name, 'review-loop-' + rc.winplat.user_token())
+        self.assertIsNone(rc.git_work_tree_root(root))
+        self.assertTrue(rc.winplat.check_private_dir(root))
+
+    def test_a_test_parent_inside_a_repository_is_skipped(self):
+        inside = Path(__file__).parent / 'test-tmp'
+        inside.mkdir(exist_ok=True)
+        with patch.dict(os.environ, {sth.ENV: str(inside)}):
+            root = rc.new_scratch_root(inside / 'wi-hyg-run')
+            self.addCleanup(shutil.rmtree, root, True)
+        self.assertIsNone(rc.git_work_tree_root(root))
 
 
 class RunStartWarningTests(unittest.TestCase):

@@ -10389,6 +10389,10 @@ def prepare_run_directory(workspace: Path, run_dir: Path, create_ignore: bool = 
 def new_scratch_root(run_dir: Path) -> Path:
     """Stable across resume, private, and outside every Git work tree even with a repo-local TMPDIR."""
     parents = [winplat.temp_root(), Path(tempfile.gettempdir())]
+    # WI-HYG, test-only: the unit-test harness names a private per-test parent here (it also reaches the coordinators the
+    # tests start as subprocesses) and removes it in cleanup; a real run never sets it. The git work tree check still applies.
+    if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_SCRATCH_PARENT'):
+        parents.insert(0, Path(os.environ['PAIRED_SESSION_INTERNAL_TEST_SCRATCH_PARENT']))
     if not winplat.IS_WINDOWS:
         parents.append(Path('/tmp'))
     parent = next((p.resolve() for p in parents if git_work_tree_root(p) is None), None)

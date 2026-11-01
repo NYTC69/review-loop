@@ -20,6 +20,7 @@ from unittest.mock import patch
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import candidate_tree as ct
 from paired_session import timeout_scale as tsc
+from paired_session import scratch_test_helpers
 from paired_session.docs_policy import validate_candidate_docs_change
 
 
@@ -83,6 +84,7 @@ class RealCoordinatorTests(unittest.TestCase):
         git_env = patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
         git_env.start()
         self.addCleanup(git_env.stop)
+        scratch_test_helpers.isolate_scratch(self)   # WI-HYG: per-run scratch roots go to a private per-test parent
         temp_root = Path(__file__).parent / 'test-tmp'
         temp_root.mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=temp_root)
