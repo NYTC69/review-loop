@@ -1,5 +1,26 @@
 # Changelog
 
+### v3.5.1：单元测试不再往系统临时目录里留 scratch 目录
+
+这是试用期内的补丁版本，只影响跑本仓库单元测试的人；真实 run 的行为不变。
+
+**问题**
+- v3.4.0 起，每个 run 的私有 scratch 根放在仓库外的系统临时目录里（macOS 是 `/tmp/review-loop-<uid>/<hash>/`），run 进入 ACCEPTED、REPORTED 或 abort 时删除。单元测试里建的 coordinator 也用这个系统临时目录，而大多数测试不会走到 accept 或 abort，所以每跑一次测试就留下一批目录。维护者的机器上已经堆了约 2955 个。
+
+**修复**
+- 测试共用的 setUp 给每个测试准备一个私有的 scratch 父目录（在系统临时目录下、任何 Git work tree 之外，权限 0700），测试结束时删除；只读的目录和文件先解除只读再删，删不掉就发 `RuntimeWarning`。
+- 测试会把 coordinator 作为子进程启动，只在进程内打补丁覆盖不到，所以 `new_scratch_root` 读取一个测试专用的环境变量 `PAIRED_SESSION_INTERNAL_TEST_SCRATCH_PARENT`，和已有的 `PAIRED_SESSION_INTERNAL_TEST_*` 约定一样。这个变量没设时，候选目录、权限检查和路径哈希都和以前一样；设了它也仍然要求在 Git work tree 之外。
+- `test_field28` 新增两个测试：没设变量时的真实选择（私有、resume 时不变、在仓库外），以及变量指向仓库内时会被跳过。
+
+**升级须知**
+- 没有改 run 启动时固定下来的值，v3.5.0 上开始的 run 可以继续。以前测试留下的目录不会自动清理（其中不少不是空的，里面有 `author-tmp`、`role-tmp` 或 `mirrors`）；确认没有进行中的 run 时，可以手动删除 `/tmp/review-loop-<uid>/` 下的旧目录。
+
+**审查与验收**
+- b170098（云端 Opus 执行）由 Sol（gpt-6.1-sol）审查：第一轮 REVISE（Windows 上只读文件会让清理悄悄失败），修复 b851625 后复查 APPROVE。
+- 本地（macOS）跑了 12 个模块（test_field28、test_run_root_in_repo、test_readonly_scratch、test_gemini_vendor、test_winscratch 等），全部 OK，`/tmp/review-loop-501` 前后都是 2955 个，没有新增。
+- CI：run 41316769902（b851625）全部通过（macOS、Ubuntu、Windows）。
+- 只改了测试和一个只在测试里设置的开关，真实 run 测不到这次改动，所以这个版本没有做真实 run。
+
 ### v3.5.0：gemini（Antigravity CLI `agy`）作为只读角色的可选第三家 vendor
 
 这是一个小版本，带来新功能：ADR-21（WI-GEM）。没有选 gemini 的 run 行为不变。

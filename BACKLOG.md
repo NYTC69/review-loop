@@ -1,4 +1,4 @@
-**Last updated**: 2026-10-20
+**Last updated**: 2026-11-01
 
 ## P0 — blocker / must-do-now
 
@@ -25,6 +25,8 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 - Deferred Windows items after v3.3.0 (ADR-20): map Git Bash `/c/...` operands through `winplat.windows_abs_path` in `evidence_guard` (log-only on Windows today); decode PowerShell `-EncodedCommand` if a real Codex sample shows it; `--detach` on Windows; Linux/WSL support. (added 2026-10-27)
 
 ## Done (recent, trimmed quarterly)
+
+- ~~WI-GEM: add Gemini (Antigravity CLI agy) as a third paired-session vendor, v1 read-only roles~~ (added 2026-10-29) (closed 2026-11-01, see v3.5.0 1d5b97c)
 
 - ~~Subagent usage undercount: a Claude author with subagents did not pass `--forward-subagent-text`, so usage.json missed text-only subagent requests~~ (added 2026-10-14) (closed 2026-10-19, see V321-SUB)
   - The Claude author with `--author-subagents on` now passes the flag; the frozen role manifest holds no argv, so in-flight runs still resume; the argv is bound only into the author permission-probe digest, which the release's plugin_version change voids anyway.
