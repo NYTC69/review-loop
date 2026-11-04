@@ -10549,9 +10549,9 @@ def fill_from_run(argv: list, action, run_dir) -> list:
     filled = list(argv)
     for key, value in vars(given.parse_known_args(argv)[0]).items():
         recorded = saved.get(key) if isinstance(saved, dict) else None
-        if not isinstance(recorded, str) or not recorded: continue
+        if not isinstance(recorded, str) or not os.path.isabs(recorded): continue   # no usable record (normalize_cli_paths records it absolute)
         if value is None: filled += ['--' + key, recorded]
-        elif str(Path(value).expanduser().resolve()) != recorded:
+        elif os.path.normcase(str(Path(value).expanduser().resolve())) != os.path.normcase(recorded):
             raise ValueError(f'--{key} {value} is not the {key} this run records ({recorded}); leave --{key} out or give that path')
     return filled
 
@@ -10747,8 +10747,10 @@ def main(argv=None) -> int:
         cli_parser.parse_args(raw_argv)
     early = argparse.ArgumentParser(add_help=False, allow_abbrev=False)   # V3-B6: the old-run gate comes before the
     early.add_argument('action', nargs='?')                               # profile and any other read of the saved run
-    early.add_argument('--run-dir')
-    early.add_argument('--supersedes')
+    for option in cli_parser._actions:   # WI-ROR: every option, so a value given before the action is never taken for it
+        if option.option_strings and option.dest != 'help':
+            early.add_argument(*option.option_strings, dest=option.dest, default=None,
+                               **({'action': 'store_const', 'const': True} if option.nargs == 0 else {'nargs': option.nargs}))
     known = early.parse_known_args(raw_argv)[0]
     if known.action not in ('status', 'stop', 'snapshot') and any(
             run and saved_state_is_old(run) for run in (known.run_dir, known.supersedes)):

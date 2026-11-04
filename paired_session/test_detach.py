@@ -92,11 +92,36 @@ class DetachTests(unittest.TestCase):
         self.assertIn('DONE', status.stdout)
         other = self.h.root / 'other'
         other.mkdir()
-        for action in ('status', 'stop', 'abort'):
-            wrong = bare(action, '--workspace', str(other), '--run-dir', str(self.h.run_dir))
-            self.assertEqual(wrong.returncode, 2, wrong.stdout + wrong.stderr)
-            self.assertIn(f'REFUSED: --workspace {other} is not the workspace this run records ({self.h.workspace})', wrong.stdout)
+        for action in ('status', 'stop', 'abort'):   # R2: options before the action (the usage line's form) and after it
+            for argv in ([action, '--workspace', str(other), '--run-dir', str(self.h.run_dir)],
+                         ['--workspace', str(other), action, '--run-dir', str(self.h.run_dir)],
+                         ['--workitem', str(other), '--run-dir', str(self.h.run_dir), action]):
+                with self.subTest(argv=argv):
+                    wrong = bare(*argv)
+                    self.assertEqual(wrong.returncode, 2, wrong.stdout + wrong.stderr)
+                    key, recorded = ('workspace', self.h.workspace) if '--workspace' in argv else ('workitem', self.h.workitem)
+                    self.assertIn(f'REFUSED: --{key} {other} is not the {key} this run records ({recorded})', wrong.stdout)
+        for argv in (['--workspace', str(self.h.workspace), 'stop', '--run-dir', str(self.h.run_dir)],
+                     ['--workitem', str(self.h.workitem), 'status', '--run-dir', str(self.h.run_dir)],
+                     ['status', '--workspace', str(self.h.workspace), '--run-dir', str(self.h.run_dir)]):
+            with self.subTest(argv=argv):
+                right = bare(*argv)
+                self.assertEqual(right.returncode, 0, right.stdout + right.stderr)
         self.assertEqual(self.state()['status'], 'DONE')   # the refused abort changed nothing
+        same = bare('status', '--workspace', str(self.h.workspace / '..' / self.h.workspace.name), '--run-dir', str(self.h.run_dir))
+        self.assertEqual(same.returncode, 0, same.stdout + same.stderr)   # another spelling of the recorded path is that path
+        text = self.h.root / 'text-run'   # test_winstdio's fixture: a recorded workitem that is not a path is no record to check
+        text.mkdir()
+        (text / 'state.json').write_text(json.dumps({'version': rc.STATE_VERSION, 'workitem': 'task text', 'run_dir': str(text)}))
+        self.assertEqual(rc.fill_from_run(['status', '--workitem', 'w.md', '--run-dir', str(text)], 'status', str(text)),
+                         ['status', '--workitem', 'w.md', '--run-dir', str(text)])
+        old = self.h.root / 'old-run'   # the V3-B6 old-run gate sees the action in either order
+        old.mkdir()
+        (old / 'state.json').write_text(json.dumps({'version': 0, 'workspace': str(self.h.workspace), 'workitem': str(self.h.workitem)}))
+        for argv in (['--workspace', str(self.h.workspace), 'resume', '--run-dir', str(old)], ['resume', '--run-dir', str(old)]):
+            self.assertEqual(bare(*argv).stdout.strip(), 'REFUSED: ' + rc.OLD_STATE_REFUSAL)
+        for argv in (['--workspace', str(self.h.workspace), 'stop', '--run-dir', str(old)], ['stop', '--run-dir', str(old)]):
+            self.assertEqual(bare(*argv).stdout.strip(), 'NOTE: no detached command is running for this run dir')
         empty = bare('stop', '--run-dir', str(other))   # no recorded state: one error names every missing argument
         self.assertEqual(empty.returncode, 2)
         self.assertIn('the following arguments are required: --workspace, --workitem', empty.stderr)
