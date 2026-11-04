@@ -79,6 +79,30 @@ class DetachTests(unittest.TestCase):
         for turn in self.state()['turns']:   # every turn's process group is gone after the run
             self.assertFalse(alive(turn['pid']), turn)
 
+    def test_status_stop_and_abort_take_the_workspace_and_workitem_from_the_run(self):   # WI-ROR part 2 (field: stop needed both)
+        result = self.call('--strict')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        def bare(*argv):
+            return subprocess.run([trc.sys.executable, str(trc.MODULE_PATH), *argv], cwd=self.h.root, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stop = bare('stop', '--run-dir', str(self.h.run_dir))
+        self.assertEqual((stop.returncode, stop.stdout.strip()), (0, 'NOTE: no detached command is running for this run dir'), stop.stderr)
+        status = bare('status', '--run-dir', str(self.h.run_dir))
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        self.assertIn('DONE', status.stdout)
+        other = self.h.root / 'other'
+        other.mkdir()
+        for action in ('status', 'stop', 'abort'):
+            wrong = bare(action, '--workspace', str(other), '--run-dir', str(self.h.run_dir))
+            self.assertEqual(wrong.returncode, 2, wrong.stdout + wrong.stderr)
+            self.assertIn(f'REFUSED: --workspace {other} is not the workspace this run records ({self.h.workspace})', wrong.stdout)
+        self.assertEqual(self.state()['status'], 'DONE')   # the refused abort changed nothing
+        empty = bare('stop', '--run-dir', str(other))   # no recorded state: one error names every missing argument
+        self.assertEqual(empty.returncode, 2)
+        self.assertIn('the following arguments are required: --workspace, --workitem', empty.stderr)
+        run = bare('run', '--run-dir', str(self.h.run_dir))   # every other action is unchanged
+        self.assertIn('the following arguments are required: --workspace, --workitem', run.stderr)
+
     def test_stop_ends_a_hanging_turn_and_its_group_and_keeps_the_turn_active(self):
         env = {'FAKE_STREAM_TWO_USAGE_THEN_HANG': '1'}
         result = self.call('--detach', '--timeout', '600', env=env)

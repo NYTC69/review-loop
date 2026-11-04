@@ -10468,10 +10468,11 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     """Load project defaults while preserving explicit CLI argument precedence."""
     if ignore_profile: return p
     bootstrap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    bootstrap.add_argument('--workspace', required=True)
+    bootstrap.add_argument('--workspace')   # WI-ROR: when it is missing, p.parse_args names every missing argument at once
     bootstrap.add_argument('--config')
     bootstrap.add_argument('--run-dir')
     known, _ = bootstrap.parse_known_args(argv)
+    if known.workspace is None: return p
     workspace = Path(known.workspace).expanduser().resolve()
     config_path = (Path(known.config).expanduser() if known.config else
                    workspace / '.review-loop' / 'paired-session.json')
@@ -10532,6 +10533,27 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
                 raise ValueError(f'invalid config {key}: {value!r}; choose from {action.choices}')
         action.default = value
     return p
+
+
+RUN_FILLED_ACTIONS = ('status', 'stop', 'abort')
+
+
+def fill_from_run(argv: list, action, run_dir) -> list:
+    """WI-ROR: status, stop and abort take a left-out --workspace or --workitem from the run's recorded state; a given value that
+    differs from the recorded one is refused. Any other action, or a run dir without a readable state, keeps argv as it is."""
+    if action not in RUN_FILLED_ACTIONS or not run_dir: return argv
+    try: saved = json.loads((Path(run_dir).expanduser() / 'state.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError): return argv
+    given = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    for key in ('workspace', 'workitem'): given.add_argument('--' + key)
+    filled = list(argv)
+    for key, value in vars(given.parse_known_args(argv)[0]).items():
+        recorded = saved.get(key) if isinstance(saved, dict) else None
+        if not isinstance(recorded, str) or not recorded: continue
+        if value is None: filled += ['--' + key, recorded]
+        elif str(Path(value).expanduser().resolve()) != recorded:
+            raise ValueError(f'--{key} {value} is not the {key} this run records ({recorded}); leave --{key} out or give that path')
+    return filled
 
 
 def normalize_cli_paths(args: argparse.Namespace) -> argparse.Namespace:
@@ -10733,6 +10755,7 @@ def main(argv=None) -> int:
         print('REFUSED: ' + OLD_STATE_REFUSAL)
         return 2
     try:
+        raw_argv = fill_from_run(raw_argv, known.action, known.run_dir)   # WI-ROR: `stop --run-dir RUN` on its own
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
         refuse_removed_options(args)
     except ValueError as exc:

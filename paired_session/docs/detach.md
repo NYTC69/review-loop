@@ -36,7 +36,8 @@ recorded as `active`, kills the turn's process group and waits for it.
   would inherit it) and raises `DetachStop` (a BaseException), so the rest is the Ctrl-C
   path above: the turn stays recorded as `active`, its group is reaped, the lease is released; the command exits 130 and the
   log ends with a `STOPPED:` line.
-- `bin/paired-session stop --run-dir ...` (same required arguments as other actions) sends SIGTERM to the lock holder's
+- `bin/paired-session stop --run-dir RUN` (`status`, `stop` and `abort` take `--workspace` and `--workitem` from the run's
+  `state.json` when they are left out, and refuse a different one) sends SIGTERM to the lock holder's
   recorded pid only if that pid still has the recorded session id (a pid reused after the holder exited is never
   signalled), waits up to 60 s for the lock to be released and reports the exit code; it prints a NOTE when nothing runs and
   a HOLD while a holder is still starting.
