@@ -1,5 +1,26 @@
 # Changelog
 
+### v3.5.2：只读 turn 期间文件被排除时说清原因；status、stop、abort 只给 --run-dir 就能用
+
+这是试用期内的补丁版本，修两个现场问题（poker-tools 的 run daf8c91c，v3.4.0）。
+
+**问题**
+- 只读 reviewer turn 运行期间，操作者把两个未跟踪的文件（`.claude/settings.json` 和一个指向工作区外的 `node_modules` 软链接）加进了 `.git/info/exclude`。文件一直在磁盘上，但从快照里消失，diff 显示成“删除”，恢复后快照仍对不上，run 停在 HOLD，提示“无法恢复，请手动恢复”。实际上没有任何东西需要恢复。
+- 操作者想手动停掉这个 run：`paired-session stop --run-dir RUN` 报“缺 --workspace”，补上 `--workspace` 后又报“缺 --workitem”，每次只报一个，最后也没找到正确写法。
+
+**修复**
+- 恢复逻辑不变。只有在恢复后剩下的差异全是“文件还在磁盘上、只是被 git 忽略了”时，HOLD 才改为说明：文件在这次 turn 期间被 ignore 或 exclude，没有需要恢复的，开新 run，或者撤销那条 exclude 后再 resume。其他情况的提示和 HOLD 都不变。`.gitignore` 的改动本身是树的改动，照旧会被恢复。
+- `status`、`stop`、`abort` 可以省略 `--workspace` 和 `--workitem`，从 run 目录记录的值补上；给了但和记录的路径不同就拒绝并说明。选项写在子命令前面或后面都可以。其他命令（run、resume、accept、reject 等）不变；真缺参数时，一次报出所有缺的参数。
+
+**升级须知**
+- 没有改 run 启动时固定下来的值（`agents/*.md` 和 gate prompt 没变），v3.5.x 上开始的 run 可以继续。
+
+**审查与验收**
+- 48edeea、055226d、234aba0（云端 Opus 执行）由 Sol（gpt-6.1-sol）审查两轮，都是 APPROVE（静态审查）。
+- 监工在真实 run 上发现第一版的两个问题并退回：选项写在子命令前面时仍然失败；CI 41766714065 在 Windows 上有一个回归（记录的 work item 是任务文字而不是路径时被误拒）。234aba0 修复。
+- 真实 run 90c303de（macOS，055226d，默认配置）走完全流程到 DONE（14/25 次调用，各阶段 READY，8 个测试通过）。在这个 run 上手动验证了 234aba0 的 5 种命令写法，结果都符合预期。
+- 全新的 Opus 终审（云端）：APPROVE_WITH_FINDINGS，没有阻断项。两条小建议已在发版提交里改掉：测试清理不再调用 `rm -rf`，`newly_ignored` 的注释写准了 `.gitignore` 的情况。
+
 ### v3.5.1：单元测试不再往系统临时目录里留 scratch 目录
 
 这是试用期内的补丁版本，只影响跑本仓库单元测试的人；真实 run 的行为不变。

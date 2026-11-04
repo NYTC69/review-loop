@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -111,7 +112,8 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
                 (self.ws / '.git' / 'info' / 'exclude').write_text('')
                 for name in ('settings.json', 'node_modules'):
                     if os.path.lexists(self.ws / name): os.unlink(self.ws / name)
-                if os.path.lexists(outside): subprocess.run(['rm', '-rf', str(outside)], check=True)
+                if outside.is_dir() and not outside.is_symlink(): shutil.rmtree(outside)
+                elif os.path.lexists(outside): os.unlink(outside)
                 if target == 'dir': outside.mkdir()
                 elif target == 'file': outside.write_text('o\n')
                 (self.ws / 'settings.json').write_text('{}\n')

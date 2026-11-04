@@ -242,7 +242,8 @@ NEWLY_IGNORED = 'files became ignored or excluded during the turn (still on disk
 
 def newly_ignored(workspace: Path, recorded_tree: str, tree: str) -> list:
     """WI-ROR: the paths the tree lost, when that is the whole difference and every one is still on disk and now ignored by git
-    (an exclude or .gitignore entry added mid-turn drops an untracked file out of the tree; nothing on disk to restore). Else []."""
+    (a .git/info/exclude or global excludes entry added mid-turn drops an untracked file out of the tree; a .gitignore edit is
+    itself a tree change and is restored; nothing on disk to restore). Else []."""
     try:
         if _git(workspace, 'diff', '--name-only', '--no-renames', '--diff-filter=d', recorded_tree, tree, check=False): return []
         gone = [name for name in _git(workspace, 'diff', '--name-only', '--no-renames', '-z', recorded_tree, tree, raw=True).split('\0') if name]
