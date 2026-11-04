@@ -571,13 +571,23 @@ class FrontmatterTest(unittest.TestCase):
         self.assertEqual(record["status"], "fail")
         self.assertIn("description: unquoted value contains", completed.stdout)
 
-    def test_fails_when_flow_collection_is_unbalanced(self):
+    def test_passes_on_quoted_value_with_comment_and_wrapped_flow_list(self):
+        cases = {
+            "zz-test-frontmatter-quoted-comment": 'description: "Review: carefully" # summary\n',
+            "zz-test-frontmatter-flow-wrapped": "description: Runs the review.\ntools: [Read,\n  Bash]\n",
+        }
+        for contract_id, body in cases.items():
+            with self.subTest(contract_id):
+                completed, record = self._run("name: demo-skill\n" + body, contract_id)
+                self.assertEqual(record["status"], "pass", completed.stdout)
+
+    def test_fails_when_unquoted_value_has_truncating_comment(self):
         completed, record = self._run(
-            "name: demo-skill\ndescription: Runs the review.\ntools: [Read, Bash\n",
-            "zz-test-frontmatter-flow-unbalanced",
+            "name: demo-skill\ndescription: Review. # summary\n",
+            "zz-test-frontmatter-plain-comment",
         )
         self.assertEqual(record["status"], "fail")
-        self.assertIn("tools: flow collection brackets are not balanced", completed.stdout)
+        self.assertIn("starts a YAML comment and truncates the value", completed.stdout)
 
     def test_fails_when_name_does_not_match_folder(self):
         completed, record = self._run(

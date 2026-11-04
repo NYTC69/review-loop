@@ -326,6 +326,17 @@ def _resolve_lint_scope_files(root: Path, label: str, assertion, kind_name: str)
 _PLAIN_SCALAR_FIRST_CHARS = set("-?:,[]{}#&*!|>'\"%@`")
 _KEBAB_CASE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER_KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):(?:\s+(.*))?$")
+# A closed quoted scalar, optionally followed by a `# comment`.
+_QUOTED_SCALAR = re.compile(r"""^(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)')(?:\s+#.*)?$""")
+
+
+def _plain_scalar_problem(key: str, text: str):
+    # " #" starts a YAML comment, so it silently truncates an unquoted value.
+    if " #" in text:
+        return f"{key}: unquoted value contains ' #', which starts a YAML comment and truncates the value; quote it or drop the comment"
+    if ": " in text or text.endswith(":"):
+        return f"{key}: unquoted value contains ': ' (quote it)"
+    return None
 
 
 def frontmatter_problems(path: Path, text: str):
@@ -346,8 +357,9 @@ def frontmatter_problems(path: Path, text: str):
         if key and (line[:1] in {" ", "\t"} or line.startswith("-") or not line.strip()):
             text_part = line.strip()
             if mode == "block" or (mode == "plain" and text_part and not text_part.startswith("#")):
-                if mode == "plain" and (": " in text_part or " #" in text_part):
-                    problems.append(f"{key}: unquoted value contains ': ' or ' #' (quote it)")
+                problem = _plain_scalar_problem(key, text_part) if mode == "plain" else None
+                if problem:
+                    problems.append(problem)
                 fields[key] = (fields[key] + " " + text_part).strip()
             continue
         key, mode = None, None
@@ -363,23 +375,20 @@ def frontmatter_problems(path: Path, text: str):
         if re.match(r"^[>|][0-9+-]*(?:\s+#.*)?$", value):
             mode = "block"
         elif value[:1] in {"[", "{"}:
-            if value.count("[") != value.count("]") or value.count("{") != value.count("}"):
-                problems.append(f"{key}: flow collection brackets are not balanced")
+            pass  # flow collection; its indented continuation lines are skipped
         elif value[:1] in {'"', "'"}:
-            quote = value[0]
-            body = value[1:-1] if len(value) > 1 and value.endswith(quote) else None
-            if quote == '"' and body is not None and re.search(r'(?<!\\)(?:\\\\)*"', body):
-                body = None
-            if quote == "'" and body is not None and "'" in body.replace("''", ""):
-                body = None
-            if body is None:
+            quoted = _QUOTED_SCALAR.match(value)
+            if not quoted:
                 problems.append(f"{key}: quoted value is not properly closed")
+            elif quoted.group(1) is not None:
+                fields[key] = re.sub(r"\\(.)", r"\1", quoted.group(1))
             else:
-                fields[key] = body.replace("''", "'") if quote == "'" else re.sub(r"\\(.)", r"\1", body)
+                fields[key] = quoted.group(2).replace("''", "'")
         else:
             mode = "plain"
-            if ": " in value or " #" in value or value.endswith(":"):
-                problems.append(f"{key}: unquoted value contains ': ' or ' #' (quote it)")
+            problem = _plain_scalar_problem(key, value)
+            if problem:
+                problems.append(problem)
             elif value[:1] in _PLAIN_SCALAR_FIRST_CHARS:
                 problems.append(f"{key}: unquoted value starts with YAML indicator {value[0]!r} (quote it)")
             fields[key] = value
