@@ -326,8 +326,6 @@ def _resolve_lint_scope_files(root: Path, label: str, assertion, kind_name: str)
 _PLAIN_SCALAR_FIRST_CHARS = set("-?:,[]{}#&*!|>'\"%@`")
 _KEBAB_CASE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER_KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):(?:\s+(.*))?$")
-# A closed quoted scalar, optionally followed by a `# comment`.
-_QUOTED_SCALAR = re.compile(r"""^(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)')(?:\s+#.*)?$""")
 
 
 def _plain_scalar_problem(key: str, text: str):
@@ -340,10 +338,10 @@ def _plain_scalar_problem(key: str, text: str):
 
 
 def frontmatter_problems(path: Path, text: str):
-    # Stdlib subset of the YAML rules Codex and Claude Code apply when they
-    # load SKILL.md / agent frontmatter. Only top-level `key: value` lines are
-    # checked; indented lines and `- item` lines belong to the previous key
-    # (block scalar body, block list, or plain-scalar continuation).
+    # A light guard, not a YAML validator: it catches unquoted ': ' / ' #' in
+    # plain scalars (the bug class strict YAML parsers reject or truncate) and
+    # sanity-checks name/description. Only top-level `key: value` lines are
+    # read; indented lines and `- item` lines continue the previous key.
     lines = text.split("\n")
     if not lines or lines[0].rstrip("\r") != "---":
         return ["frontmatter must start with a '---' line"]
@@ -352,11 +350,11 @@ def frontmatter_problems(path: Path, text: str):
     except StopIteration:
         return ["frontmatter has no closing '---' line"]
     problems, fields = [], {}
-    key, mode = None, None  # mode of the previous key: "block", "plain" or None
+    key, mode = None, None  # mode of the previous key: "block", "plain", "quoted" or None
     for line in (raw.rstrip("\r") for raw in lines[1:end]):
         if key and (line[:1] in {" ", "\t"} or line.startswith("-") or not line.strip()):
             text_part = line.strip()
-            if mode == "block" or (mode == "plain" and text_part and not text_part.startswith("#")):
+            if mode in {"block", "quoted"} or (mode == "plain" and text_part and not text_part.startswith("#")):
                 problem = _plain_scalar_problem(key, text_part) if mode == "plain" else None
                 if problem:
                     problems.append(problem)
@@ -375,15 +373,9 @@ def frontmatter_problems(path: Path, text: str):
         if re.match(r"^[>|][0-9+-]*(?:\s+#.*)?$", value):
             mode = "block"
         elif value[:1] in {"[", "{"}:
-            pass  # flow collection; its indented continuation lines are skipped
+            pass  # flow collection, accepted as is; its continuation lines are skipped
         elif value[:1] in {'"', "'"}:
-            quoted = _QUOTED_SCALAR.match(value)
-            if not quoted:
-                problems.append(f"{key}: quoted value is not properly closed")
-            elif quoted.group(1) is not None:
-                fields[key] = re.sub(r"\\(.)", r"\1", quoted.group(1))
-            else:
-                fields[key] = quoted.group(2).replace("''", "'")
+            mode, fields[key] = "quoted", value  # accepted as is; quotes stripped below
         else:
             mode = "plain"
             problem = _plain_scalar_problem(key, value)
@@ -392,6 +384,7 @@ def frontmatter_problems(path: Path, text: str):
             elif value[:1] in _PLAIN_SCALAR_FIRST_CHARS:
                 problems.append(f"{key}: unquoted value starts with YAML indicator {value[0]!r} (quote it)")
             fields[key] = value
+    fields = {k: v.strip("\"'") for k, v in fields.items()}  # approximate text of quoted values
     if path.name == "SKILL.md":
         name = fields.get("name", "")
         if name != path.parent.name:

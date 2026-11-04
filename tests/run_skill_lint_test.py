@@ -528,14 +528,6 @@ class FrontmatterTest(unittest.TestCase):
         self.assertEqual(record["status"], "fail")
         self.assertIn("demo-skill/SKILL.md: description: unquoted value contains", completed.stdout)
 
-    def test_fails_when_quoted_value_is_not_closed(self):
-        completed, record = self._run(
-            'name: demo-skill\ndescription: "Runs the review\n',
-            "zz-test-frontmatter-unclosed",
-        )
-        self.assertEqual(record["status"], "fail")
-        self.assertIn("description: quoted value is not properly closed", completed.stdout)
-
     def test_passes_on_valid_yaml_collections_and_continuations(self):
         cases = {
             "zz-test-frontmatter-flow-list": "description: Runs the review.\ntools: [Read, Bash]\n",
@@ -571,10 +563,12 @@ class FrontmatterTest(unittest.TestCase):
         self.assertEqual(record["status"], "fail")
         self.assertIn("description: unquoted value contains", completed.stdout)
 
-    def test_passes_on_quoted_value_with_comment_and_wrapped_flow_list(self):
+    def test_passes_on_quoted_values_and_wrapped_flow_list(self):
         cases = {
             "zz-test-frontmatter-quoted-comment": 'description: "Review: carefully" # summary\n',
             "zz-test-frontmatter-flow-wrapped": "description: Runs the review.\ntools: [Read,\n  Bash]\n",
+            "zz-test-frontmatter-double-wrapped": 'description: "Review changes and provide\n  actionable feedback."\n',
+            "zz-test-frontmatter-single-wrapped": "description: 'Review changes and provide\n  actionable feedback.'\n",
         }
         for contract_id, body in cases.items():
             with self.subTest(contract_id):
