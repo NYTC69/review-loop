@@ -270,6 +270,7 @@ def forbidden_scope_files(root: Path, applies_to: str):
     scope_roots = {
         "claude-plugin-agent-invocations": [root / ".claude-plugin"],
         "all-skill-bodies": [root / "skills", root / ".agents/skills"],
+        "skill-and-agent-frontmatter": [root / "skills", root / ".agents/skills", root / "agents"],
     }.get(applies_to)
 
     if not scope_roots:
@@ -283,6 +284,8 @@ def forbidden_scope_files(root: Path, applies_to: str):
         # maintained references/ tree, not arbitrary notes or test fixtures.
         if applies_to == "all-skill-bodies":
             candidates = list(scope_root.rglob("SKILL.md")) + list(scope_root.glob("*/references/*.md"))
+        elif applies_to == "skill-and-agent-frontmatter":
+            candidates = scope_root.glob("*.md") if scope_root.name == "agents" else scope_root.glob("*/SKILL.md")
         else:
             candidates = scope_root.rglob("*")
         for path in sorted(candidate for candidate in candidates if candidate.is_file()):
@@ -318,6 +321,69 @@ def _resolve_lint_scope_files(root: Path, label: str, assertion, kind_name: str)
             return None, assertion_result("fail", label, f"{path_value} is missing")
         return [path], None
     return None, assertion_result("fail", label, f"{kind_name} requires 'applies_to' or 'path'")
+
+
+_PLAIN_SCALAR_FIRST_CHARS = set("-?:,[]{}#&*!|>'\"%@`")
+_KEBAB_CASE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_FRONTMATTER_KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):(?:\s+(.*))?$")
+
+
+def frontmatter_problems(path: Path, text: str):
+    # Stdlib subset of the YAML rules Codex and Claude Code apply when they
+    # load SKILL.md / agent frontmatter. Top-level `key: value` lines only;
+    # block scalars (`>`, `|`) are checked for their indented body text.
+    lines = text.split("\n")
+    if not lines or lines[0].rstrip("\r") != "---":
+        return ["frontmatter must start with a '---' line"]
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].rstrip("\r") == "---")
+    except StopIteration:
+        return ["frontmatter has no closing '---' line"]
+    problems, fields, block_key = [], {}, None
+    for line in (raw.rstrip("\r") for raw in lines[1:end]):
+        if block_key and (line.startswith((" ", "\t")) or not line.strip()):
+            fields[block_key] = (fields[block_key] + " " + line.strip()).strip()
+            continue
+        block_key = None
+        match = _FRONTMATTER_KEY_LINE.match(line)
+        if not match:
+            if line.strip() and not line.lstrip().startswith("#"):
+                problems.append(f"line {line!r} is not a top-level 'key: value' line")
+            continue
+        key, value = match.group(1), (match.group(2) or "").rstrip()
+        if value[:1] in {">", "|"} and value[1:].strip("+-0123456789") == "":
+            block_key, fields[key] = key, ""
+        elif value[:1] in {'"', "'"}:
+            quote = value[0]
+            body = value[1:-1] if len(value) > 1 and value.endswith(quote) else None
+            if quote == '"' and body is not None and re.search(r'(?<!\\)(?:\\\\)*"', body):
+                body = None
+            if quote == "'" and body is not None and "'" in body.replace("''", ""):
+                body = None
+            if body is None:
+                problems.append(f"{key}: quoted value is not properly closed")
+            else:
+                fields[key] = body.replace("''", "'") if quote == "'" else re.sub(r"\\(.)", r"\1", body)
+        else:
+            if ": " in value or " #" in value or value.endswith(":"):
+                problems.append(f"{key}: unquoted value contains ': ' or ' #' (quote it)")
+            elif value[:1] in _PLAIN_SCALAR_FIRST_CHARS:
+                problems.append(f"{key}: unquoted value starts with YAML indicator {value[0]!r} (quote it)")
+            fields[key] = value
+    if path.name == "SKILL.md":
+        name = fields.get("name", "")
+        if name != path.parent.name:
+            problems.append(f"name {name!r} must equal the folder name {path.parent.name!r}")
+        if not _KEBAB_CASE.match(name):
+            problems.append(f"name {name!r} must be kebab-case")
+        description = fields.get("description", "")
+        if not description:
+            problems.append("description must be non-empty")
+        if len(description) >= 1024:
+            problems.append(f"description must be under 1024 characters (has {len(description)})")
+        if "<" in description or ">" in description:
+            problems.append("description must not contain '<' or '>'")
+    return problems
 
 
 # Allowed override keys for lint assertion id-resolver (ADR-3 whitelist).
@@ -819,6 +885,22 @@ def evaluate_assertion(root: Path, mapping_data, assertion):
         if failures:
             return assertion_result("fail", label, "; ".join(failures))
         return assertion_result("pass", label, f"mapping {mapping_id!r} matched all configured phrases")
+
+    if kind == "frontmatter":
+        files, scope_error = _resolve_lint_scope_files(root, label, assertion, kind)
+        if scope_error:
+            return scope_error
+        failures = []
+        for path in files:
+            text, read_error = safe_read_text(path, label, path.as_posix())
+            if read_error:
+                failures.append(read_error["message"])
+                continue
+            rel = path.relative_to(root).as_posix()
+            failures.extend(f"{rel}: {problem}" for problem in frontmatter_problems(path, text))
+        if failures:
+            return assertion_result("fail", label, "; ".join(failures))
+        return assertion_result("pass", label, f"{len(files)} frontmatter blocks are valid")
 
     return assertion_result("fail", label, f"unsupported assertion kind {kind!r}")
 

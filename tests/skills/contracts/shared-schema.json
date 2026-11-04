@@ -6,6 +6,11 @@
       "id": "model_keys_not_applied_target",
       "kind": "consistent_with",
       "mapping_id": "model_keys_not_applied"
+    },
+    {
+      "id": "skill_and_agent_frontmatter_valid",
+      "kind": "frontmatter",
+      "applies_to": "skill-and-agent-frontmatter"
     }
   ]
 }

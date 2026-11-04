@@ -487,5 +487,61 @@ class KindContainsTest(unittest.TestCase):
         self.assertIn("missing required field(s): needle", completed.stdout)
 
 
+
+class FrontmatterTest(unittest.TestCase):
+    """`kind: frontmatter` on a single SKILL.md fixture: a quoted description
+    with ': ' passes; an unquoted one, an unclosed quote and a name that does
+    not match the folder each FAIL naming the file and the rule."""
+
+    def _run(self, frontmatter: str, contract_id: str, folder: str = "demo-skill"):
+        with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
+            fixture = write_fixture(Path(tmpdir), f"{folder}/SKILL.md", f"---\n{frontmatter}---\n\n# Body\n")
+            case = LintAssertionFixtureCase(
+                contract_id=contract_id,
+                assertions=[
+                    {"id": "test_frontmatter", "kind": "frontmatter", "path": fixture.relative_to(ROOT).as_posix()}
+                ],
+                fixture_dir=Path(tmpdir),
+            )
+            try:
+                case.write_contract()
+                return case.run_lint()
+            finally:
+                case.cleanup()
+
+    def test_passes_when_description_with_colon_is_quoted(self):
+        completed, record = self._run(
+            'name: demo-skill\ndescription: "Refused when `entry: legacy` is set; say \\"hi\\"."\n',
+            "zz-test-frontmatter-pass",
+        )
+        self.assertIsNotNone(record, completed.stdout)
+        self.assertEqual(record["status"], "pass", completed.stdout)
+
+    def test_fails_when_unquoted_description_contains_colon_space(self):
+        completed, record = self._run(
+            "name: demo-skill\ndescription: Refused when `entry: legacy` is set.\n",
+            "zz-test-frontmatter-colon",
+        )
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("demo-skill/SKILL.md: description: unquoted value contains", completed.stdout)
+
+    def test_fails_when_quoted_value_is_not_closed(self):
+        completed, record = self._run(
+            'name: demo-skill\ndescription: "Runs the review\n',
+            "zz-test-frontmatter-unclosed",
+        )
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("description: quoted value is not properly closed", completed.stdout)
+
+    def test_fails_when_name_does_not_match_folder(self):
+        completed, record = self._run(
+            "name: Other_Skill\ndescription: Runs the review.\n",
+            "zz-test-frontmatter-name",
+        )
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("must equal the folder name 'demo-skill'", completed.stdout)
+        self.assertIn("must be kebab-case", completed.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
