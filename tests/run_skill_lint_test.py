@@ -493,9 +493,12 @@ class FrontmatterTest(unittest.TestCase):
     with ': ' passes; an unquoted one, an unclosed quote and a name that does
     not match the folder each FAIL naming the file and the rule."""
 
-    def _run(self, frontmatter: str, contract_id: str, folder: str = "demo-skill"):
+    def _run(self, frontmatter: str, contract_id: str, folder: str = "demo-skill", newline: str = "\n"):
         with tempfile.TemporaryDirectory(dir=str(ROOT)) as tmpdir:
-            fixture = write_fixture(Path(tmpdir), f"{folder}/SKILL.md", f"---\n{frontmatter}---\n\n# Body\n")
+            fixture = Path(tmpdir) / folder / "SKILL.md"
+            fixture.parent.mkdir(parents=True)
+            content = f"---\n{frontmatter}---\n\n# Body\n".replace("\n", newline)
+            fixture.write_bytes(content.encode("utf-8"))
             case = LintAssertionFixtureCase(
                 contract_id=contract_id,
                 assertions=[
@@ -532,6 +535,49 @@ class FrontmatterTest(unittest.TestCase):
         )
         self.assertEqual(record["status"], "fail")
         self.assertIn("description: quoted value is not properly closed", completed.stdout)
+
+    def test_passes_on_valid_yaml_collections_and_continuations(self):
+        cases = {
+            "zz-test-frontmatter-flow-list": "description: Runs the review.\ntools: [Read, Bash]\n",
+            "zz-test-frontmatter-block-list": "description: Runs the review.\ntools:\n  - Read\n  - Bash\n",
+            "zz-test-frontmatter-plain-continued": "description: Review changes\n  with care.\n",
+            "zz-test-frontmatter-block-comment": "description: > # summary\n  Runs the review.\n",
+            "zz-test-frontmatter-block-strip": "description: |-\n  Runs the review.\n",
+            "zz-test-frontmatter-block-keep": "description: >+\n  Runs the review.\n",
+        }
+        for contract_id, body in cases.items():
+            with self.subTest(contract_id):
+                completed, record = self._run("name: demo-skill\n" + body, contract_id)
+                self.assertEqual(record["status"], "pass", completed.stdout)
+
+    def test_crlf_line_endings_pass_and_still_catch_the_colon_bug(self):
+        completed, record = self._run(
+            "name: demo-skill\ndescription: Runs the review.\n", "zz-test-frontmatter-crlf-pass", newline="\r\n"
+        )
+        self.assertEqual(record["status"], "pass", completed.stdout)
+        completed, record = self._run(
+            "name: demo-skill\ndescription: Refused when `entry: legacy` is set.\n",
+            "zz-test-frontmatter-crlf-fail",
+            newline="\r\n",
+        )
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("description: unquoted value contains", completed.stdout)
+
+    def test_fails_when_plain_continuation_contains_colon_space(self):
+        completed, record = self._run(
+            "name: demo-skill\ndescription: Review changes\n  when `entry: legacy` is set.\n",
+            "zz-test-frontmatter-continued-colon",
+        )
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("description: unquoted value contains", completed.stdout)
+
+    def test_fails_when_flow_collection_is_unbalanced(self):
+        completed, record = self._run(
+            "name: demo-skill\ndescription: Runs the review.\ntools: [Read, Bash\n",
+            "zz-test-frontmatter-flow-unbalanced",
+        )
+        self.assertEqual(record["status"], "fail")
+        self.assertIn("tools: flow collection brackets are not balanced", completed.stdout)
 
     def test_fails_when_name_does_not_match_folder(self):
         completed, record = self._run(

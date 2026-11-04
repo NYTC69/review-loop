@@ -330,8 +330,9 @@ _FRONTMATTER_KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):(?:\s+(.*))?$")
 
 def frontmatter_problems(path: Path, text: str):
     # Stdlib subset of the YAML rules Codex and Claude Code apply when they
-    # load SKILL.md / agent frontmatter. Top-level `key: value` lines only;
-    # block scalars (`>`, `|`) are checked for their indented body text.
+    # load SKILL.md / agent frontmatter. Only top-level `key: value` lines are
+    # checked; indented lines and `- item` lines belong to the previous key
+    # (block scalar body, block list, or plain-scalar continuation).
     lines = text.split("\n")
     if not lines or lines[0].rstrip("\r") != "---":
         return ["frontmatter must start with a '---' line"]
@@ -339,20 +340,31 @@ def frontmatter_problems(path: Path, text: str):
         end = next(i for i in range(1, len(lines)) if lines[i].rstrip("\r") == "---")
     except StopIteration:
         return ["frontmatter has no closing '---' line"]
-    problems, fields, block_key = [], {}, None
+    problems, fields = [], {}
+    key, mode = None, None  # mode of the previous key: "block", "plain" or None
     for line in (raw.rstrip("\r") for raw in lines[1:end]):
-        if block_key and (line.startswith((" ", "\t")) or not line.strip()):
-            fields[block_key] = (fields[block_key] + " " + line.strip()).strip()
+        if key and (line[:1] in {" ", "\t"} or line.startswith("-") or not line.strip()):
+            text_part = line.strip()
+            if mode == "block" or (mode == "plain" and text_part and not text_part.startswith("#")):
+                if mode == "plain" and (": " in text_part or " #" in text_part):
+                    problems.append(f"{key}: unquoted value contains ': ' or ' #' (quote it)")
+                fields[key] = (fields[key] + " " + text_part).strip()
             continue
-        block_key = None
+        key, mode = None, None
         match = _FRONTMATTER_KEY_LINE.match(line)
         if not match:
             if line.strip() and not line.lstrip().startswith("#"):
                 problems.append(f"line {line!r} is not a top-level 'key: value' line")
             continue
         key, value = match.group(1), (match.group(2) or "").rstrip()
-        if value[:1] in {">", "|"} and value[1:].strip("+-0123456789") == "":
-            block_key, fields[key] = key, ""
+        fields[key] = ""
+        if not value or value.startswith("#"):
+            continue  # nested block (list or mapping) follows on indented lines
+        if re.match(r"^[>|][0-9+-]*(?:\s+#.*)?$", value):
+            mode = "block"
+        elif value[:1] in {"[", "{"}:
+            if value.count("[") != value.count("]") or value.count("{") != value.count("}"):
+                problems.append(f"{key}: flow collection brackets are not balanced")
         elif value[:1] in {'"', "'"}:
             quote = value[0]
             body = value[1:-1] if len(value) > 1 and value.endswith(quote) else None
@@ -365,6 +377,7 @@ def frontmatter_problems(path: Path, text: str):
             else:
                 fields[key] = body.replace("''", "'") if quote == "'" else re.sub(r"\\(.)", r"\1", body)
         else:
+            mode = "plain"
             if ": " in value or " #" in value or value.endswith(":"):
                 problems.append(f"{key}: unquoted value contains ': ' or ' #' (quote it)")
             elif value[:1] in _PLAIN_SCALAR_FIRST_CHARS:
