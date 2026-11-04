@@ -2907,6 +2907,9 @@ class Coordinator:
         receipt['voided'] = {'evidence': str(diff), 'restored': why is None, **({'restore_failure': why} if why else {})}
         if why:
             self._record_unrestored(unrestored, workspace, recorded, reason=why, evidence=str(diff))
+        if why and why.startswith(readonly_guard.NEWLY_IGNORED):   # WI-ROR: an ignore change mid-turn, not a deletion
+            return ReadOnlyTurnVoided(f'{role} turn is void: {why}; nothing to restore — start a new run (or resume once the ignore '
+                                      f'change is reverted), see {diff}', restored=False)
         if why: return ReadOnlyTurnVoided(f'{role} mutated workspace and the coordinator could not restore it ({why}); '
                                           f'restore it by hand, see {diff}', restored=False)
         return ReadOnlyTurnVoided(f'{role} mutated workspace; the turn is void and the workspace was restored (evidence: {diff})', restored=True)
@@ -2934,6 +2937,9 @@ class Coordinator:
         if back:
             self.state.pop('unrestored_readonly_turn'); self.save()
             return ''
+        if str(record.get('reason', '')).startswith(readonly_guard.NEWLY_IGNORED):   # WI-ROR
+            return (f'read-only turn {record["sequence"]} ({record["role"]}): {record["reason"]}; nothing to restore — start a new run '
+                    '(or resume once the ignore change is reverted)' + (f'; evidence: {record["evidence"]}' if record.get('evidence') else ''))
         return (f'read-only turn {record["sequence"]} ({record["role"]}) changed the workspace and it could not be restored; manual '
                 f'restore needed ({record["reason"]}' + (f'; evidence: {record["evidence"]}' if record.get('evidence') else '') +
                 '); restore the workspace by hand to its state before that turn (content, HEAD, branch and index; the evidence diff '
@@ -7058,7 +7064,8 @@ class Coordinator:
             if not isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)) and (voided is None or voided.restored): raise
             receipt['error'] = str(exc)
             if voided is not None and not voided.restored:   # the failed undo leads, whatever else this turn tripped
-                receipt['error'] = ('read-only turn changed the workspace and it could not be restored; manual restore needed: '
+                receipt['error'] = (('' if readonly_guard.NEWLY_IGNORED in str(voided) else   # WI-ROR: nothing to restore by hand
+                                     'read-only turn changed the workspace and it could not be restored; manual restore needed: ')
                                     + str(voided) + ('' if exc is voided else '; also: ' + str(exc)))
             self._rotate_failed_first_claude_session(role, receipt['vendor'], fresh)
             atomic_json(prefix.with_suffix('.receipt.json'), receipt)

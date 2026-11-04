@@ -234,6 +234,10 @@ def mutate(mode):
         os.chmod(root / 'tracked.txt', 0o755)
     elif mode == 'chmod600':   # roperm: non-executable permission bits only, invisible to git
         os.chmod(root / 'tracked.txt', 0o600)
+    elif mode == 'exclude':   # WI-ROR: the operator excludes two untracked files mid-turn; nothing is deleted
+        with open(subprocess.run(['git', 'rev-parse', '--git-path', 'info/exclude'], capture_output=True, text=True, check=True).stdout.strip(),
+                  'a') as handle:
+            handle.write('\nnotes.txt\nnode_modules\n')
     elif mode == 'rm':
         target = root / 'tracked.txt'
         if target.exists():

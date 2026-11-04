@@ -232,4 +232,20 @@ def restore(workspace: Path, recorded: dict, keep: Path) -> Optional[str]:
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         return f'{type(exc).__name__}: {exc}'
     differs = [key for key in ('head', 'branch', 'index', 'tree') if recorded[key] != now[key]] + (['permission bits'] if bits else [])
+    if differs == ['tree'] and (names := newly_ignored(workspace, recorded['tree'], now['tree'])):
+        return f'{NEWLY_IGNORED}: {", ".join(names)}'
     return f'{", ".join(differs)} still differ after the restore' if differs else None
+
+
+NEWLY_IGNORED = 'files became ignored or excluded during the turn (still on disk)'
+
+
+def newly_ignored(workspace: Path, recorded_tree: str, tree: str) -> list:
+    """WI-ROR: the paths the tree lost, when that is the whole difference and every one is still on disk and now ignored by git
+    (an exclude or .gitignore entry added mid-turn drops an untracked file out of the tree; nothing on disk to restore). Else []."""
+    try:
+        if _git(workspace, 'diff', '--name-only', '--no-renames', '--diff-filter=d', recorded_tree, tree, check=False): return []
+        gone = [name for name in _git(workspace, 'diff', '--name-only', '--no-renames', '-z', recorded_tree, tree, raw=True).split('\0') if name]
+        ignored = set(filter(None, _git(workspace, 'check-ignore', '-z', '--stdin', check=False, input='\0'.join(gone) + '\0', raw=True).split('\0')))
+    except (OSError, RuntimeError, subprocess.SubprocessError): return []
+    return gone if gone and all(name in ignored and os.path.lexists(workspace / name) for name in gone) else []

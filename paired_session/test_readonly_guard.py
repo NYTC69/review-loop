@@ -104,6 +104,28 @@ class ReadOnlyGuardUnitTests(unittest.TestCase):
         self.assertEqual(checkout.kwargs['input'].count('\0'), 2000)   # the paths, never on the command line
         self.assertEqual({(self.ws / f'f{i:04d}.txt').read_text() for i in range(2000)}, {'base\n'})
 
+    def test_untracked_files_excluded_mid_turn_are_named_as_ignored_not_restorable(self):   # WI-ROR (field run daf8c91c)
+        outside = self.root / 'outside'
+        for target in ('dir', 'dangling', 'file'):
+            with self.subTest(target=target):
+                (self.ws / '.git' / 'info' / 'exclude').write_text('')
+                for name in ('settings.json', 'node_modules'):
+                    if os.path.lexists(self.ws / name): os.unlink(self.ws / name)
+                if os.path.lexists(outside): subprocess.run(['rm', '-rf', str(outside)], check=True)
+                if target == 'dir': outside.mkdir()
+                elif target == 'file': outside.write_text('o\n')
+                (self.ws / 'settings.json').write_text('{}\n')
+                os.symlink(str(outside), self.ws / 'node_modules')   # an absolute target outside the workspace
+                recorded = rg.capture(self.ws, self.keep)
+                (self.ws / 'node_modules').unlink()                  # a real deletion is restored ...
+                with open(self.ws / '.git' / 'info' / 'exclude', 'a') as handle: handle.write('settings.json\n')   # ... an exclusion is not
+                rg.evidence(self.ws, recorded, self.keep, self.root / 'change.diff')
+                self.assertEqual(rg.restore(self.ws, recorded, self.keep), f'{rg.NEWLY_IGNORED}: settings.json')
+                self.assertEqual(os.readlink(self.ws / 'node_modules'), str(outside))
+                self.assertTrue((self.ws / 'settings.json').exists())
+                (self.ws / 'settings.json').unlink()   # excluded and gone: not this case
+                self.assertEqual(rg.newly_ignored(self.ws, recorded['tree'], rg.state(self.ws, self.keep)['tree']), [])
+
     def test_a_changed_or_missing_ignored_entry_is_reported_and_never_restored(self):   # eff-e
         (self.ws / 'cache.log').write_text('kept\n')
         recorded = rg.capture(self.ws, self.keep)
@@ -549,6 +571,26 @@ class ReadOnlyTurnTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}), patch.object(rc.readonly_guard, 'capture', side_effect=RuntimeError('no git')):
             with self.assertRaisesRegex(RuntimeError, 'no verified pre-turn record to restore it from'):
                 co.invoke('reviewer', 'PLAN', prompt, rc.review_schema())
+
+    def test_an_exclude_added_mid_turn_holds_and_says_the_files_became_ignored(self):   # WI-ROR
+        (self.h.workspace / 'notes.txt').write_text('untracked\n')
+        os.symlink(str(self.h.root), self.h.workspace / 'node_modules')
+        result = self.launch({'FAKE_MUTATION': 'exclude'}, True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn('nothing to restore', self.state()['hold_reason'])
+        self.assertNotIn('manual restore needed', self.state()['hold_reason'])
+        [voided] = self.voided()
+        self.assertFalse(voided['restored'])
+        self.assertEqual(voided['restore_failure'], f'{rg.NEWLY_IGNORED}: node_modules, notes.txt')
+        self.assertTrue((self.h.workspace / 'notes.txt').exists() and (self.h.workspace / 'node_modules').is_symlink())
+        co = self.h.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest', '--shadow', 'off', '--adversarial-gate', 'off')   # launch()'s flags
+        issue = co.unrestored_workspace_issue()
+        self.assertIn('nothing to restore', issue)
+        self.assertNotIn('manual restore needed', issue)
+        info = self.h.workspace / '.git' / 'info' / 'exclude'
+        info.write_text(info.read_text().replace('\nnotes.txt\nnode_modules\n', ''))   # the ignore change reverted: the record clears
+        self.assertEqual(co.unrestored_workspace_issue(), '')
 
     def test_the_turn_process_group_is_stopped_before_the_restore(self):   # INT-2c: no child left in it re-dirties the restored tree
         co = self.h.coordinator()
