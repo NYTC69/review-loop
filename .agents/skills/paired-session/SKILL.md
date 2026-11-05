@@ -5,6 +5,8 @@ description: "Use in exactly four cases - the user explicitly asks for paired-se
 
 # Paired-session workflow (Codex)
 
+## Loading the shared entry contract
+
 First, before any stage A check or question, read `<support-root>/docs/protocol/loading.md`
 and load the shared entry contract (`docs/protocol/paired-session-entry.md`) as
 its own command, cwd in the user's workspace. The bundle must stay out of the
@@ -36,6 +38,9 @@ This file adds only the Codex host rules:
 - Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command
   execution failure: a declined or ungranted outside-sandbox approval: HOLD with
   the reason, on every entry and invocation (nothing falls back).
+
+## Outside-sandbox and long commands (critical)
+
 - Outside-sandbox execution: the coordinator spawns provider CLIs and writes to
   the selected `$CODEX_HOME`; execute each invocation below
   with the host's full filesystem/network permission, outside the current
@@ -52,6 +57,9 @@ This file adds only the Codex host rules:
   stays ACTIVE; a report run ends in REPORTED. A probe's result is
   `RUN_DIR/permission-probe.json`; end the detached command only with `stop`
   (`paired_session/docs/detach.md`).
+
+## Run directory
+
 - Run directory: default to `<repo>/.review-loop/runs/<UUID>/`, where `<repo>` is the main
   checkout resolved by `git rev-parse --path-format=absolute --git-common-dir` and its parent
   when it ends in `/.git`. A lane's output therefore lives in the main checkout.
@@ -66,6 +74,9 @@ This file adds only the Codex host rules:
   on the workspace while a run is active: it would delete the run.
   Read a launcher log's last lines only when a polled command ends without its
   final coordinator line (the shared contract's Work item section).
+
+## Run invocations (efficient and strict)
+
 - Default (efficient): no permission probe; the first invocation below starts
   the run. Strict: replace `run` in the first invocation with
   `permission-probe` (same arguments, without `--stop-after-plan`), then start
@@ -131,6 +142,8 @@ quoted. Exit 4 from the second invocation means the installed plugin changed
 or became unresolvable after the probe: report it as a HOLD (no fallback); the
 run was not started.
 
+## Native Windows
+
 Native Windows (PowerShell; best effort, the Claude Code entry is the tested Windows path): efficient only, so
 there is no second invocation; the coordinator refuses `--strict`, `permission-probe` and `--detach`. Git for
 Windows (Git Bash) must be installed, and the run root and the workspace stay out of OneDrive-synced folders. The
@@ -177,6 +190,8 @@ Add the review-only and review-pr options below to this block as to the POSIX on
 here-string writes `pr-pins.json` the same way as the work item. Windows PowerShell 5.1 does not pass a `"` inside an
 argument intact to `python`: keep `"` out of the test command and the option values, or use PowerShell 7.3 or later.
 
+## Per-route extra arguments
+
 A review-only request (the user asks to review an existing change, or the review-loop handoff of
 a code target) follows the shared contract's review-only entry: add `--review-only` (and
 `--base "$BASE"` only when the user named a base) to both invocations.
@@ -200,11 +215,15 @@ the user confirmed a test command, and add `--review-only --review-report --auto
 printed JSON there with a second quoted heredoc, like the work item) and `--aspects "$ASPECTS"` when
 aspects were given. `simplify` pointer: `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)` (Claude Code).
 
+## When this skill is the entry
+
 This skill is the explicit
 paired-session entry and the review-loop handoff target only when the config
 key `entry` is `paired-session` or absent and the work is fresh, an existing plan (as the work item) or a review-only
 code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
 legacy workflow was removed in v2.13.0.
+
+## Operator commands
 
 Operator commands (`accept`, `reject`, `withdraw-findings`) follow the shared
 entry contract. Run `withdraw-findings` only on the user's explicit decision
@@ -213,6 +232,8 @@ in handsfree mode. Issue `--intent-only --finding ID --reason TEXT` first
 (repeat `--finding` for each named id), show the digest, then submit the same
 command with `--expect <digest>` instead of `--intent-only`. Relay the ruling,
 evidence, next-step hint and status; withdrawal dispatches no model turn.
+
+## Lifecycle mode
 
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 

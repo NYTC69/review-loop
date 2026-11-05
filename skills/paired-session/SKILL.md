@@ -16,6 +16,8 @@ description: >
 
 # Paired-session workflow (Claude Code)
 
+## Loading the shared entry contract
+
 First, before any stage A check or question, read `${CLAUDE_PLUGIN_ROOT}/docs/protocol/loading.md`
 and load the shared entry contract (`docs/protocol/paired-session-entry.md`) as
 its own Bash command, cwd in the user's workspace. The bundle must stay out of
@@ -48,23 +50,9 @@ adds only the Claude Code host rules:
 
 - Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command execution failure:
   unavailable background execution: HOLD with the reason, on every entry (nothing falls back).
-- Run directory: default to `<repo>/.review-loop/runs/<UUID>/`. Resolve `<repo>`
-  from the project's main checkout using `git rev-parse --path-format=absolute --git-common-dir`
-  and take its parent when it ends in `/.git`; a lane worktree therefore stores runs in the main checkout.
-  Resolve the root once with its own Bash call (set `WORKSPACE` in that same Bash call):
-  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE"`.
-  This creates `.review-loop/.gitignore` (`*`, `!config.md`) only when missing.
-  If not a Git repo, a bare repo or a submodule/separate-git-dir checkout, it reports fallback to
-  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG values use `$HOME/.local/state`).
-  An explicit operator-chosen `RUN_DIR` wins; resume existing runs at their original `--run-dir`, without migration.
-  Create a UUID and the run directory (`mkdir -p`), then write `WORKITEM.md` there.
-  If creation or writing fails, stop with `stage A failure: <reason>`; never try another location.
-  Resolve `WORKSPACE`, `WORKITEM` and `RUN_DIR` to absolute paths. Claude Code substitutes
-  `${CLAUDE_PLUGIN_ROOT}` in skill content. Define path variables anew in each Bash tool call;
-  shell variables do not persist across calls. Pass arguments as an array.
-  Write launcher logs under the run root's `logs/` (`.../.review-loop/logs/`), never under `runs/`.
-  Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x`
-  on the workspace while a run is active: it would delete the run.
+
+## Long commands and headless sessions (critical)
+
 - Long-command form: run every command that can dispatch model turns
   (`permission-probe`, `run`, `resume`, `reject --expect`) as its own Bash call
   with `run_in_background: true`; wait for the background task completion
@@ -93,8 +81,29 @@ adds only the Claude Code host rules:
   then inspect its final result as above. Recover a run cut off this way by the
   shared contract's uncertain-turn rule: check the turn's pid and phase, and
   ask the user before any `--retry-uncertain`.
-- Default (efficient): one Bash call with the `run` block below. Strict: the
-  probe block first, then the `run` block as a second Bash call.
+
+## Run directory
+
+- Run directory: default to `<repo>/.review-loop/runs/<UUID>/`. Resolve `<repo>`
+  from the project's main checkout using `git rev-parse --path-format=absolute --git-common-dir`
+  and take its parent when it ends in `/.git`; a lane worktree therefore stores runs in the main checkout.
+  Resolve the root once with its own Bash call (set `WORKSPACE` in that same Bash call):
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE"`.
+  This creates `.review-loop/.gitignore` (`*`, `!config.md`) only when missing.
+  If not a Git repo, a bare repo or a submodule/separate-git-dir checkout, it reports fallback to
+  `${XDG_STATE_HOME:-$HOME/.local/state}/review-loop` (relative XDG values use `$HOME/.local/state`).
+  An explicit operator-chosen `RUN_DIR` wins; resume existing runs at their original `--run-dir`, without migration.
+  Create a UUID and the run directory (`mkdir -p`), then write `WORKITEM.md` there.
+  If creation or writing fails, stop with `stage A failure: <reason>`; never try another location.
+  Resolve `WORKSPACE`, `WORKITEM` and `RUN_DIR` to absolute paths. Claude Code substitutes
+  `${CLAUDE_PLUGIN_ROOT}` in skill content. Define path variables anew in each Bash tool call;
+  shell variables do not persist across calls. Pass arguments as an array.
+  Write launcher logs under the run root's `logs/` (`.../.review-loop/logs/`), never under `runs/`.
+  Persistent output is gitignored; scratch stays outside the repo. Do not run `git clean -x`
+  on the workspace while a run is active: it would delete the run.
+
+## Native Windows
+
 - Native Windows (Git Bash): efficient only; the coordinator refuses `--strict`, `permission-probe` and `--detach`,
   so a headless session is not supported there (use an interactive session). Git Bash has no `pgrep`: wait for the
   background task notification. Resolve the run root below; set `WORKSPACE` in the same Bash call that runs `project_paths.py`:
@@ -104,6 +113,11 @@ adds only the Claude Code host rules:
   coordinator through Python (no shebang execution on Windows): in the `run` block below, replace
   `"${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run` with `python -X utf8 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run`, and
   run every other coordinator command and script the same way.
+
+## Run blocks (efficient and strict)
+
+- Default (efficient): one Bash call with the `run` block below. Strict: the
+  probe block first, then the `run` block as a second Bash call.
 
 Strict only, first Bash call (`run_in_background: true`):
 
@@ -128,6 +142,8 @@ TEST_COMMAND='the verified project command'
   --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
   --test-command "$TEST_COMMAND" --lifecycle-mode on
 ```
+
+## Per-route extra arguments
 
 A review-only request (`--review-only`, or the review-loop handoff of code already implemented)
 follows the shared contract's review-only entry: add `--review-only` (and `--base "$BASE"`
@@ -159,10 +175,14 @@ output, print them verbatim (the shared contract's Code-quality-loop entry quote
 loading that contract, before any stage A check. The work item's
 first line is `# code-quality-loop: <one-line summary of the uncommitted change>`.
 
+## When this skill is the entry
+
 This skill is the explicit paired-session entry and the review-loop handoff target only when the config
 key `entry` is `paired-session` or absent and the work is fresh, an existing plan (as the work item) or a review-only
 code target (an invalid value counts as absent, with a warning); `entry: legacy` is refused by the entry, since the
 legacy workflow was removed in v2.13.0.
+
+## Operator commands
 
 Operator commands (`accept`, `reject`, `withdraw-findings`) follow the shared
 entry contract. Run `withdraw-findings` only on the user's explicit decision
@@ -171,6 +191,8 @@ in handsfree mode. Issue `--intent-only --finding ID --reason TEXT` first
 (repeat `--finding` for each named id), show the digest, then submit the same
 command with `--expect <digest>` instead of `--intent-only`. Relay the ruling,
 evidence, next-step hint and status; withdrawal dispatches no model turn.
+
+## Lifecycle mode
 
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 
