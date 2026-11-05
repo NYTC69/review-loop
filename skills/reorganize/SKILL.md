@@ -1,6 +1,6 @@
 ---
 name: reorganize
-description: "Reorganize code file structure: rearrange modules, extract reuse, remove redundancy, add section comments. Preserves all functionality and logic."
+description: "Reorganize code file structure: rearrange modules, extract reuse, remove redundancy, add section comments. Preserves all functionality and logic. Use when the user asks to reorganize, restructure or tidy the layout of a file, a directory or the uncommitted diff ('reorganize src/engine.go', 'restructure this module', 'tidy up these files without changing behavior'). Not for reviewing or fixing code (use review-pr or code-quality-loop)."
 argument-hint: "<file/dir or 'diff'>"
 ---
 

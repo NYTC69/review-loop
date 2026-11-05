@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: "Review a GitHub pull request (\"review PR 123\", a PR URL) or a named branch or ref and write a review report, the review-loop review-pr; also when the user explicitly asks for review-pr. A general request to review local changes (\"review my changes\") is not this skill (review-loop). It runs the paired-session report mode (no writer, nothing committed or posted); the legacy review-pr was removed in v2.13.0, so `entry: legacy` and a request for \"the legacy review-pr workflow\" are refused. Not for implementing a work item (review-loop)."
+description: "Review a GitHub pull request (\"review PR 123\", a PR URL) or a named branch or ref and write a review report, the review-loop review-pr; also when the user explicitly asks for review-pr. A general request to review local changes (\"review my changes\") is not this skill (review-loop). It runs the paired-session report mode (no writer, nothing committed or posted). Not for implementing a work item (review-loop)."
 ---
 
 # review-pr (Codex)

@@ -1,6 +1,6 @@
 ---
 name: code-quality-loop
-description: "Iterative review-fix loop on the uncommitted change: with lifecycle on, reviews, fixes, simplifies and consolidates tests, as a paired-session review-only run (`run --review-only`). The legacy loop was removed in v2.13.0: `entry: legacy`, `--legacy` and `--reorganize` are refused."
+description: "Iterative review-fix loop on the uncommitted change: with lifecycle on, reviews, fixes, simplifies and consolidates tests, as a paired-session review-only run (`run --review-only`). Use when the user wants the uncommitted change reviewed and fixed until clean ('clean up my changes', 'review and fix my diff', 'polish this before I commit', 'run code-quality-loop'). Not for a report-only or PR review (use review-pr), new work from a work item (use review-loop) or a pure file restructure (use reorganize)."
 argument-hint: "[max-rounds]"
 ---
 

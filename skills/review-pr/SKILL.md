@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: "Comprehensive code review using specialized agents. Each agent focuses on a different quality aspect (code, errors, comments, types, tests). It runs the paired-session report mode (a PR, a ref or the local change; no writer, nothing posted); the legacy review was removed in v2.13.0, so `entry: legacy` and `--legacy` are refused."
+description: "Comprehensive code review using specialized agents. Each agent focuses on a different quality aspect (code, errors, comments, types, tests). It runs the paired-session report mode (a PR, a ref or the local change; no writer, nothing posted). Use when the user asks for a review report on a pull request, a branch, a ref or the local change ('review PR 123', a PR URL, 'review this branch against main', 'give me a review report of my diff') or names review-pr. Not for fixing the findings (use code-quality-loop) or implementing a work item (use review-loop)."
 argument-hint: "[PR number|PR URL|ref] [aspects: code|errors|comments|types|tests|all]"
 ---
 

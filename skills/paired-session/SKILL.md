@@ -11,8 +11,7 @@ description: >
   entry hands off because that key is absent or invalid (the default entry); (4)
   /review-loop:review-pr hands off on its paired route (`--review-pr`); (5)
   /review-loop:code-quality-loop hands off on its paired route (`--code-quality-loop`). Do not trigger on
-  a bare review-loop request yourself (the review-loop entry routes it), nor on `entry: legacy` (refused
-  there since v2.13.0).
+  a bare review-loop request yourself (the review-loop entry routes it).
 ---
 
 # Paired-session workflow (Claude Code)

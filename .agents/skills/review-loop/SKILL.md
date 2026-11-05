@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: Codex review-loop entry. Resolves the `entry` key and hands a work item (fresh work, an existing plan, or a review of existing code) to the Codex paired-session skill, which drives plan → review → implement → CR up to acceptance.
+description: "Codex review-loop entry. Resolves the `entry` key and hands a work item (fresh work, an existing plan, or a review of existing code) to the Codex paired-session skill, which drives plan → review → implement → CR up to acceptance. Use when the user asks to run review-loop on a task, to plan, implement and review a change, or to review local changes ('run review-loop on ...', 'plan, implement and review this', 'let the agents handle this', 'review my changes'). Not for a review report on a pull request, branch or ref (use review-pr)."
 ---
 
 # review-loop — codex entry
