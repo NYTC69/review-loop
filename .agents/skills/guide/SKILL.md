@@ -65,3 +65,15 @@ Not on Codex:
   `docs/protocol/paired-session-entry.md` (Profile and settings).
 - A review of existing code is a review-only run. With lifecycle on, `accept` normally makes one local commit (never a push);
   `auto_commit: false` in `.review-loop/config.md` keeps the accepted change uncommitted. Lifecycle off stops after the gate; acceptance returns the uncommitted tree.
+
+## Troubleshooting
+
+- **The skills are missing right after an install.** A fresh Codex session is what loads the plugin's skills.
+  Start a fresh Codex session after installation (`docs/install-codex.md`).
+- **A slash command does nothing (`Unrecognized command`).** Slash commands such as `/review-loop:paired-session`
+  are Claude Code only; Codex matches skills by their description, in natural language only. Ask in plain words,
+  for example "run review-loop on this branch", "review PR 123" or "use paired-session for this task".
+- **`--strict`, `permission-probe` or `--detach` is refused on Windows.** Native Windows supports efficient mode
+  only, so a headless session is not supported there. Drop the flag and use an interactive session.
+- **An entry refuses with `paired-session needs macOS or native Windows`.** Linux (WSL included) is not supported.
+  Run from macOS or native Windows.

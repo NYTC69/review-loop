@@ -163,3 +163,18 @@ review_focus: |
 ## More info
 
 GitHub: https://github.com/NYTC69/review-loop
+
+## Troubleshooting
+
+- **A plugin update does not take effect.** Claude Code loads plugins at session start, and `/reload-plugins`
+  does not switch versions. After `/plugin update`, start a new session (or exit with Ctrl-C twice and
+  `claude --resume` to keep the conversation).
+- **A headless (`claude -p`) run stops when the turn ends.** `-p` exits at the end of its turn and kills the
+  background coordinator. Use an interactive session; on macOS a headless session can start the run with
+  `--detach` (it returns at once with its pid and log; `stop` ends it).
+- **`--strict`, `permission-probe` or `--detach` is refused on Windows.** Native Windows supports efficient mode
+  only, so a headless session is not supported there. Drop the flag and use an interactive session.
+- **An entry refuses with `paired-session needs macOS or native Windows`.** Linux (WSL included) is not supported.
+  Run from macOS or native Windows.
+- **A slash command does nothing in Codex (`Unrecognized command`).** Codex matches skills by their description,
+  in natural language only. Ask in plain words, for example "run review-loop on this branch" or "review PR 123".
