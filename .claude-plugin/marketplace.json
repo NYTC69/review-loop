@@ -11,7 +11,7 @@
     {
       "name": "review-loop",
       "source": "./",
-      "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis. 12 agents, 6 skills, a paired-session Plan-Execute-Review-Polish pipeline.",
+      "description": "Take a change from plan to your acceptance: an independent reviewer checks the plan and the code, an adversarial gate tests the result, then quality polish, docs and a security review. Also reviews PRs and existing code.",
       "version": "3.5.2",
       "author": {
         "name": "NYTC69"
