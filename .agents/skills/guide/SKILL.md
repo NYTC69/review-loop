@@ -1,6 +1,6 @@
 ---
 name: guide
-description: "Codex guide for review-loop - the paired-session entry, review-pr and the shared .review-loop/config.md. Use when the user asks how review-loop works, what it can do, how to configure it, or for help with review-loop ('how do I use review-loop', 'review-loop help', 'what does the entry key do'). Not for starting a run (use review-loop) or a review (use review-pr)."
+description: "Codex guide for review-loop - the paired-session entry, review-pr and the shared .review-loop/config.md. Use when the user asks how review-loop works, what it can do, how to configure it, or for help with review-loop ('how do I use review-loop', 'review-loop help', 'what does the entry key do'). Not for starting a run or reviewing local changes (use review-loop) or a PR, branch or ref review (use review-pr)."
 ---
 
 # review-loop Guide

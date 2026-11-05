@@ -33,6 +33,10 @@ Paraphrase should trigger:
 - "Plan, implement and review this change with independent reviewers: add rate limiting to the API."
 - "Drive this feature through plan, review, implement and code review: export to CSV."
 - "I want the full plan-review-implement cycle on the login refactor."
+- "Review my changes." (review-loop: its description covers "a review of existing code" as a review-only run.
+  Note: this bare request also overlaps review-pr, which covers a report on the local change, and
+  code-quality-loop, which reviews and fixes the uncommitted change. If another skill loads first, record it
+  as ambiguous, not as a failure.)
 
 Should NOT trigger:
 - "Review PR 42 and write a report." (review-pr)
