@@ -5,12 +5,18 @@ runtime/action. `scripts/read_protocol.py` emits their exact text; inventory
 output alone is not a read. Resolve support paths against this plugin/repository,
 but keep the user's workspace as cwd for git, config and task actions.
 
-Two stages remain (the legacy workflow and its stages were removed in v2.13.0/v2.13.1):
+Two entry stages remain (the legacy workflow and its stages were removed in v2.13.0/v2.13.1); the
+paired-session one is split by route:
 
 | Next action | Load before acting |
 |---|---|
 | review-loop entry skills (routing and the stage A checks) | `entry-review-loop` |
-| paired-session entry skills | `entry-paired-session` |
+| paired-session entry skills | `entry-paired-session` (common sections only) |
+| paired-session review-only route | `entry-paired-session-review-only` |
+| paired-session code-quality-loop route (Claude Code) | `entry-paired-session-code-quality-loop` |
+| paired-session review-pr route | `entry-paired-session-review-pr` |
+
+Each route stage includes the common sections and the Review-only entry section.
 
 Both stages may precede a paired-session run, so they write to an absolute
 `<system temp>/review-loop-protocol-<uid>/<id>/` path printed by the entry skill, never into the worktree:

@@ -81,7 +81,8 @@ natural-language only. Full step-by-step + verification:
 
 - **Stage-scoped instructions** — the entry skills (`review-loop` and `paired-session` on both hosts) use
   `docs/protocol/loading.md` and `scripts/read_protocol.py` to read exact
-  authoritative sections before the relevant action (stages `entry-review-loop` and `entry-paired-session`).
+  authoritative sections before the relevant action (stages `entry-review-loop` and `entry-paired-session`, plus its route stages
+  `entry-paired-session-review-only` / `-code-quality-loop` / `-review-pr`).
   Shared protocol files remain the SSOT; a link alone is not an eager import. New agents and new or
   compacted contexts reload prerequisites. The review-loop skills keep their entry
   procedures in `references/entry.md`. Loading does not change stage/gate semantics.

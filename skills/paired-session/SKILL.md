@@ -39,13 +39,19 @@ print the bundle directory with
 python -X utf8 "${CLAUDE_PLUGIN_ROOT}/scripts/read_protocol.py" --runtime claude --stage entry-paired-session --output '<bundle-dir>/protocol-claude-entry-paired-session.md'
 ```
 
+On a route handoff, load that route's stage instead (it includes the common contract), in the same form with
+the stage name in both places: `--review-only` or the review-loop handoff of code already implemented ->
+`entry-paired-session-review-only`; `--code-quality-loop` -> `entry-paired-session-code-quality-loop`;
+`--review-pr` -> `entry-paired-session-review-pr`. A route that becomes known only after loading loads its stage then, with the
+`paired-session-entry@<sha256>` fingerprint from the first bundle's first line passed as `--loaded`.
+
 After exit 0, read the complete output file in bounded chunks and follow it; a
 missing, unreadable or incompletely read file is a failed stage A check,
 reported as `stage A failure: cannot load the shared entry contract (<reason>)`.
 After compaction, reload it the same way when no coordinator command is
 running; while one is running, read
 `${CLAUDE_PLUGIN_ROOT}/docs/protocol/paired-session-entry.md` directly (the
-stage is that whole file), which writes nothing to the workspace. This file
+file holds every stage), which writes nothing to the workspace. This file
 adds only the Claude Code host rules:
 
 - Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command execution failure:

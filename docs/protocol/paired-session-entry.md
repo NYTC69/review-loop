@@ -2,7 +2,8 @@
 
 Both paired-session entry skills (`skills/paired-session/SKILL.md` for Claude Code,
 `.agents/skills/paired-session/SKILL.md` for Codex) load this file through the
-`entry-paired-session` stage. It holds every rule the two hosts share. The host
+`entry-paired-session` stage, which leaves out the three route sections below; a
+route's stage adds its section (`docs/protocol/loading.md`). It holds every rule the two hosts share. The host
 skill adds its host rules, for example run-directory paths, shell form, how a
 long coordinator command runs and is stopped, and the exit
 codes of its own setup steps; a host rule is more specific and wins. Use the
