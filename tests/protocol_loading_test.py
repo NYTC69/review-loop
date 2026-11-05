@@ -337,3 +337,41 @@ def test_every_declared_bundle_resolves_and_only_references_repo_files():
             assert len({u["unit"] for u in units}) == len(units)
             for unit in units:
                 (ROOT / unit["path"]).resolve().relative_to(ROOT)
+
+
+PSE_ROUTES = {
+    "review-only": ["## Review-only entry"],
+    "code-quality-loop": ["## Review-only entry", "## Code-quality-loop entry"],
+    "review-pr": ["## Review-only entry", "## Review-PR entry"],
+}
+PSE_ROUTE_SECTIONS = {"## Review-only entry", "## Code-quality-loop entry", "## Review-PR entry"}
+
+
+def pse_headings(runtime, stage):
+    text = "".join(u["body"] for u in resolve(ROOT, runtime, stage))
+    return [line for line in text.splitlines() if line.startswith("## ")]
+
+
+@pytest.mark.parametrize("runtime", ["claude", "codex"])
+def test_common_paired_session_stage_excludes_the_route_sections(runtime):
+    source = (ROOT / "docs/protocol/paired-session-entry.md").read_text(encoding="utf-8")
+    every = [line for line in source.splitlines() if line.startswith("## ")]
+    common = [h for h in every if h not in PSE_ROUTE_SECTIONS]
+    assert PSE_ROUTE_SECTIONS <= set(every)
+    assert pse_headings(runtime, "entry-paired-session") == common
+
+
+@pytest.mark.parametrize("route,runtimes", [
+    ("review-only", ["claude", "codex"]),
+    ("code-quality-loop", ["claude"]),
+    ("review-pr", ["claude", "codex"]),
+])
+def test_each_route_stage_loads_the_common_sections_plus_its_own(route, runtimes):
+    common = pse_headings("claude", "entry-paired-session")
+    for runtime in runtimes:
+        assert pse_headings(runtime, f"entry-paired-session-{route}") == common + PSE_ROUTES[route]
+
+
+def test_codex_has_no_code_quality_loop_stage():
+    with pytest.raises(KeyError):
+        resolve(ROOT, "codex", "entry-paired-session-code-quality-loop")

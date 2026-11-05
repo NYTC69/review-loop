@@ -11,7 +11,39 @@
       ]
     },
     "paired-session-entry": {
-      "path": "docs/protocol/paired-session-entry.md"
+      "path": "docs/protocol/paired-session-entry.md",
+      "exclude": [
+        "## Review-only entry",
+        "## Code-quality-loop entry",
+        "## Review-PR entry"
+      ]
+    },
+    "paired-session-review-only": {
+      "path": "docs/protocol/paired-session-entry.md",
+      "requires": [
+        "paired-session-entry"
+      ],
+      "sections": [
+        "## Review-only entry"
+      ]
+    },
+    "paired-session-code-quality-loop": {
+      "path": "docs/protocol/paired-session-entry.md",
+      "requires": [
+        "paired-session-review-only"
+      ],
+      "sections": [
+        "## Code-quality-loop entry"
+      ]
+    },
+    "paired-session-review-pr": {
+      "path": "docs/protocol/paired-session-entry.md",
+      "requires": [
+        "paired-session-review-only"
+      ],
+      "sections": [
+        "## Review-PR entry"
+      ]
     }
   },
   "stages": {
@@ -29,6 +61,27 @@
       ],
       "codex": [
         "paired-session-entry"
+      ]
+    },
+    "entry-paired-session-review-only": {
+      "claude": [
+        "paired-session-review-only"
+      ],
+      "codex": [
+        "paired-session-review-only"
+      ]
+    },
+    "entry-paired-session-code-quality-loop": {
+      "claude": [
+        "paired-session-code-quality-loop"
+      ]
+    },
+    "entry-paired-session-review-pr": {
+      "claude": [
+        "paired-session-review-pr"
+      ],
+      "codex": [
+        "paired-session-review-pr"
       ]
     }
   }
