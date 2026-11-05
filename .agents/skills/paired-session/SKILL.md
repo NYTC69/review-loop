@@ -26,13 +26,18 @@ print the bundle directory with
 `python -X utf8 '<support-root>\scripts\read_protocol.py' --runtime codex --stage entry-paired-session --output '<bundle-dir>/protocol-codex-entry-paired-session.md'`.
 The Windows commands in this skill are best effort; the Claude Code entry is the tested Windows path.
 
+For a route, load that route's stage instead (it includes the common contract), in the same form with the
+stage name in both places: a review-only request -> `entry-paired-session-review-only`; a review-pr request ->
+`entry-paired-session-review-pr`. A route that becomes known only after loading loads its stage then, with the
+`paired-session-entry@<sha256>` fingerprint from the first bundle's first line passed as `--loaded`.
+
 Resolve `<support-root>` to this plugin, not the task workspace. After exit 0,
 read the complete output file in bounded chunks and follow it; a missing,
 unreadable or incompletely read file is a failed stage A check, reported as
 `stage A failure: cannot load the shared entry contract (<reason>)`. After
 compaction, reload it the same way when no coordinator command is running;
 while one is running, read `<support-root>/docs/protocol/paired-session-entry.md`
-directly (the stage is that whole file), which writes nothing to the workspace.
+directly (the file holds every stage), which writes nothing to the workspace.
 This file adds only the Codex host rules:
 
 - Legacy pointer: none (the legacy workflow was removed in v2.13.0). Long-command
