@@ -1,5 +1,36 @@
 # Changelog
 
+### v3.5.3：审查方沙箱里测试跑不通时，操作员在主机上的验证记录可以作数；skill 说明改写；Codex frontmatter 修正
+
+这是试用期内的补丁版本。主要修一个现场问题（range-build-tool，Windows 原生，Rust/Tauri 项目），顺带发出两项已审过的文档改动。
+
+**问题**
+- 配置的测试命令在主机上每次都通过，在 Codex 审查方的只读沙箱里却失败：Tauri 的构建脚本要往 cargo 的公共缓存目录写文件，沙箱不允许。
+- 审查方每轮都批准，但 coordinator 把它自己这次失败的测试记成一条阻塞问题退回 author，直到 EXEC 轮数用完停住。
+- 操作员用 `attach-verification` 附上主机上跑通的记录也没用：这种记录以前只给审查方当参考，不参与判定；撤掉那条问题只会让下一轮再记一条新的。run 没法收尾。
+
+**修复**
+- 操作员附的验证记录如果满足三条：绑定的就是审查方看的那份代码（同一个快照）、命令就是配置的测试命令、退出码为 0，在 EXEC 里就当作测试已经跑通。具体有四处：
+  - 不再记“审查方自己跑测试失败”这条问题，已经开着的会关掉，证据写明是哪条记录；
+  - shadow、gate 的批准不再因为“没看到测试跑通”被拒，turn 记录里用 `operator_test_evidence` 写明靠的是哪条记录；
+  - EXEC 最后一轮只剩建议性问题时，可以照常以 APPROVE_WITH_ADVISORY 收尾；
+  - lifecycle 的 DOCS 审查同样接受这条记录：在 DOCS 停住时附上记录，再 resume。
+- 不加新开关：附上记录本身就是操作员的确认。代码改了、记录作废，规则不变。report 模式不受影响。
+- 临时办法（升级前）：新开 run 时用 `--reviewer-vendor claude`。
+
+**同时发出的文档改动（之前审过、一直留在分支上）**
+- 各入口 skill 的 description 改成写明“什么时候用”，删掉第一层里的旧版本历史；paired-session 的主机规则加小标题；guide 加排错一节；新增手动触发清单 `tests/skills/trigger-cases.md`（Claude 这边 55 条里 54 条通过，1 条结果不明确）；plugin 的描述改成讲“能帮你做到什么”。
+- Codex 的 paired-session、review-pr 两个 skill 的 frontmatter 改成严格 YAML（description 加引号，解析出的内容和原文逐字一致）；lint 加一个轻量的 frontmatter 检查。
+
+**升级须知**
+- 没有改 run 启动时固定下来的值（`agents/*.md` 和 gate prompt 没变），v3.5.x 上开始的 run 可以继续。卡在这个问题上的 run：升级后附上主机的验证记录，再 resume。
+
+**审查与验收**
+- 修复由本地 paired-session run（固定副本 v3.5.2；Opus 写，Sol 审）写成：方案审了 3 轮后批准；EXEC 第 1 轮 Sol 批准，第 2 轮没有代码问题。这个 run 本身也卡在这个 bug 上，因为本仓库的单元测试在 Codex 沙箱里跑不了，于是由监工接手收尾。
+- Opus 终审 3 轮：第 1 轮指出建议性收尾没认这条记录（R2 修好）；第 2 轮批准，并指出 DOCS 阶段也要接受记录、建议先比快照再查记录（R3 修好）；第 3 轮批准，没有阻断项。
+- 相关 8 个测试模块共 83 个测试通过；lint 0 FAIL；CI 42380082650（66ad8e9）全绿。文档改动：Opus 审查批准，CI 41956473625、41991290899 全绿；frontmatter 修正：Sol 审 4 轮，CI 41882912403 全绿。
+- 因为 Windows 那边等着用，这个版本先发；Codex 一侧的触发清单和这个修复的真实 run 在发版后补做。
+
 ### v3.5.2：只读 turn 期间文件被排除时说清原因；status、stop、abort 只给 --run-dir 就能用
 
 这是试用期内的补丁版本，修两个现场问题（poker-tools 的 run daf8c91c，v3.4.0）。

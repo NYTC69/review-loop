@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "AI-driven code review with independent adversarial review, automated quality polish, and multi-language static analysis",
-    "version": "3.5.2"
+    "version": "3.5.3"
   },
   "plugins": [
     {
       "name": "review-loop",
       "source": "./",
       "description": "Take a change from plan to your acceptance: an independent reviewer checks the plan and the code, an adversarial gate tests the result, then quality polish, docs and a security review. Also reviews PRs and existing code.",
-      "version": "3.5.2",
+      "version": "3.5.3",
       "author": {
         "name": "NYTC69"
       },

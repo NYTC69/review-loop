@@ -1,9 +1,11 @@
-**Last updated**: 2026-11-01
+**Last updated**: 2026-11-07
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
 
+- WI-RVW: Codex reviewer-type roles run with host permissions like the author, keeping a tracked-file change check and git guards. (added 2026-11-07)
+  - Note: Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers) run with host permissions like the author (no read-only profile, network on); keep a light post-turn check that tracked, non-ignored files did not change (ignored paths such as build output, caches and test-tmp are free); keep git guards; keep operator verification records. Approved by Yuan 2026-11-07 (C-class sandbox hardening dropped, agents assumed non-malicious). Target v3.6.0, after v3.5.3; short plan to Yuan first, then local paired-session with Sol review, CI and a real run.
 
 ## P2 — normal
 
