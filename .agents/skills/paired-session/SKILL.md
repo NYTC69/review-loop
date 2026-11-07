@@ -35,7 +35,8 @@ Resolve `<support-root>` to this plugin, not the task workspace. After exit 0,
 read the complete output file in bounded chunks and follow it; a missing,
 unreadable or incompletely read file is a failed stage A check, reported as
 `stage A failure: cannot load the shared entry contract (<reason>)`. After
-compaction, reload it the same way when no coordinator command is running;
+compaction, reload the same stage (the route stage on a route) the same way when no coordinator command is
+running;
 while one is running, read `<support-root>/docs/protocol/paired-session-entry.md`
 directly (the file holds every stage), which writes nothing to the workspace.
 This file adds only the Codex host rules:

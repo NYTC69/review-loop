@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -375,3 +376,14 @@ def test_each_route_stage_loads_the_common_sections_plus_its_own(route, runtimes
 def test_codex_has_no_code_quality_loop_stage():
     with pytest.raises(KeyError):
         resolve(ROOT, "codex", "entry-paired-session-code-quality-loop")
+
+
+@pytest.mark.parametrize("runtime,skill", [
+    ("claude", "skills/paired-session/SKILL.md"),
+    ("codex", ".agents/skills/paired-session/SKILL.md"),
+])
+def test_every_paired_session_stage_named_in_the_skill_resolves(runtime, skill):
+    names = set(re.findall(r"entry-paired-session[-a-z]*", (ROOT / skill).read_text(encoding="utf-8")))
+    assert "entry-paired-session" in names
+    for name in names:
+        assert resolve(ROOT, runtime, name)
