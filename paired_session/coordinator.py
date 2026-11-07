@@ -5844,15 +5844,20 @@ class Coordinator:
     def _test_failure_findings(self, answer: dict, sequence: int) -> list[dict]:
         rows = answer.get('observed_commands', [])
         opened = [row for row in self.open_findings() if row['source'] == 'test-failure']
-        if any(observed_test_succeeded(row, self.args.test_command) for row in rows):
+
+        def close(evidence: str) -> list[dict]:
             for row in opened:
                 row['status'] = 'fixed'
-                row['status_history'].append({'round': sequence, 'status': 'fixed',
-                                              'evidence': 'configured test command: observed successful run'})
+                row['status_history'].append({'round': sequence, 'status': 'fixed', 'evidence': evidence})
                 self._progress_finding(row)
             if opened:
                 self.write_ledger()
             return []
+
+        if any(observed_test_succeeded(row, self.args.test_command) for row in rows):
+            return close('configured test command: observed successful run')
+        if (record := self._operator_test_record(answer.get('reviewed_snapshot'))) is not None:
+            return close(f"operator verification {record['id']}: configured test command exit 0 on this tree")
         failed = completed_test_failure(rows, self.args.test_command)
         if answer['status'] != 'APPROVE' or failed is None:
             return []
@@ -7046,9 +7051,11 @@ class Coordinator:
                 receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
             elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
                                            for row in observed_commands):
+                if (record := self._operator_test_record(before)) is not None:   # the operator's passing run on this exact tree
+                    receipt['operator_test_evidence'] = record['id']
                 cause, unfinished = configured_test_shortfall(observed_commands, self.args.test_command)
                 # V324-TEST: a persistent reviewer's completed test failure goes to the author as a normal blocking review.
-                if not (role == 'reviewer' and not fresh and not self.state['config'].get('review_report')
+                if record is None and not (role == 'reviewer' and not fresh and not self.state['config'].get('review_report')
                         and completed_test_failure(observed_commands, self.args.test_command) is not None):
                     raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
                                      + (cause or ('; the configured test was not observed to completion (no exit status when '
@@ -7352,6 +7359,12 @@ class Coordinator:
         used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
+
+    def _operator_test_record(self, tree):
+        """The operator record that settles the EXEC configured-test check for this exact tree, or None (never in report mode)."""
+        if self.state['config'].get('review_report') or not self.args.test_command:
+            return None
+        return opv.passing_test_record(self, tree, lambda command: command_invokes_test(command, self.args.test_command), atomic_json)
 
     def _observed_test(self, answer: dict):
         return next((row['command'] for row in answer.get('observed_commands', [])

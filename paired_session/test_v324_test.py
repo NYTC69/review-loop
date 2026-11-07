@@ -1,9 +1,12 @@
 """V324-TEST: a persistent EXEC approval over its own completed failing test returns to the author."""
+import hashlib
 import json
 import os
+import types
 import unittest
 from unittest.mock import patch
 
+from paired_session import operator_verification as opv
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -133,6 +136,93 @@ class FailedTestApprovalTests(unittest.TestCase):
                 self.assertEqual(co.state['hold_reason'],
                                  f'{role} EXEC approval lacks an observed successful configured test command')
                 self.assertFalse(co.open_findings())
+
+    def attach(self, co, tree=None, **over):
+        log = self.root / 'host-tests.log'
+        log.write_text('all tests passed on the host\n')
+        args = types.SimpleNamespace(**{'command': co.args.test_command, 'cwd': None, 'exit_code': 0, 'log': str(log),
+                                        'log_sha256': hashlib.sha256(log.read_bytes()).hexdigest(),
+                                        'note': 'ran the configured tests on the host', **over})
+        return opv.attach(co, args, tree or rc.git_snapshot(self.workspace)[0], rc.atomic_json)
+
+    def receipt(self, co, role):
+        return next(turn for turn in reversed(co.state['turns']) if turn['role'] == role)
+
+    def test_current_passing_record_settles_failed_reviewer_approval(self):
+        co = self.coordinator()
+        self.attach(co)
+        self.failing_review(co)
+        self.assertFalse([row for row in co.open_findings() if row['source'] == 'test-failure'])
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertEqual(self.receipt(co, 'reviewer')['operator_test_evidence'], 'V001')
+
+    def test_record_closes_open_test_failure_row(self):
+        co = self.coordinator()
+        self.failing_review(co)
+        [row] = co.blocking_open_findings()
+        co.author_turn()
+        self.attach(co)
+        invoke = co.invoke
+
+        def still_open(*args, **kwargs):
+            result = invoke(*args, **kwargs)
+            # The operator record, rather than a reviewer disposition, must close the program row.
+            for prior in result['answer'].get('prior_findings', []):
+                prior.update(disposition='still_open', evidence='not disposed by the reviewer')
+            return result
+
+        with patch.object(co, 'invoke', side_effect=still_open):
+            self.failing_review(co)
+        self.assertEqual(row['status'], 'fixed')
+        self.assertEqual(row['status_history'][-1]['evidence'],
+                         'operator verification V001: configured test command exit 0 on this tree')
+        self.assertEqual([item['id'] for item in co.state['finding_ledger'] if item['source'] == 'test-failure'], [row['id']])
+        self.assertFalse(co.blocking_open_findings())
+
+    def test_unqualified_records_still_give_test_failure(self):
+        cases = (('another tree', {'tree': '0' * 64}), ('voided', {}), ('non-zero exit', {'exit_code': 1}),
+                 ('other command', {'command': 'python3 -m unittest -v'}))
+        for label, over in cases:
+            with self.subTest(label):
+                co = self.coordinator()
+                self.attach(co, **over)
+                if label == 'voided':
+                    opv.void_stale(co, None, rc.atomic_json)
+                self.failing_review(co)
+                [row] = co.blocking_open_findings()
+                self.assertEqual((row['source'], row['severity']), ('test-failure', 'MAJOR'))
+                self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'author'))
+                self.assertNotIn('operator_test_evidence', self.receipt(co, 'reviewer'))
+
+    def test_shadow_and_gate_failed_approvals_pass_with_current_record(self):
+        for role in ('shadow', 'gate'):
+            with self.subTest(role=role):
+                co = self.coordinator('--shadow', 'on' if role == 'shadow' else 'off',
+                                      '--adversarial-gate', 'on' if role == 'gate' else 'off')
+                observe = rc.observed_events
+
+                def failing(vendor, events):
+                    rows, calls = observe(vendor, events)
+                    rows = [row for row in rows
+                            if not rc.command_invokes_test(row['command'], co.args.test_command)]
+                    rows.append({'command': co.args.test_command, 'exit_code': 1,
+                                 'error': True, 'output': 'FAILED fake test', 'source': 'command_execution'})
+                    return rows, calls
+
+                if role == 'gate':
+                    co.reviewer_turn()
+                self.attach(co)
+                invoke = co.invoke
+
+                def fresh_failure(name, *args, **kwargs):
+                    with patch.object(rc, 'observed_events', side_effect=failing if name == role else observe):
+                        return invoke(name, *args, **kwargs)
+
+                with patch.object(co, 'invoke', side_effect=fresh_failure):
+                    co._drive_loop()
+                self.assertNotIn('lacks an observed successful configured test command', co.state.get('hold_reason') or '')
+                self.assertFalse(co.open_findings())
+                self.assertEqual(self.receipt(co, role)['operator_test_evidence'], 'V001')
 
     def test_last_round_uses_normal_round_limit_hold(self):
         co = self.coordinator('--max-exec-rounds', '1')

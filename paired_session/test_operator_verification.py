@@ -88,6 +88,22 @@ class OperatorVerificationTests(unittest.TestCase):
         self.assertFalse(any(HEADER in prompt for prompt in self.prompts(co).values()))
         self.assertEqual(co.state['operator_verifications'][2]['voided']['reason'], 'log copy changed')
 
+    def test_passing_test_record_lookup(self):
+        co = self.coordinator()
+        tree = rc.git_snapshot(self.workspace)[0]
+        invokes = lambda command: command.strip() == 'xcodebuild test -scheme App'
+        find = lambda digest: opv.passing_test_record(co, digest, invokes, rc.atomic_json)
+        self.attach(co)
+        self.attach(co)
+        self.assertEqual(find(tree)['id'], 'V002')                          # the newest qualifying record
+        self.assertIsNone(find(None))                                        # an unknown tree finds nothing and voids nothing
+        self.assertEqual({row['status'] for row in co.state['operator_verifications']}, {'current'})
+        self.attach(co, exit_code=1)
+        self.attach(co, command='xcodebuild build -scheme App')
+        self.assertEqual(find(tree)['id'], 'V002')                          # a non-zero exit or another command never qualifies
+        self.assertIsNone(find('0' * 64))                                    # another tree: nothing, and the records are voided
+        self.assertEqual({row['status'] for row in co.state['operator_verifications']}, {'voided'})
+
     def test_attach_is_refused_while_a_turn_is_active_in_done_and_without_a_run(self):
         self.assertIn('REFUSED: attach-verification requires an existing coordinator run', self.attach_cli().stdout)
         co = self.coordinator()

@@ -2,8 +2,9 @@
 
 The operator attaches a check it ran outside the author sandbox (command, cwd, exit code, log copy, note). The record is
 bound to the workspace snapshot digest, voided for good once the tree differs or its log copy changes, and shown (without
-the note) to the EXEC reviewer, shadow and gate prompts only for that exact tree. It is prompt evidence only: no
-verdict path reads it."""
+the note) to the EXEC reviewer, shadow and gate prompts only for that exact tree. It is prompt evidence, with one
+exception: a current record for the exact reviewed tree whose command is the configured test command and whose exit code
+is 0 settles the EXEC configured-test check for that tree (`passing_test_record`)."""
 import copy
 import hashlib
 import os
@@ -95,6 +96,17 @@ def current_for_acceptance(co, tree_sha256: str, write_json) -> list:
     void_stale(co, tree_sha256, write_json)
     return [{key: row[key] for key in ('id', 'command', 'cwd', 'exit_code', 'log_sha256', 'log_evidence', 'note', 'time', 'tree_sha256')}
             for row in co.state.get('operator_verifications', []) if row['status'] == 'current']
+
+
+def passing_test_record(co, tree_sha256, invokes_test, write_json):
+    """The newest current record for this exact tree whose command invokes the configured test (invokes_test) with exit
+    code 0, or None. Stale records are voided first; an unknown tree (None) finds nothing and voids nothing."""
+    if not tree_sha256:
+        return None
+    void_stale(co, tree_sha256, write_json)
+    return next((row for row in reversed(co.state.get('operator_verifications', []))
+                 if row['status'] == 'current' and row['tree_sha256'] == tree_sha256
+                 and type(row.get('exit_code')) is int and row['exit_code'] == 0 and invokes_test(row.get('command', ''))), None)
 
 
 def _scan(co, text: str) -> None:   # the fresh-role history scan the shadow and gate prompts get, on the block alone

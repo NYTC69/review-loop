@@ -871,7 +871,11 @@ thread saw a record, is told in its next prompt that it was withdrawn (id and
 reason only). `accept` lists the records still current for the accepted tree in
 `acceptance.json` and on stdout. Attaching is refused while a turn is active, on
 ACCEPTED, or when the shown text would fail the fresh-role history scan. It is
-evidence only: no verdict is derived from it.
+evidence only, with one exception: a current record for the exact reviewed tree
+whose command is the configured test command and whose exit code is 0 counts as
+a successful run of that command in EXEC, so an EXEC approval whose own
+sandboxed run of it failed is not sent back as a test failure (the turn receipt
+names the record in `operator_test_evidence`).
 
 Each run records an item UUID. A scope-change successor inherits it and copies
 the parent's OPEN blocking findings into its protected successor spec and state,
