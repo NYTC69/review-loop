@@ -224,6 +224,37 @@ class FailedTestApprovalTests(unittest.TestCase):
                 self.assertFalse(co.open_findings())
                 self.assertEqual(self.receipt(co, role)['operator_test_evidence'], 'V001')
 
+    def test_advisory_revise_at_the_limit_exits_with_current_record(self):
+        for attached in (True, False):
+            with self.subTest(attached=attached):
+                co = self.coordinator('--max-exec-rounds', '1')
+                if attached:
+                    self.attach(co)
+                invoke = co.invoke
+
+                def advisory(*args, **kwargs):
+                    result = invoke(*args, **kwargs)
+                    result['answer'].update(status='REVISE', full_review=[{
+                        'severity': 'LOW', 'file': 'app.py', 'summary': 'simplify the helper',
+                        'failure_scenario': 'the helper is longer than it needs to be'}])
+                    return result
+
+                with patch.object(co, 'invoke', side_effect=advisory):
+                    self.failing_review(co)
+                last = co.state['review_verdicts'][-1]
+                if attached:
+                    self.assertEqual((last['reviewer_raw_verdict'], last['effective_verdict']),
+                                     ('REVISE', 'APPROVE_WITH_ADVISORY'))
+                    self.assertNotIn('round_limit_hold', co.state)
+                else:
+                    self.assertEqual(co.state['hold_reason'], 'EXEC round limit reached')
+
+    def test_report_mode_ignores_a_passing_record(self):
+        co = self.coordinator()
+        self.attach(co)
+        co.state['config']['review_report'] = True
+        self.assertIsNone(co._operator_test_record(rc.git_snapshot(self.workspace)[0]))
+
     def test_last_round_uses_normal_round_limit_hold(self):
         co = self.coordinator('--max-exec-rounds', '1')
         self.failing_review(co)

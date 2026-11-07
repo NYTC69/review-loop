@@ -8600,8 +8600,9 @@ class Coordinator:
                               or (phase == 'EXEC' and replaying)   # V317-REPLAY: keep eligible writer changes with advisories
                               or (attempt is not None and attempt < result['sequence']))   # V317-ONCE: one attempt per phase
                          and (phase == 'PLAN' or
-                              (self.configured_test_succeeded(result['answer'])
-                               and not self.configured_test_failed(result['answer'])
+                              (((self.configured_test_succeeded(result['answer'])
+                                 and not self.configured_test_failed(result['answer']))
+                                or self._operator_test_record(answer.get('reviewed_snapshot')) is not None)
                                and bool(answer.get('self_run_evidence'))))
                          and (phase != 'EXEC' or
                               answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
