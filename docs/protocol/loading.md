@@ -18,7 +18,7 @@ paired-session one is split by route:
 
 Each route stage includes the common sections and the Review-only entry section.
 
-Both stages may precede a paired-session run, so they write to an absolute
+Every stage may precede a paired-session run, so they write to an absolute
 `<system temp>/review-loop-protocol-<uid>/<id>/` path printed by the entry skill, never into the worktree:
 
 ```bash
