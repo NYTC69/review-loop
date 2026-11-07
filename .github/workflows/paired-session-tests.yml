@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   modules:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       list: ${{ steps.list.outputs.list }}
     steps:
@@ -44,7 +44,7 @@ jobs:
       fail-fast: false
       matrix:
         part: ${{ fromJson(needs.modules.outputs.list) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -101,7 +101,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: log-ubuntu-latest-${{ matrix.part.module }}-${{ matrix.part.shard }}
+          name: log-ubuntu-24.04-${{ matrix.part.module }}-${{ matrix.part.shard }}
           path: test.log
           retention-days: 14
 
@@ -176,7 +176,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -228,7 +228,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
