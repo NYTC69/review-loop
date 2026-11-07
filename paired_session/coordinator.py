@@ -7325,7 +7325,8 @@ class Coordinator:
         blocking = [row for row in findings if row['severity'] in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
             raise RuntimeError(unusable_review('docs reviewer', answer) + '; resume reviews again')
-        if not (observed := self._observed_test(answer)):
+        record = None if (observed := self._observed_test(answer)) else self._operator_test_record(tree)
+        if not observed and record is None:
             cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
             raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
                                + (cause or (' (the configured test was not observed to completion: no exit status when the '
@@ -7334,7 +7335,8 @@ class Coordinator:
         self.render(result, 'docs-reviewer', 'DOCS')
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
                 'finding_ids': [row['id'] for row in self.state['finding_ledger']
-                                if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']]}
+                                if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
+                **({'operator_test_evidence': record['id']} if record else {})}
 
     def _redispatch_budget(self, phase: str, voided: Exception) -> None:
         """INT-2c: a W read-only re-dispatch counts against its stage cap like any dispatch (the callers check room for their
@@ -8599,13 +8601,13 @@ class Coordinator:
                          and (at_phase_limit
                               or (phase == 'EXEC' and replaying)   # V317-REPLAY: keep eligible writer changes with advisories
                               or (attempt is not None and attempt < result['sequence']))   # V317-ONCE: one attempt per phase
-                         and (phase == 'PLAN' or
+                         and (phase != 'EXEC' or
+                              answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
+                         and (phase == 'PLAN' or   # after the tree check: the record lookup voids records of other trees
                               (((self.configured_test_succeeded(result['answer'])
                                  and not self.configured_test_failed(result['answer']))
                                 or self._operator_test_record(answer.get('reviewed_snapshot')) is not None)
                                and bool(answer.get('self_run_evidence'))))
-                         and (phase != 'EXEC' or
-                              answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
                          and not self.blocking_open_findings())
         if advisory_exit:
             self.mark_advisory_findings(answer['full_review'] + still_open)

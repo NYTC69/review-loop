@@ -249,6 +249,29 @@ class FailedTestApprovalTests(unittest.TestCase):
                 else:
                     self.assertEqual(co.state['hold_reason'], 'EXEC round limit reached')
 
+    def test_docs_review_with_failed_own_run_passes_with_current_record(self):
+        co = self.coordinator()
+        tree = rc.git_snapshot(self.workspace)[0]
+        answer = {'status': 'APPROVE', 'full_review': [], 'observed_commands': [
+            {'command': co.args.test_command, 'exit_code': 1, 'output': 'FAILED fake test', 'source': 'command_execution'}]}
+
+        def invoke(role, phase, prompt, schema, fresh=False):
+            co.state['turns'].append({'sequence': 99, 'role': role, 'phase': phase, 'snapshot_before': tree})
+            return {'sequence': 99, 'answer': answer}
+
+        def docs_review():
+            with patch.object(co, 'invoke', side_effect=invoke), patch.object(co, 'materialize_review_context'), \
+                    patch.object(co, '_docs_budget'), patch.object(co, 'render'):
+                return co._docs_review_turn(tree, ['docs/guide.md'])
+
+        with self.assertRaises(RuntimeError) as caught:
+            docs_review()
+        self.assertIn('DOCS reviewer did not observe a successful run of the configured test command', str(caught.exception))
+        self.attach(co)
+        review = docs_review()
+        self.assertEqual((review['status'], review['observed_test'], review['operator_test_evidence']),
+                         ('APPROVE', None, 'V001'))
+
     def test_report_mode_ignores_a_passing_record(self):
         co = self.coordinator()
         self.attach(co)

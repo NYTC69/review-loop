@@ -4,7 +4,7 @@ The operator attaches a check it ran outside the author sandbox (command, cwd, e
 bound to the workspace snapshot digest, voided for good once the tree differs or its log copy changes, and shown (without
 the note) to the EXEC reviewer, shadow and gate prompts only for that exact tree. It is prompt evidence, with one
 exception: a current record for the exact reviewed tree whose command is the configured test command and whose exit code
-is 0 settles the EXEC configured-test check for that tree (`passing_test_record`)."""
+is 0 settles the EXEC and DOCS configured-test checks for that tree (`passing_test_record`)."""
 import copy
 import hashlib
 import os
