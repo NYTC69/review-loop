@@ -1,5 +1,13 @@
 # Changelog
 
+### v3.7.1：FINISH 能看到操作员的验证记录
+
+现场问题（poker-tools，run 68b7f49e）：EXEC 和 gate 都通过了，到 FINISH 时 finisher 在自己的 Claude 沙箱里跑配置的测试，PostgreSQL 的 initdb 起不来，于是 HOLD；而操作员在主机上对同一个目录树跑通的记录（V001）只给审查方、shadow 和 gate 看，finisher 看不到，resume 只会重复同一个 HOLD。
+
+**改动**
+- FINISH 的提示附上当前目录树对应的操作员验证记录，并说明：配置的测试只因沙箱环境原因失败（比如数据库在沙箱里起不来），而记录在同一个目录树上已经跑通时，这次失败算已解决，不要为它 HOLD；其他失败照常算。
+- 没有记录时 FINISH 提示一字不变。冻结的角色清单不变，正在跑的 run 直接 resume 就能用上。
+
 ### v3.7.0：去掉 `permission-probe` 和 strict 模式
 
 Yuan 2026-11-08 决定：核心目标是好用，默认 agent 不会恶意改动。v3.6.0 起审查方已经可以写工作区，默认模式本来也不需要 probe，所以 probe 和 strict 模式整个去掉。

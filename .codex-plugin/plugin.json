@@ -1,6 +1,6 @@
 {
   "name": "review-loop",
-  "version": "3.7.0",
+  "version": "3.7.1",
   "description": "Take a change from plan to your acceptance: an independent reviewer checks the plan and the code, an adversarial gate tests the result, then quality polish, docs and a security review. Also reviews PRs and existing code.",
   "author": {
     "name": "NYTC69",

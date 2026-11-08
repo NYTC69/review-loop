@@ -37,6 +37,20 @@ class OperatorVerificationTests(unittest.TestCase):
         co.state['phase'] = 'EXEC'
         return {role: co._review_prompt(role, digest) for role in ('reviewer', 'shadow')} | {'gate': co._gate_prompt(digest)}
 
+    def test_the_finisher_sees_a_current_record_and_the_sandbox_rule_and_nothing_without_one(self):   # FIELD poker-tools v3.7.1
+        co = self.coordinator()
+        self.assertEqual(co._finish_operator_evidence(), '')   # no record: the FINISH prompt keeps its bytes
+        self.attach(co)
+        tree = rc.git_snapshot(self.workspace)[0]
+        block = co._finish_operator_evidence()
+        self.assertIn(HEADER, block)
+        self.assertIn(f'(snapshot {tree})', block)
+        self.assertIn('command `xcodebuild test -scheme App`', block)
+        self.assertTrue(block.endswith(rc.FINISH_OPERATOR_TEST_RULE))
+        (self.workspace / 'later.txt').write_text('a later change\n')   # another tree: the record is withdrawn
+        self.assertEqual(co._finish_operator_evidence(), '')
+        self.assertEqual(co.state['operator_verifications'][0]['status'], 'voided')
+
     def test_a_record_binds_to_the_tree_and_reaches_reviewer_shadow_and_gate_prompts_scan_clean(self):
         self.coordinator()
         done = self.attach_cli()

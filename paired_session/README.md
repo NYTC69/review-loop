@@ -749,7 +749,9 @@ digest; the log, which must lie outside the workspace and run dir and match
 `--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
 EXEC reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
-operator-verified evidence for this exact tree. It is voided for good once the
+operator-verified evidence for this exact tree. The FINISH prompt shows the same records (v3.7.1) with a rule: a
+configured-test failure that only comes from the finisher's sandbox (a database that cannot start there) and that a
+record passed on this exact tree is settled, so the finisher does not HOLD for it. A record is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the
 log copy changes. Every tree the coordinator observes in an author turn counts,
 also when the turn fails: its start and end snapshots, and an unknown tree when

@@ -143,6 +143,9 @@ PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters E
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # v3.7.0: the only mode (docs/efficient-mode.md); a saved or requested 'strict' is noted and ignored
 STRICT_REMOVED_NOTE = 'NOTE: strict mode was removed in v3.7.0; the run uses the default mode'
+FINISH_OPERATOR_TEST_RULE = ('If the configured test fails in your sandbox only for an environment reason (for example a database or '
+                             'service that cannot start there) and a record above passed it on this exact tree, that record settles '
+                             'the test: do not HOLD for that failure, and name the record in your answer. Any other failure still counts.')
 PROBE_REMOVED = 'permission-probe was removed in v3.7.0; runs do not need it (use resume to continue a held run)'
 CODEX_CLI_WAIVER_NOTE = 'NOTE: --accept-unverified-codex-cli was removed in v3.7.0 and is ignored'
 REVIEWER_BLOCK_CHANGED_ON = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item and resume, '
@@ -6762,13 +6765,19 @@ class Coordinator:
         check_git()
         return result
 
+    def _finish_operator_evidence(self) -> str:
+        """FIELD (poker-tools, v3.7.1): the operator's records for this exact tree, so a finisher whose sandbox cannot run the
+        configured test (a database that cannot start there) does not HOLD on a check the operator already ran. '' without one."""
+        block = opv.prompt_block(self, git_snapshot(self.workspace)[0], atomic_json)
+        return block and block + '\n' + FINISH_OPERATOR_TEST_RULE
+
     def worktree_finish_turn(self) -> None:
         """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'finisher')
         result = self._lifecycle_writer(request, 'finisher', lambda: worktree_lifecycle.finish_prompt(
             (self.context / 'plan.md').read_text(encoding='utf-8'), self.args.test_command,
             ' '.join(filter(None, [self._docs_reserved_note(), LONG_COMMAND_RULE])),
-            bool(self.state.get('review_only'))) + self.operator_rulings_prompt('author'))   # V317-B3
+            bool(self.state.get('review_only'))) + self.operator_rulings_prompt('author') + self._finish_operator_evidence())   # V317-B3
         self.render(result, 'finisher', 'FINISH')
         answer = result['answer']
         receipt = {**request, 'status': 'HOLD' if answer['status'] == 'HOLD' else 'READY',
