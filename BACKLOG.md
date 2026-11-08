@@ -1,13 +1,16 @@
-**Last updated**: 2026-11-07
+**Last updated**: 2026-11-08
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
 
-- WI-RVW: Codex reviewer-type roles run with host permissions like the author, keeping a tracked-file change check and git guards. (added 2026-11-07)
-  - Note: Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers) run with host permissions like the author (no read-only profile, network on); keep a light post-turn check that tracked, non-ignored files did not change (ignored paths such as build output, caches and test-tmp are free); keep git guards; keep operator verification records. Approved by Yuan 2026-11-07 (C-class sandbox hardening dropped, agents assumed non-malicious). Target v3.6.0, after v3.5.3; short plan to Yuan first, then local paired-session with Sol review, CI and a real run.
+- WI-NOPROBE: remove `permission-probe` entirely (Yuan 2026-11-08: "我们已经允许审查方可以改动文件了. 那还就这干嘛? 直接把permission probe都去掉吧."): the action, the probe turns and cache, `probe_passed` gating (strict-mode Claude author included), the resume HOLD "run `permission-probe` to re-freeze" (a resume after a version or path change re-freezes itself with a NOTE), docs, needles and tests. Scope: about 490 coordinator references, 41 test modules, about 20 docs. Target v3.7.0, next WI after v3.6.0. (added 2026-11-08)
 
 ## P2 — normal
+
+- Field (range-build-tool, v3.5.3 run 53038f20): `resume` without `--test-command` is refused with "resume configuration differs: test_command" although the run started with that command (the profile default seems to differ); use the saved value or say which value differs. Same shape as `abort --run-dir` alone. (added 2026-11-08)
+- Field (range-build-tool, v3.5.3): `note` is refused at the EXEC round-limit HOLD ("next author turn is unavailable") and at the POLISH-Q HOLD, so the operator cannot pass a decision to the author before `resume --add-rounds`; queue the note for the next author turn. (added 2026-11-08)
+- Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings. (added 2026-11-08)
 
 Protocol-hardening work is Workstream 2 and follows Workstream 1 productization. Candidate implementations and offline reviews are groundwork, not closure evidence for real-run items. Deprecating legacy invocation means replacing the default call surface; the old implementation remains an explicit control path until all four replacement criteria pass. Workstream 2 must cover every open paired-session P1/P2/P3 item across this backlog, regardless of where the item appears, and crosswalk findings from runs #1–#10 and later audits to those items. Add any untracked run finding before declaring Workstream 2 complete. Keep each item open until its own acceptance evidence is recorded.
 
@@ -27,6 +30,8 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 - Deferred Windows items after v3.3.0 (ADR-20): map Git Bash `/c/...` operands through `winplat.windows_abs_path` in `evidence_guard` (log-only on Windows today); decode PowerShell `-EncodedCommand` if a real Codex sample shows it; `--detach` on Windows; Linux/WSL support. (added 2026-10-27)
 
 ## Done (recent, trimmed quarterly)
+
+- ~~WI-RVW: Codex reviewer-type roles may write in the workspace (workspace-write like the author, optional extra_writable_roots for caches outside the repository); tracked-file guard and git guards kept~~ (added 2026-11-07) (closed 2026-11-08, see v3.6.0)
 
 - ~~WI-GEM: add Gemini (Antigravity CLI agy) as a third paired-session vendor, v1 read-only roles~~ (added 2026-10-29) (closed 2026-11-01, see v3.5.0 1d5b97c)
 

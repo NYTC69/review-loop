@@ -1,5 +1,33 @@
 # Changelog
 
+### v3.6.0：Codex 审查类角色可以写工作区；所有角色开网络；新增 `extra_writable_roots`
+
+Yuan 2026-11-07 决定：默认 agent 不作恶，审查方的只读沙箱属于过度加固，去掉。起因是现场问题（range-build-tool，Windows 原生，Rust/Tauri）：配置的测试在主机上通过，在 Codex 审查方的只读沙箱里失败，因为测试要写构建输出和缓存。v3.5.3 用操作员验证记录绕过了这个问题；这个版本从根上解决。
+
+**改动**
+- Codex 审查类角色（reviewer、shadow、gate、各阶段审查、probe）改用 author 同款沙箱：工作区可写，本次调用自己的 `$TMPDIR` 可写，`/tmp` 排除。`--ignore-rules`、关插件、关 hooks、Windows 的 elevated 沙箱都不变。
+- **所有角色开网络**（Yuan 2026-11-08）：Codex 角色（author 和审查类）`network_access=true`；Claude 角色的 Bash 沙箱放开所有域名（`allowedDomains: ["*"]`），本机端口监听仍然关。这样测试或构建要现场下载依赖（cargo、npm、pip）也能跑。review-pr 里执行 PR 自带的测试时也能联网；按 Q-R3 规定，review-pr 仍然要操作员确认过测试命令才会执行。
+- 新增可选 profile 键 `extra_writable_roots`（写在 `.review-loop/paired-session.json` 或 `--config` 里，默认空）：repo 外额外可写的目录，比如 `~/.cargo`。
+  - 对 Codex author、Codex 审查类角色，以及每个 Claude 角色的 Bash 沙箱（`allowWrite`）都生效。
+  - Claude 的 Edit/Write 工具不放行这些目录，只有 Bash 能写，构建缓存够用。
+  - 必须是已存在目录的绝对路径，不能在 run 目录里面，也不能包含 run 目录；否则开跑时直接拒绝。
+  - 列表在开跑时固定，resume 沿用记录的列表，所以 run 期间这些目录要一直在。
+- 只读守卫保留：审查类角色改了 HEAD、分支、index、已跟踪文件或未忽略的新文件，照旧撤销并重派一次。Codex 审查方写被忽略的路径（构建输出、缓存）现在保留，只记录在 turn 回执里。git 守卫和操作员验证记录照旧。
+- 显式运行的 `permission-probe`（默认不需要）：Codex 审查方的 probe 改为证明工作区能写、可写范围之外写不了。
+
+**升级**
+- 用旧版本开跑、还没结束的 run 可以接着 resume；lifecycle 打开的 run 会自动迁移到新的沙箱设置，并打一条 NOTE。
+
+**不变**
+- 不用 `danger-full-access`；文件写入的边界不变；Gemini 不变。
+
+**验证**
+- 本地 paired-session（固定副本 v3.5.3）：PLAN r1、EXEC r2 通过，Sol 终审 APPROVE；Opus 终审 5 轮，第 4 轮打回一次（旧版本开跑的 run 升级后无法 resume），修好后第 5 轮 APPROVE。
+- 升级验证：用 v3.5.3 开跑的 run 中途停下，换到新版本 resume，跑到 DONE。
+- 真实 run（macOS，Codex Sol 审查方）：审查方在新沙箱里自己跑测试通过，测试同时写了 repo 内被忽略的 `build/` 和 repo 外的 `extra_writable_roots` 目录；真实 `permission-probe` 里，可写范围外的 6 处写入全部被拒。
+- 第一次真实 run 发现 Claude 作者写不了额外目录，已在本版修好（Claude Bash 沙箱的 `allowWrite`）。
+- 开网络后的真实 run：测试里有一步联网下载（模拟 cargo 拉依赖）；只开 Codex 网络时 Claude 作者被拦，于是 Claude 的网络也一起打开，之后一轮通过，Codex 审查方自己跑的测试也成功。
+
 ### v3.5.3：审查方沙箱里测试跑不通时，操作员在主机上的验证记录可以作数；skill 说明改写；Codex frontmatter 修正
 
 这是试用期内的补丁版本。主要修一个现场问题（range-build-tool，Windows 原生，Rust/Tauri 项目），顺带发出两项已审过的文档改动。
