@@ -219,5 +219,24 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse({'run_dir', 'context', 'hardlink'} & set(targets), targets)
 
 
+
+class ClaudeAuthorProbeRootsTests(unittest.TestCase):
+    """Gate R2 note: with extra_writable_roots set, the Claude author probe still passes and binds the real rules (allowWrite is
+    part of the probed --settings)."""
+    setUp, co, probe, write_report = (tor.ClaudeAuthorProbeTests.setUp, tor.ClaudeAuthorProbeTests.co,
+                                      tor.ClaudeAuthorProbeTests.probe, tor.ClaudeAuthorProbeTests.write_report)
+
+    def test_a_probe_with_extra_roots_passes_and_binds_the_real_rules(self):
+        root = self.h.root / 'cargo-home'
+        root.mkdir()
+        with patch.object(tor.rc.Coordinator, '_extra_writable_roots', lambda _self: [str(root.resolve())]):
+            co, out = self.probe(co=self.co())
+            self.assertEqual(out['status'], 'PASS', out)
+            self.assertIn(str(root.resolve()), co._claude_sandbox_settings('author')['sandbox']['filesystem']['allowWrite'])
+            self.assertTrue(co._claude_probe_rules_match(out))
+            self.write_report(co, out)
+            self.assertEqual(co.probe_passed(), (True, ''))
+
+
 if __name__ == '__main__':
     unittest.main()
