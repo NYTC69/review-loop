@@ -70,7 +70,8 @@ not act maliciously.
 | Permission probe before run, resume and reject | removed; `permission-probe` is refused. No probe report, probe cache, probe lock or gate probe exists |
 | Claude author probe PASS | removed; a real Claude author is never refused |
 | Codex CLI sandbox-contract verification (the verified codex-cli version list) | removed |
-| `--accept-unverified-codex-cli`, `--accept-probe-skip`, `--accept-unverified-claude-author` | refused as removed options ("removed in v3.7.0; runs need no probe or waiver") |
+| `--accept-probe-skip`, `--accept-unverified-claude-author` | refused as removed options ("removed in v3.7.0; runs need no probe or waiver") |
+| `--accept-unverified-codex-cli` | ignored with one NOTE, as in the default mode of v3.6.0, so old scripts keep working |
 | `--skip-probe` | a hidden no-op |
 | Evidence guard (`sensitive_access`) | log-only: the reason goes to `receipt['evidence_guard']['would_hold']` |
 | Codex capability scan (`codex_capabilities`: MCP servers, profiles, permissions in the Codex config) | still refuses. It keeps the sandbox configuration honest (B) |

@@ -320,8 +320,8 @@ true for a `--review-only` W run and to false otherwise, and an explicit CLI or
 operator-profile value wins), and writes a Chinese
 delivery report; `reject` reopens EXEC; a
 workspace profile cannot set lifecycle_mode on or the docs/skip/polish keys.
-`--adversarial-gate off`, `--override-rejection`,
-`--accept-unverified-claude-author`, `--accept-probe-skip` and `--accept-unverified-codex-cli` are refused; use
+`--adversarial-gate off`, `--override-rejection`, `--accept-unverified-claude-author` and `--accept-probe-skip` are
+refused (`--accept-unverified-codex-cli` prints a NOTE and is ignored); use
 the enabled gate, and `resume --add-rounds N` or `note --scope-change`. Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.

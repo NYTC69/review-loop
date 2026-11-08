@@ -57,7 +57,8 @@ class OperatorCliTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 result = self.cli('permission-probe', *extra)
                 self.assertEqual(result.returncode, 2, result.stdout)
-                self.assertEqual(result.stdout.strip(), 'REFUSED: permission-probe was removed in v3.7.0; runs do not need it')
+                self.assertEqual(result.stdout.strip(), 'REFUSED: permission-probe was removed in v3.7.0; runs do not need it '
+                                                         '(use resume to continue a held run)')
                 self.assertFalse(self.h.run_dir.exists())
 
     def test_permission_probe_on_a_saved_run_is_refused_and_records_nothing(self):
@@ -70,12 +71,20 @@ class OperatorCliTests(unittest.TestCase):
         self.assertFalse((self.h.run_dir / 'permission-probe.json').exists())
 
     def test_the_removed_waivers_are_refused_with_the_new_text(self):
-        for flag in ('--accept-unverified-codex-cli', '--accept-unverified-claude-author', '--accept-probe-skip'):
+        for flag in ('--accept-unverified-claude-author', '--accept-probe-skip'):
             with self.subTest(flag=flag), patch.dict(os.environ, {'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': '0'}):
                 result = self.cli('run', flag, '--reason', 'x')
                 self.assertEqual(result.returncode, 2)
                 self.assertIn(f'REFUSED: removed user option: {flag}; removed in v3.7.0; runs need no probe or waiver', result.stdout)
                 self.assertFalse((self.h.run_dir / 'state.json').exists())
+
+    def test_the_codex_cli_waiver_is_ignored_with_a_note(self):   # as in v3.6.0's default mode: an old script keeps working
+        with patch.dict(os.environ, {'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': '0'}):
+            result = self.cli('run', '--accept-unverified-codex-cli', '--reason', 'x')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count('NOTE: --accept-unverified-codex-cli was removed in v3.7.0 and is ignored'), 1)
+        self.assertNotIn('REFUSED', result.stdout)
+        self.assertTrue((self.h.run_dir / 'state.json').exists())
 
     def test_skip_probe_is_an_accepted_hidden_no_op_on_a_real_command_line(self):
         result = self.cli('run', '--skip-probe')

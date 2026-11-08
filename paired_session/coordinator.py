@@ -143,7 +143,8 @@ PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters E
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # v3.7.0: the only mode (docs/efficient-mode.md); a saved or requested 'strict' is noted and ignored
 STRICT_REMOVED_NOTE = 'NOTE: strict mode was removed in v3.7.0; the run uses the default mode'
-PROBE_REMOVED = 'permission-probe was removed in v3.7.0; runs do not need it'
+PROBE_REMOVED = 'permission-probe was removed in v3.7.0; runs do not need it (use resume to continue a held run)'
+CODEX_CLI_WAIVER_NOTE = 'NOTE: --accept-unverified-codex-cli was removed in v3.7.0 and is ignored'
 REVIEWER_BLOCK_CHANGED_ON = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item and resume, '
                              'or abort and start a new run')
 
@@ -596,8 +597,7 @@ def refuse_removed_options(args):
     options = (('adversarial_gate', '--adversarial-gate off', 'keep --adversarial-gate on', 'off'),
                ('override_rejection', '--override-rejection', 'use resume --add-rounds N or note --scope-change at a HOLD', True),
                ('accept_unverified_claude_author', '--accept-unverified-claude-author', 'removed in v3.7.0; runs need no probe or waiver', True),
-               ('accept_probe_skip', '--accept-probe-skip', 'removed in v3.7.0; runs need no probe or waiver', True),
-               ('accept_unverified_codex_cli', '--accept-unverified-codex-cli', 'removed in v3.7.0; runs need no probe or waiver', True))
+               ('accept_probe_skip', '--accept-probe-skip', 'removed in v3.7.0; runs need no probe or waiver', True))
     for dest, flag, alternative, value in options:
         if getattr(args, dest, None) != value: continue
         source = sources.get(dest)
@@ -9490,6 +9490,8 @@ def main(argv=None) -> int:
     args = normalize_cli_paths(args)
     args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
     note_strict_removed(args, args.safety_mode)   # --strict or a profile's "strict": one NOTE, then the default mode
+    if args.accept_unverified_codex_cli:   # v3.7.0: a NOTE and no-op, as in the default mode of v3.6.0, so old scripts keep working
+        print(CODEX_CLI_WAIVER_NOTE, file=sys.stderr if args.action == 'status' or getattr(args, 'intent_only', False) else sys.stdout)
     if refusal := windows_refusal(args):   # WI-WIN: None on POSIX
         print('REFUSED: ' + refusal)
         return 2
@@ -9519,7 +9521,7 @@ def main(argv=None) -> int:
         return 2
     if args.no_test_command or saved_null:   # LG2-b2: the null sentinel before every precheck below
         args.test_command = None
-    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip   # no-ops past refuse_removed_options
+    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip   # no-ops past refuse_removed_options (the codex-cli one prints CODEX_CLI_WAIVER_NOTE)
     if (args.reason or '').strip() and not (accepts or args.override_rejection or args.action in ('accept', 'withdraw-findings')):   # N4-c
         print('REFUSED: --reason is only for accept and withdraw-findings')
         return 2

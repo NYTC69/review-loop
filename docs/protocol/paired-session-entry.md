@@ -282,8 +282,8 @@ For other entries, pass `--lifecycle-mode on` only when no operator/workspace pr
 When a profile sets it, omit the flag (or pass the profile's value). The CLI value overrides the profile.
 Do not pass `--skip-probe`, `--strict` or any `--accept-*` waiver: since v3.7.0 they do nothing or are refused.
 For entries other than review-pr, when the user selects the stop-after-gate route, pass `--lifecycle-mode off`.
-The removed `--adversarial-gate off`, `--override-rejection`, `--accept-unverified-claude-author`,
-`--accept-probe-skip` and `--accept-unverified-codex-cli` options are refused.
+The removed `--adversarial-gate off`, `--override-rejection`, `--accept-unverified-claude-author` and
+`--accept-probe-skip` options are refused; `--accept-unverified-codex-cli` prints a NOTE and is ignored.
 Use the enabled gate, and `resume --add-rounds N` or `note --scope-change` at HOLD.
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 Every run uses one mode (`paired_session/docs/efficient-mode.md`): every sandbox applies, no permission probe is

@@ -31,8 +31,7 @@ class OffUserSurfaceTests(unittest.TestCase):
         cases = ((('--adversarial-gate', 'off'), 'keep --adversarial-gate on'),
                  (('--override-rejection',), 'use resume --add-rounds N or note --scope-change'),
                  (('--accept-unverified-claude-author',), 'removed in v3.7.0; runs need no probe or waiver'),
-                 (('--accept-probe-skip',), 'removed in v3.7.0; runs need no probe or waiver'),
-                 (('--accept-unverified-codex-cli', '--reason', 'x'), 'removed in v3.7.0; runs need no probe or waiver'))
+                 (('--accept-probe-skip',), 'removed in v3.7.0; runs need no probe or waiver'))   # --accept-unverified-codex-cli: a NOTE (test_operator_roles)
         for options, alternative in cases:
             with self.subTest(options=options):
                 argv = self.public_argv('run', *options)
