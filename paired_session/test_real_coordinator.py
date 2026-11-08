@@ -58,7 +58,7 @@ def unique_json_object(pairs):
 
 def assert_codex_reviewer_sandbox(case, argv, extra=()):
     """v3.6.0 (owner decision; replaces the read-only permission profile): a Codex reviewer-type argv carries the author's sandbox
-    shape exactly once: workspace-write, the run's extra writable roots, $TMPDIR writable, /tmp excluded, network off; no permission
+    shape exactly once: workspace-write, the run's extra writable roots, $TMPDIR writable, /tmp excluded, network on; no permission
     profile (`default_permissions`, `permissions.*`, -P) and --ignore-rules."""
     configs = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value in ('-c', '--config')]
     sandbox = [value for value in configs if value.startswith(('sandbox_mode', 'sandbox_workspace_write'))]
@@ -66,7 +66,7 @@ def assert_codex_reviewer_sandbox(case, argv, extra=()):
                                'sandbox_workspace_write.writable_roots=' + json.dumps([str(root) for root in extra]),
                                'sandbox_workspace_write.exclude_tmpdir_env_var=false',
                                'sandbox_workspace_write.exclude_slash_tmp=true',
-                               'sandbox_workspace_write.network_access=false'], argv)
+                               'sandbox_workspace_write.network_access=true'], argv)
     case.assertFalse([value for value in configs if value.startswith(('default_permissions', 'permissions.'))], argv)
     case.assertFalse([value for value in argv if value.startswith(('-P', '--permission-profile'))], argv)
     case.assertIn('--ignore-rules', argv)
@@ -941,8 +941,8 @@ if args and args[0] == "sandbox":
     try: actual_fs = json.loads(fs.replace('"=', '":'))
     except (ValueError, AttributeError): actual_fs = None
     if (actual_fs != expected_fs or
-            config.get("permissions." + profile + ".network.enabled") is not False or
-            config.get("sandbox_workspace_write.network_access") is not False or
+            config.get("permissions." + profile + ".network.enabled") is not True or
+            config.get("sandbox_workspace_write.network_access") is not True or
             config.get("sandbox_workspace_write.exclude_slash_tmp") is not True or
             config.get("sandbox_workspace_write.exclude_tmpdir_env_var") is not False or
             (test_root not in home.parents and not scratch_home) or not (home / "config.toml").is_file()):

@@ -1,5 +1,5 @@
 """v3.6.0 (owner decision): Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers and their probes) run with the Codex
-author's sandbox shape (workspace-write, $TMPDIR writable, /tmp excluded, network off), and the optional profile key
+author's sandbox shape (workspace-write, $TMPDIR writable, /tmp excluded, network on), and the optional profile key
 extra_writable_roots adds writable roots for the Codex author and those roles alike, and for every Claude role's Bash sandbox. The post-turn guard still undoes a tracked
 change and re-dispatches once; ignored paths stay free for them.
 

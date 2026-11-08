@@ -228,7 +228,7 @@ pattern of `review_only`):
   it is never silently ignored. A LG2-c test covers the refusal.
 - **Tests run inside the PR copy.** The coordinator's specialist prompt has the specialist run the test command
   (WL:190) as an exact `Bash(<cmd>)` (efficient-mode §2), so a PR's own test code executes on the operator's machine.
-  The sandbox has no network and denies writes outside the clone. Code under review is untrusted, though. This is a
+  The sandbox denies writes outside the clone; since v3.6.0 a Codex specialist has network (a Claude one does not). Code under review is untrusted, though. This is a
   behavior change: legacy reviewers never ran anything, and the caller supplied the evidence (L6).
   - Decided (Q-R3): a review-pr run executes no test command unless the operator confirms one for this review. That
     holds for any input, not only for `isCrossRepository`, since a ref can name a fork branch too.

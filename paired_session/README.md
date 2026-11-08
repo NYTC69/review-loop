@@ -494,7 +494,7 @@ Reviewer sandbox and temp dir (FIELD-1, v2.9.6; workspace-write since v3.6.0): a
 Codex reviewer, shadow, gate, stage reviewer or probe turn runs with the Codex
 author's sandbox shape: `sandbox_mode="workspace-write"` (the workspace it runs
 in is writable, `.git` stays read-only), `$TMPDIR` writable
-(`exclude_tmpdir_env_var=false`), `/tmp` excluded, network off, plus the run's
+(`exclude_tmpdir_env_var=false`), `/tmp` excluded, network on, plus the run's
 `extra_writable_roots`, with `--ignore-rules`, `features.plugins=false`,
 `features.hooks=false` and, on Windows, the elevated sandbox. A configured test
 may therefore write build output and caches. The post-turn guard still undoes a
@@ -942,7 +942,7 @@ permission probe is the effective check against the installed Codex CLI.
 ### Codex author sandbox: what a work item cannot do
 
 A Codex author runs under the `workspace-write` sandbox (writes confined to the
-workspace and the run-owned temp dir; `network_access` is off).
+workspace and the run-owned temp dir; `network_access` is on since v3.6.0, owner 2026-11-08).
 
 The Codex author's sandbox cannot write `.git` (for example `.git/ORIG_HEAD.lock`),
 so the author cannot run `git merge`, `git rebase`, `git commit` or similar commands.
@@ -964,7 +964,8 @@ cannot do there:
 - Postgres `initdb` fails (`shmget` returns EPERM), so a test database cannot be
   created inside the sandbox.
 - Unix-socket connections to a server running outside the sandbox fail; they
-  work only with network access enabled, which the author policy keeps off.
+  work only with network access enabled, which the author policy keeps off
+  (before v3.6.0; network is on since then, so this may work now).
 - iOS builds and the simulator are unavailable: the Swift macro plugin server
   answers "malformed response" under the nested sandbox, and the connection to
   CoreSimulatorService is refused.

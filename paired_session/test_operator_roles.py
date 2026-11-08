@@ -72,7 +72,7 @@ class CodexContractTests(unittest.TestCase):
         self.assertEqual(co.codex_contract_verified(), (True, ''))
         args = co._codex_sandbox_profile_args()
         self.assertEqual(args[:2], ['-P', 'paired_session_author'])
-        self.assertEqual(args[4:], ['--config', 'permissions.paired_session_author.network.enabled=false'])
+        self.assertEqual(args[4:], ['--config', 'permissions.paired_session_author.network.enabled=true'])
 
     def test_synthetic_profile_arguments_unchanged_for_verified_version(self):
         use_lifecycle_on(self, self.h)

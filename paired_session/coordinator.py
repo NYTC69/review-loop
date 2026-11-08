@@ -1069,13 +1069,13 @@ def completed_test_failure(rows: list, configured: str) -> Optional[dict]:
 def codex_reviewer_sandbox_overrides(extra_roots=()) -> dict:
     """v3.6.0 (owner decision): Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers, probes) get the author's sandbox
     shape: workspace-write (the turn's cwd writable, .git read-only), $TMPDIR (the dispatch's scratch root) writable, /tmp excluded,
-    network off, plus the run's extra_writable_roots. The post-turn guard still undoes tracked and non-ignored changes."""
+    network on (owner 2026-11-08), plus the run's extra_writable_roots. The post-turn guard still undoes tracked and non-ignored changes."""
     return {
         'sandbox': 'workspace-write',
         'sandbox_workspace_write.writable_roots': [str(root) for root in extra_roots],
         'sandbox_workspace_write.exclude_tmpdir_env_var': False,
         'sandbox_workspace_write.exclude_slash_tmp': True,
-        'sandbox_workspace_write.network_access': False,
+        'sandbox_workspace_write.network_access': True,   # v3.6.0 (owner 2026-11-08): network on for Codex roles
     }
 
 
@@ -3296,7 +3296,7 @@ class Coordinator:
             'sandbox_workspace_write.writable_roots': [str(self.author_temp_dir), *self._extra_writable_roots()],
             'sandbox_workspace_write.exclude_tmpdir_env_var': False,
             'sandbox_workspace_write.exclude_slash_tmp': True,
-            'sandbox_workspace_write.network_access': False,
+            'sandbox_workspace_write.network_access': True,   # v3.6.0 (owner 2026-11-08): network on for Codex roles
             'TMPDIR': str(self.author_temp_dir),
         }
 
@@ -3399,7 +3399,7 @@ class Coordinator:
         if not (verified := self.codex_contract_verified())[0]:
             raise ValueError(verified[1])
         policy = self._author_sandbox_overrides()
-        if (policy['sandbox'] != 'workspace-write' or policy['sandbox_workspace_write.network_access'] is not False
+        if (policy['sandbox'] != 'workspace-write' or policy['sandbox_workspace_write.network_access'] is not True
                 or policy['sandbox_workspace_write.exclude_tmpdir_env_var'] is not False
                 or policy['sandbox_workspace_write.exclude_slash_tmp'] is not True):
             raise ValueError('author sandbox parameters cannot be represented by the synthetic profile')
@@ -3410,7 +3410,7 @@ class Coordinator:
         inline = '{' + ', '.join(json.dumps(k) + '=' + ('{' + ', '.join(json.dumps(r) + '=' + json.dumps(v) for r, v in value.items()) + '}' if isinstance(value, dict) else json.dumps(value)) for k, value in filesystem.items()) + '}'
         # b296-f1e: only `codex sandbox` (the escape check) takes this argv; `codex sandbox` has -P, `codex exec` does not.
         return ['-P', 'paired_session_author', '--config', 'permissions.paired_session_author.filesystem=' + inline,
-                '--config', 'permissions.paired_session_author.network.enabled=false']
+                '--config', 'permissions.paired_session_author.network.enabled=true']
 
     def reviewer_flags_digest(self) -> str:
         raw = json.dumps(self.reviewer_flags(), sort_keys=True, separators=(',', ':')).encode()
