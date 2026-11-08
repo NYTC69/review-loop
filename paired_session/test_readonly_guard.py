@@ -495,7 +495,7 @@ class ReadOnlyTurnTests(unittest.TestCase):
     def test_a_review_that_edits_an_ignored_file_is_void_and_holds(self):   # eff-e
         with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle:
             handle.write('.env\n')
-        for vendor in ('claude', 'codex'):   # a Codex reviewer also gets a scratch TMPDIR and its run-dir link check
+        for vendor in ('claude',):   # v3.6.0: a workspace-write Codex reviewer may write ignored paths (test_rvw)
             with self.subTest(vendor=vendor):
                 self.h.run_dir = self.h.root / f'run-ignored-{vendor}'
                 (self.h.workspace / '.env').write_text('SECRET=1\n')

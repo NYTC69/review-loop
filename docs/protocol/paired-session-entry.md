@@ -272,7 +272,7 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
   A failure that follows the materialization, name the clone the same way.
 - Failures: a failed stage A check refuses on every entry and for every input, and never falls back to
   legacy (removed in v2.13.0; Entry and failure handling).
-- Residual, stated: report mode does not narrow the Codex read root. Codex read-only roles (the gate,
+- Residual, stated: report mode does not narrow the Codex read root. Codex reviewer-type roles (the gate,
   with the default roles) can read the whole filesystem, credential files included; the efficient
   evidence guard only logs. A prompt injection in an untrusted PR could have a role quote such a file
   into a finding, which is why the post is scanned and confirmed. Narrowing it needs a verified Codex

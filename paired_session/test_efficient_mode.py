@@ -175,7 +175,8 @@ class EfficientModeTests(unittest.TestCase):
                     self.assertIn('--restricted', efficient['reviewer'])
                 else:
                     self.assertIn('sandbox_mode="workspace-write"', ' '.join(efficient['author']))
-                    self.assertIn('default_permissions="paired_session_readonly"', ' '.join(efficient['reviewer']))   # v2.9.6 FIELD-1
+                    self.assertIn('sandbox_mode="workspace-write"', ' '.join(efficient['reviewer']))   # v3.6.0: the author's shape
+                    self.assertNotIn('default_permissions', ' '.join(efficient['reviewer']))
 
     def test_the_run_dir_stays_outside_the_workspace_in_efficient_mode(self):
         code, out = self.cli('run', '--run-dir', str(self.h.workspace / 'run'))

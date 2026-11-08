@@ -295,6 +295,10 @@ that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
+The profile-only key `extra_writable_roots` (default `[]`) lists absolute paths of existing directories outside the run
+directory that the Codex author and the Codex reviewer-type roles may also write (a build cache such as `~/.cargo`,
+written as an absolute path); a relative, missing or non-directory path, or one inside the run directory, is refused at
+start. It is recorded in the run config, and resume uses the recorded list.
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 The paired-session skill always passes `--lifecycle-mode on` for review-pr report mode, overriding a profile's off value. Other entries follow the profile, or default to on; a user may select `--lifecycle-mode off` for those entries. The frozen config also records exact
 `docs_file`/`docs_allowlist` paths and `skip_quality_polish` (`skip_globs` / `--skip-globs` was removed
@@ -486,15 +490,17 @@ directories; foreign entries there are retained and reported.
 For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
 on the permission-probe command; this changes only the prompt, not the sandbox.
 
-Read-only temp dir (FIELD-1, v2.9.6): a Codex reviewer, shadow, gate or probe
-turn runs under the permission profile `paired_session_readonly` (root and
-workspace read-only, only `$TMPDIR` writable, network off), selected with
-`--config default_permissions="paired_session_readonly"` because `codex exec`
-has no `-P` (verified on codex-cli 0.160.0; an explicit `--config` outranks
-user, system and project `config.toml`; managed config, requirements and MDM
-may outrank it, and the capability guard refuses a dispatch when they set
-permission keys), instead of
-`sandbox_mode="read-only"`, with TMPDIR/TMP/TEMP set to a fresh 0700
+Reviewer sandbox and temp dir (FIELD-1, v2.9.6; workspace-write since v3.6.0): a
+Codex reviewer, shadow, gate, stage reviewer or probe turn runs with the Codex
+author's sandbox shape: `sandbox_mode="workspace-write"` (the workspace it runs
+in is writable, `.git` stays read-only), `$TMPDIR` writable
+(`exclude_tmpdir_env_var=false`), `/tmp` excluded, network off, plus the run's
+`extra_writable_roots`, with `--ignore-rules`, `features.plugins=false`,
+`features.hooks=false` and, on Windows, the elevated sandbox. A configured test
+may therefore write build output and caches. The post-turn guard still undoes a
+change to HEAD, the branch, the index, a tracked file or a non-ignored untracked
+file and re-dispatches once; ignored paths stay free (recorded in the receipt
+as `readonly_ignored_kept`). TMPDIR/TMP/TEMP are set to a fresh 0700
 `<scratch_root>/role-tmp/<seq>-<role>` outside any repo for that one dispatch
 (legacy runs without `scratch_root` retain `<run_dir>/role-tmp/<seq>-<role>`), so a `tmp_path`-style
 test has a usable temp dir. The coordinator lists that root in the turn's
@@ -510,16 +516,20 @@ removed as a link while modes and file flags are reset without following one.
 A regular file with more than one link, an unreadable directory, or a changed
 mode of the scratch root itself, left in the scratch fails the turn. The reviewer and gate flags digests
 change, so an older probe PASS or probe-pass cache entry no longer matches:
-re-run `permission-probe`. A Codex probe or gate-probe turn must now write its
-own `$TMPDIR` and must be refused each of: a write to `/tmp`, to the user temp
-dir, to the run dir, to `role-tmp` beside its own scratch (`$TMPDIR/..`), to the
-context, every workspace write, and `ln <run-dir file> "$TMPDIR/..."` (a hard
-link into its scratch); every target must be absent and the link source keep a
-single link afterwards. A leg counts as refused only on an explicit sandbox or
+re-run `permission-probe` (v3.6.0 changed them again for the workspace-write
+sandbox). A Codex probe or gate-probe turn must write its own `$TMPDIR` and a
+fresh file in the workspace (removed afterwards), and must be refused each write
+outside its writable roots: to `/tmp`, to the user temp dir, to the run dir, to
+`role-tmp` beside its own scratch (`$TMPDIR/..`), to the context, and
+`ln <run-dir file> "$TMPDIR/..."` (a hard link into its scratch); a target inside
+the workspace or an extra writable root (an in-repo run dir) is not probed.
+Every refused target must be absent and the link source keep a single link
+afterwards. A leg counts as refused only on an explicit sandbox or
 OS denial (Operation not permitted, Permission denied, Read-only file system,
 a sandbox deny line) with a non-zero exit; `command not found` (exit 127), exit
-126 or any other error makes the probe UNKNOWN, never PASS. The reviewer and
-gate probes' `git --literal-pathspecs checkout --` and `rm` legs target an
+126 or any other error makes the probe UNKNOWN, never PASS. A Claude reviewer
+or gate probe's `git --literal-pathspecs checkout --` and `rm` legs (a Codex
+probe turn has none since v3.6.0) target an
 existing tracked file of the workspace (a regular, non-symlink `git ls-files`
 entry, preferring one without unstaged changes, then one without `:*?[]\`;
 named in the report as `probe_tracked_file`), so the workspace needs at least
@@ -527,7 +537,7 @@ one; without one the probe is refused before any turn (this refusal leaves the
 probe-pass cache alone: no surface was tested). `--literal-pathspecs` keeps a
 name such as `*.py` from reaching other files. A broken surface deletes that
 file: the probe FAILs and reports it, and the file is not restored. Only that
-real probe shows that `codex exec` honours the profile; the tests use fake CLIs, and the probe runs fresh turns only (see
+real probe shows that `codex exec` honours the sandbox; the tests use fake CLIs, and the probe runs fresh turns only (see
 resume turns below).
 
 Hard links: the scratch shares a volume with the run dir and usually with the
@@ -556,10 +566,9 @@ hard link a hostile probe model could link one of them, append a fake refused
 this; not done). The refused writes are judged by their targets on disk and
 are not affected. A detached descendant acting after the CLI exits is outside
 the window, as for the other per-turn checks. Resume turns: a persistent Codex
-reviewer's later turns run `codex exec ... --config default_permissions="paired_session_readonly" ... resume
-<id>`; the probe runs fresh turns only, so whether the real CLI applies the
-profile on resume (before, a plain `sandbox_mode` override did) is unproven; if
-it did not, those turns would fall back to the CLI's default sandbox and only
+reviewer's later turns run `codex exec ... -c sandbox_mode="workspace-write" ... resume
+<id>`; the probe runs fresh turns only. A plain `sandbox_mode` override applies
+on resume (the author uses the same form); if it did not, those turns would fall back to the CLI's default sandbox and only
 the workspace snapshot, context digest and run-dir ctime checks would remain. Claude roles keep Claude
 Code's own sandbox TMPDIR (`/tmp/claude`, shared per UID, also with a Claude
 author): `denyWrite: run_dir` takes precedence over `allowWrite`, so a run-dir

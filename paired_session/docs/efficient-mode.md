@@ -35,7 +35,7 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 | Role | Claude | Codex |
 |---|---|---|
 | Author | `--permission-mode acceptEdits`; path-scoped `--allowedTools Edit(//<workspace>/**)`; the `--disallowedTools` deny rules for the context, the probe cache and `~/.claude` `~/.codex` `~/.ssh` `~/.aws`; `--settings` with the Bash OS sandbox: `denyWrite` the run dir, the credential env-var and file deny lists, no network | `-c approval_policy="never" -c sandbox_mode="workspace-write"`, writable roots = author-tmp, no network, `exclude_slash_tmp`, `TMPDIR=author-tmp`, `--ignore-rules` |
-| Reviewer, gate, shadow, probe | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | `--config default_permissions="paired_session_readonly"`: a permission profile with root and workspace read, only the dispatch's own `$TMPDIR` scratch root writable and no network (it replaces `sandbox_mode="read-only"`); `--ignore-rules` |
+| Reviewer, gate, shadow, probe | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | v3.6.0: the author's shape, `-c sandbox_mode="workspace-write"`, writable roots = the workspace, the dispatch's own `$TMPDIR` scratch root and `extra_writable_roots`, no network, `exclude_slash_tmp`; `--ignore-rules` (the guard in §4a still undoes tracked and non-ignored changes) |
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
@@ -117,18 +117,20 @@ accepted manifest). Residuals: the bits of ignored files (their type, size, mtim
 lstat below), of symlinks and directories, and ACLs, extended attributes and file flags.
 A workspace below the repository top is not a case: the coordinator requires `.git` in the workspace.
 
-**Ignored entries (eff-e).** The read-only sandbox is the first barrier; this is the second line. The check runs in both modes.
+**Ignored entries (eff-e).** For Claude and Gemini read-only roles the read-only sandbox is the first barrier and this is the second
+line. The check runs in both modes. Codex reviewer-type roles (workspace-write since v3.6.0) may write ignored paths: a changed
+entry is recorded in the receipt as `readonly_ignored_kept` and the turn stands.
 - `capture()` records the lstat metadata (type, size, mtime_ns, mode, symlink target) of each ignored entry exactly as
   `git ls-files -o -i --exclude-standard --directory` lists it, so a collapsed directory is one entry.
-- An entry that changed or is gone after the turn voids the verdict and HOLDs with the changed paths. Nothing is restored, and
-  there is no re-dispatch.
+- For a Claude or Gemini role, an entry that changed or is gone after the turn voids the verdict and HOLDs with the changed paths.
+  Nothing is restored, and there is no re-dispatch.
 - **Residuals:** a change inside a collapsed ignored directory that leaves the directory entry itself unchanged, and a new ignored
   file outside the recorded entries, are not detected.
 - The capture is bounded (`IGNORED_LIMIT` entries, `IGNORED_SECONDS`). Past either bound the receipt says `ignored set too large:
   not checked`.
-- A CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__` or a test
-  runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write) HOLDs every
-  read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
+- For a Claude or Gemini role, a CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__`
+  or a test runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write)
+  HOLDs every read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
   are excluded from workspace scans, so the recommended isolated homes may live there.
 
 **An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The

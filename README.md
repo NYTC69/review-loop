@@ -432,7 +432,7 @@ only where the operator profile or the CLI flags name it:
   global config: after a completed gemini turn, a change of only `trustedWorkspaces` or `model` (agy writes these
   itself) is a NOTE and any other change holds; in the recovery of an uncertain (abandoned) gemini turn any change is
   recorded as a NOTE. A changed `agy --version` between turns is a NOTE (agy updates itself).
-- Scratch: each gemini turn gets its own `TMPDIR` under the run's external scratch root, as the Codex read-only
+- Scratch: each gemini turn gets its own `TMPDIR` under the run's external scratch root, as the Codex reviewer-type
   roles do.
 - Windows: gemini is macOS-only. On Windows a gemini role (new or saved run) is refused before any state write;
   `status`, `abort` and `stop` stay usable.

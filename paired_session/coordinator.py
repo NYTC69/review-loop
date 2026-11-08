@@ -1015,8 +1015,7 @@ def reclassify_default_home_trust(changes: dict, before: dict, after: dict, work
     return changes
 
 
-READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex read-only roles get a per-dispatch temp root
-CODEX_READONLY_PROFILE = 'paired_session_readonly'
+READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex reviewer-type roles get a per-dispatch temp root
 SCRATCH_PROBE_COMMAND = 'printf probe > "$TMPDIR/paired-session-scratch-probe"'
 # FIELD-20 (poker-news-bot WI-101, 2026-10-05; real codex-cli 0.160.0 rehearsal in lane B's field20 report): Codex's exec_command
 # returns after about 10 s with a session_id and no exit_code; a model that moves on without polling leaves a long test command
@@ -1067,15 +1066,52 @@ def completed_test_failure(rows: list, configured: str) -> Optional[dict]:
                  and row['exit_code'] != 0), None)
 
 
-def codex_readonly_profile_args() -> list[str]:
-    """b295-f1: replaces sandbox_mode="read-only" (Codex refuses both together): root and workspace read, only $TMPDIR (the dispatch's
-    scratch root) writable, network off. Only a real permission-probe shows that `codex exec` honours it.
-    b296-f1e: `codex exec` has no -P (codex-cli 0.160.0 exits 2); `default_permissions` selects the profile. An explicit --config
-    outranks user, system and project config.toml; managed config, requirements and MDM may outrank it, and codex_capability_guard
-    refuses a dispatch when they set permission keys."""
-    name = CODEX_READONLY_PROFILE
-    return ['--config', f'default_permissions="{name}"', '--config', f'permissions.{name}.filesystem={{":root"="read", ":tmpdir"="write", ":workspace_roots"={{"."="read"}}}}',
-            '--config', f'permissions.{name}.network.enabled=false']
+def codex_reviewer_sandbox_overrides(extra_roots=()) -> dict:
+    """v3.6.0 (owner decision): Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers, probes) get the author's sandbox
+    shape: workspace-write (the turn's cwd writable, .git read-only), $TMPDIR (the dispatch's scratch root) writable, /tmp excluded,
+    network off, plus the run's extra_writable_roots. The post-turn guard still undoes tracked and non-ignored changes."""
+    return {
+        'sandbox': 'workspace-write',
+        'sandbox_workspace_write.writable_roots': [str(root) for root in extra_roots],
+        'sandbox_workspace_write.exclude_tmpdir_env_var': False,
+        'sandbox_workspace_write.exclude_slash_tmp': True,
+        'sandbox_workspace_write.network_access': False,
+    }
+
+
+def codex_sandbox_config_args(overrides: dict) -> list[str]:
+    """`-c key=<json>` for each sandbox override (`sandbox` is `sandbox_mode`; TMPDIR is an environment value, not a config key)."""
+    args = []
+    for key, value in overrides.items():
+        if key == 'TMPDIR':
+            continue
+        args.extend(['-c', f"{'sandbox_mode' if key == 'sandbox' else key}={json.dumps(value)}"])
+    return args
+
+
+def codex_reviewer_sandbox_args(extra_roots=()) -> list[str]:
+    return codex_sandbox_config_args(codex_reviewer_sandbox_overrides(extra_roots))
+
+
+def validate_extra_writable_roots(values, run_dir: Path) -> list[str]:
+    """The profile's extra_writable_roots: absolute paths of existing directories outside the run dir, recorded resolved."""
+    if not isinstance(values, (list, tuple)) or not all(isinstance(value, str) for value in values):
+        raise ValueError('config extra_writable_roots must be an array of strings')
+    run_dir, roots = Path(run_dir).resolve(), []
+    for value in values:
+        if not os.path.isabs(value):
+            raise ValueError(f'extra_writable_roots entry must be an absolute path: {value}')
+        path = Path(value)
+        if not path.exists():
+            raise ValueError(f'extra_writable_roots entry does not exist: {value}')
+        if not path.is_dir():
+            raise ValueError(f'extra_writable_roots entry is not a directory: {value}')
+        resolved = path.resolve()
+        if resolved == run_dir or run_dir in resolved.parents:
+            raise ValueError(f'extra_writable_roots entry is inside the run directory: {value}')
+        if str(resolved) not in roots:
+            roots.append(str(resolved))
+    return roots
 
 
 def scratch_listing(root: Path) -> tuple[list, list]:
@@ -3015,6 +3051,8 @@ class Coordinator:
         config['docs_allowlist'] = sorted({frozen_doc_path(value) for value in
                                            [*self.args.docs_allowlist, *([docs_file] if docs_file else [])]})
         config['workitem_reviewer_commands'] = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
+        config['extra_writable_roots'] = self.args.extra_writable_roots = validate_extra_writable_roots(
+            getattr(self.args, 'extra_writable_roots', None) or [], self.run_dir)   # fixed at run start; resume uses the recorded list
         return config
 
     def _author_tmp_isolated(self) -> bool:
@@ -3167,7 +3205,7 @@ class Coordinator:
             prefix + '_commands': self.reviewer_commands(),
             prefix + '_binary': self._vendor_binary(vendor),
             'permission_mode': vendor_entry({'claude': 'dontAsk', 'codex': 'never', 'gemini': 'settings-deny'}, vendor),
-            'sandbox': vendor_entry({'claude': 'restricted-allowlist', 'codex': 'read-only', 'gemini': 'agy-sandbox'}, vendor),
+            'sandbox': vendor_entry({'claude': 'restricted-allowlist', 'codex': 'workspace-write', 'gemini': 'agy-sandbox'}, vendor),
         }
         if vendor == 'gemini':   # ADR-21 G5
             flags['gemini_settings'] = GEMINI_READONLY_SETTINGS
@@ -3179,7 +3217,7 @@ class Coordinator:
         if vendor == 'codex':
             flags['ignore_execpolicy_rules'] = True
             flags['codex_plugins_argv'] = list(CODEX_PLUGINS_OFF)
-            flags['codex_readonly_profile'] = codex_readonly_profile_args()   # b295-f1: a new digest, so an older probe PASS or cache entry stops matching
+            flags['codex_reviewer_sandbox'] = codex_reviewer_sandbox_overrides(self._extra_writable_roots())   # v3.6.0: a new digest, so an older probe PASS or cache entry stops matching
             flags['scratch_tmp'] = str(self.scratch_base / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
         return flags
 
@@ -3253,22 +3291,19 @@ class Coordinator:
     def _author_sandbox_overrides(self) -> dict:
         return {
             'sandbox': 'workspace-write',
-            'sandbox_workspace_write.writable_roots': [str(self.author_temp_dir)],
+            'sandbox_workspace_write.writable_roots': [str(self.author_temp_dir), *self._extra_writable_roots()],
             'sandbox_workspace_write.exclude_tmpdir_env_var': False,
             'sandbox_workspace_write.exclude_slash_tmp': True,
             'sandbox_workspace_write.network_access': False,
             'TMPDIR': str(self.author_temp_dir),
         }
 
+    def _extra_writable_roots(self) -> list[str]:
+        """The run's extra_writable_roots (validated and fixed at run start; empty by default)."""
+        return list(getattr(getattr(self, 'args', None), 'extra_writable_roots', None) or [])
+
     def _author_sandbox_config_args(self) -> list[str]:
-        overrides = self._author_sandbox_overrides()
-        args = []
-        for key, value in overrides.items():
-            if key == 'TMPDIR':
-                continue
-            config_key = 'sandbox_mode' if key == 'sandbox' else key
-            args.extend(['-c', f'{config_key}={json.dumps(value)}'])
-        return args
+        return codex_sandbox_config_args(self._author_sandbox_overrides())
 
     def _author_environment(self) -> dict:
         return {**os.environ, **winplat.temp_env(self.author_temp_dir)}
@@ -3662,6 +3697,12 @@ class Coordinator:
         elif 'wi_deadline' not in self.state['config']:
             raise ValueError('--wi-deadline is fixed at run start (the run or permission-probe that creates the run directory); '
                              'this run directory was created without one')
+        recorded_roots = self.state['config'].get('extra_writable_roots', [])   # fixed at run start, like the deadline
+        try: profile_roots = validate_extra_writable_roots(getattr(self.args, 'extra_writable_roots', None) or [], self.run_dir)
+        except ValueError: profile_roots = None
+        if profile_roots != recorded_roots and (getattr(self.args, 'extra_writable_roots', None) or recorded_roots):
+            print('NOTE: extra_writable_roots is fixed at run start; using the recorded list (start a new run to change it)')
+        self.args.extra_writable_roots = list(recorded_roots)
         current_config = self._config()
         raised = {'timeout': getattr(self.args, 'resume_timeout', None) is not None,
                   'max_invocations': invocation_cap_override, 'exec_turn_timeout': exec_timeout_override}
@@ -5170,7 +5211,7 @@ class Coordinator:
         if role == 'author':
             cmd += self._author_sandbox_config_args()
         else:
-            cmd += codex_readonly_profile_args()   # b295-f1: read-only except the dispatch's scratch $TMPDIR
+            cmd += codex_reviewer_sandbox_args(self._extra_writable_roots())   # v3.6.0: workspace-write, as the author; the guard undoes tracked changes
         # Personal allow rules can bypass either sandbox, including an author's
         # worktree boundary. Every Codex role must use only this invocation's policy.
         cmd.append('--ignore-rules')
@@ -6920,6 +6961,8 @@ class Coordinator:
                 voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
             if recorded and (note := recorded.get('ignored_note')): receipt['readonly_ignored'] = note
             touched = readonly_guard.ignored_changes(snapshot_workspace, recorded) if recorded and not snapshot_failure else []
+            if touched and receipt['vendor'] == 'codex' and role != 'author':   # v3.6.0: ignored paths are free for a workspace-write reviewer
+                receipt['readonly_ignored_kept'], touched = touched[:50], []
             if touched: receipt['voided'] = {**receipt.get('voided', {}), 'ignored_changed': touched[:50]}   # eff-e: no ignored content is kept
             if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR'):   # b295-f1: listed in the receipt before it is removed
                 receipt['scratch_entries'], linked = scratch_listing(Path(env_overrides['TMPDIR']))
@@ -7022,7 +7065,7 @@ class Coordinator:
                 guard_calls, guard_cwd, proven = codex_guard_calls(tool_calls, codex_rollout_cwds(
                     session, receipt['start'], receipt['end'], (self.workspace, active_workspace, self.author_temp_dir)))
             forbidden = sensitive_access(guard_calls, role, self.evidence, self.rounds, guard_cwd,   # configured bytes: CLI commands only
-                                         env, (self.workspace, active_workspace, self.author_temp_dir),
+                                         env, (self.workspace, active_workspace, self.author_temp_dir, *map(Path, self._extra_writable_roots())),
                                          tuple(c for c in (self.args.test_command, *self.args.reviewer_command) if c), fallbacks)
             receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20],   # v297-eg-wire: substring-guard calls
                                          **({'codex_cwd_proven': proven} if proven is not None else {})}
@@ -9307,9 +9350,12 @@ class Coordinator:
                     except OSError:
                         pass
 
-    def _probe_attempts(self, allowed_command: Optional[str], tracked: str) -> tuple:
+    def _probe_attempts(self, allowed_command: Optional[str], tracked: str, vendor: str = 'claude') -> tuple:
         """`tracked` is probe_tracked_file(self.workspace): the tracked-file legs need a file that exists (b296-f1f). b296-f1g:
-        --literal-pathspecs (no glob, no pathspec magic), so a name like `*.py` or `:(glob)**` can only ever reach that one file."""
+        --literal-pathspecs (no glob, no pathspec magic), so a name like `*.py` or `:(glob)**` can only ever reach that one file.
+        v3.6.0: a Codex reviewer-type role may write in the workspace, so its probe has no workspace legs here; it proves the
+        workspace write (_workspace_write_probe) and the refused writes outside its writable roots (_codex_escape_targets)."""
+        if vendor == 'codex': return ()
         return ('echo x > forbidden-probe', 'git --literal-pathspecs checkout -- ' + shlex.quote(tracked), 'rm ' + shlex.quote(tracked),
                 'git diff --output=forbidden-diff', 'git log --output=forbidden-log -1',
                 'git show --output=forbidden-show HEAD', *([allowed_command + ' --help > forbidden-test-help'] if allowed_command else []))
@@ -9344,9 +9390,11 @@ class Coordinator:
         self._probe_sandbox_commands = [sandbox_probe_commands[1], sandbox_probe_commands[3]]
         return sandbox_probe_paths, sandbox_probe_commands
 
-    def _probe_prompt(self, vendor: str, allowed_command: Optional[str], attempts: tuple, sandbox_probe_commands: list) -> str:
+    def _probe_prompt(self, vendor: str, allowed_command: Optional[str], attempts: tuple, sandbox_probe_commands: list,
+                      workspace_write: Optional[str] = None) -> str:
         scratch = ['Scratch write expected to succeed:', SCRATCH_PROBE_COMMAND] if vendor == 'codex' else []   # b295-f1: one more exact command
-        calls = len(attempts) + bool(allowed_command) + bool(sandbox_probe_commands) + bool(scratch)
+        if workspace_write: scratch += ['Workspace write expected to succeed:', workspace_write]   # v3.6.0
+        calls = len(attempts) + bool(allowed_command) + bool(sandbox_probe_commands) + bool(scratch) + bool(workspace_write)
         prompt = '\n'.join([
             'Role: permission-system probe in an authorized throwaway checkout. Do not report exit codes.',
             f'Workspace: {self.workspace}',
@@ -9381,10 +9429,32 @@ class Coordinator:
             roots['user_tmp'] = Path(tempfile.gettempdir())
         targets = {label: (root / name, 'printf probe > ' + shlex.quote(str(root / name))) for label, root in roots.items()}
         targets['role_tmp'] = (self.scratch_base / 'role-tmp' / name, f'printf probe > "$TMPDIR/../{name}"')
-        source = self.run_dir / ('paired-session-link-source-' + tag)
-        source.write_text('link source\n')
-        targets['hardlink'] = (source, f'ln {shlex.quote(str(source))} "$TMPDIR/paired-session-link-probe"')
+        writable = [Path(root).resolve() for root in (self.workspace, *self._extra_writable_roots())]   # v3.6.0: only writes outside them must fail
+        inside = lambda path: any(root == path or root in path.parents for root in writable)
+        targets = {label: target for label, target in targets.items() if not inside(target[0].parent.resolve())}
+        if not inside(self.run_dir.resolve()):
+            source = self.run_dir / ('paired-session-link-source-' + tag)
+            source.write_text('link source\n')
+            targets['hardlink'] = (source, f'ln {shlex.quote(str(source))} "$TMPDIR/paired-session-link-probe"')
         return targets
+
+    def _workspace_write_probe(self, vendor: str) -> Optional[tuple]:
+        """v3.6.0: a Codex reviewer-type probe must write a fresh file in the workspace ((path, exact command); None for other vendors)."""
+        if vendor != 'codex': return None
+        path = self.workspace / ('.paired-session-reviewer-write-probe-' + uuid.uuid4().hex)
+        if path.exists() or path.is_symlink(): raise ValueError('workspace write probe target already exists; refusing collision')
+        return path, 'printf probe > ' + shlex.quote(str(path))
+
+    def _workspace_write_probe_failure(self, probe: Optional[tuple], evidence: list) -> str:
+        """The workspace write ran once with exit 0 and left the file; the file is removed afterwards."""
+        if probe is None: return ''
+        path, command = probe
+        hits = [row for row in evidence if row.get('command', '').strip() == command]
+        try: written = path.is_file() and not path.is_symlink() and path.read_text() == 'probe'
+        except OSError: written = False
+        path.unlink(missing_ok=True)
+        ran = len(hits) == 1 and type(hits[0].get('exit_code')) is int and hits[0]['exit_code'] == 0 and hits[0].get('error') is False
+        return '' if ran and written else 'workspace-write-not-observed: ' + command
 
     def _codex_escape_failures(self, targets: dict, result: Optional[dict]) -> list:
         """Each refused write must have left nothing and the link source a single link; every target is removed afterwards."""
@@ -9514,20 +9584,25 @@ class Coordinator:
         allowed_command = (self.args.test_command or '').strip() or None   # LG2-b2: None in a no-test report run
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('gate-probe', self.args.gate_vendor)
         codex = self._codex_escape_targets() if self.args.gate_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
-        attempts = (*self._probe_attempts(allowed_command, tracked), *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
-        prompt = self._probe_prompt(self.args.gate_vendor, allowed_command, attempts, sandbox_probe_commands)
+        attempts = (*self._probe_attempts(allowed_command, tracked, self.args.gate_vendor), *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
+        workspace_write = self._workspace_write_probe(self.args.gate_vendor)
+        prompt = self._probe_prompt(self.args.gate_vendor, allowed_command, attempts, sandbox_probe_commands, workspace_write and workspace_write[1])
         sequence = self.state['sequence'] + 1
         try:
             result = self.invoke('gate-probe', 'PROBE', prompt, review_schema(verified=False), fresh=True, allow_mutation_report=True)
             self.render(result, 'gate-permission-probe', 'PROBE')
-            evidence, unchanged = result['answer'].get('observed_commands', []), result['snapshot'] == snapshot
+            evidence = result['answer'].get('observed_commands', [])
+            written = self._workspace_write_probe_failure(workspace_write, evidence)   # removes the file before the snapshot compare
+            unchanged = (git_snapshot(self.workspace)[0] if workspace_write else result['snapshot']) == snapshot
         except Exception as exc:
+            if workspace_write: workspace_write[0].unlink(missing_ok=True)
             if sandbox_probe_paths: cleanup_probe_targets(sandbox_probe_paths); self._probe_sandbox_commands = None
             return {'status': 'FAIL', 'probe_turn': sequence, 'vendor': self.args.gate_vendor, 'probe_tracked_file': tracked,
                     'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None), *self._tracked_file_escape(tracked)]}
         allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.gate_vendor == 'codex')
-        miss = self._scratch_probe_failure(result, evidence) if self.args.gate_vendor == 'codex' else ''
-        failures += [miss] if miss else []
+        scratch_miss = self._scratch_probe_failure(result, evidence) if self.args.gate_vendor == 'codex' else ''
+        failures += [reason for reason in (scratch_miss, written) if reason]
+        miss = scratch_miss or written
         failures += (escapes := self._codex_escape_failures(codex, result) + self._tracked_file_escape(tracked))
         miss = miss or ', '.join(escapes)
         gate = {'status': probe_turn_status(allowed, outcomes, unchanged, miss), 'probe_turn': sequence, 'vendor': self.args.gate_vendor, 'probe_tracked_file': tracked,
@@ -9597,11 +9672,12 @@ class Coordinator:
             self.hold(issue)
             return False
         allowed_command = (self.args.test_command or '').strip() or None   # LG2-b2: None in a no-test report run
-        attempts = self._probe_attempts(allowed_command, tracked)
+        attempts = self._probe_attempts(allowed_command, tracked, self.args.reviewer_vendor)
         sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
         codex = self._codex_escape_targets() if self.args.reviewer_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
         attempts = (*attempts, *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
-        prompt = self._probe_prompt(self.args.reviewer_vendor, allowed_command, attempts, sandbox_probe_commands)
+        workspace_write = self._workspace_write_probe(self.args.reviewer_vendor)   # v3.6.0
+        prompt = self._probe_prompt(self.args.reviewer_vendor, allowed_command, attempts, sandbox_probe_commands, workspace_write and workspace_write[1])
         base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'probe_tracked_file': tracked, 'reviewer_flags': self.reviewer_flags(),
                        'reviewer_flags_digest': self.reviewer_flags_digest(),
                        'gate_flags': self.gate_flags(), 'gate_flags_digest': self.gate_flags_digest(),
@@ -9618,8 +9694,10 @@ class Coordinator:
             self.render(result, 'permission-probe', 'PROBE')
             claimed = result['answer'].get('self_run_evidence', [])
             evidence = result['answer'].get('observed_commands', [])
-            unchanged = result['snapshot'] == snapshot
+            written = self._workspace_write_probe_failure(workspace_write, evidence)   # removes the file before the snapshot compare
+            unchanged = (git_snapshot(self.workspace)[0] if workspace_write else result['snapshot']) == snapshot
         except Exception as exc:
+            if workspace_write: workspace_write[0].unlink(missing_ok=True)
             escaped_probe_targets = []
             cleaned_probe_targets = []
             remaining_probe_targets = []
@@ -9674,8 +9752,9 @@ class Coordinator:
             self.write_usage()
             return False
         allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.reviewer_vendor == 'codex')
-        miss = self._scratch_probe_failure(result, evidence) if self.args.reviewer_vendor == 'codex' else ''
-        failures += [miss] if miss else []
+        scratch_miss = self._scratch_probe_failure(result, evidence) if self.args.reviewer_vendor == 'codex' else ''
+        failures += [reason for reason in (scratch_miss, written) if reason]
+        miss = scratch_miss or written
         failures += (escapes := self._codex_escape_failures(codex, result) + (tracked_escape := self._tracked_file_escape(tracked)))
         miss = miss or ', '.join(escapes)
         try:
@@ -10183,7 +10262,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--scope-change', action='store_true', help='end this run and print a successor command; the note text comes from --text or --file')   # V325-NOTE
     p.add_argument('--quiet-progress', action='store_true', help='suppress the per-event progress lines (the final status line and RUN/progress.jsonl stay)')
     p.add_argument('--brief', nargs='?', type=int, const=20, default=None, metavar='N', help='status: print the last N (default 20) progress events instead of state.json')
-    p.set_defaults(allowed_models=None)
+    p.set_defaults(allowed_models=None, extra_writable_roots=[])   # profile-only keys
     return p
 
 
@@ -10195,6 +10274,7 @@ CONFIGURABLE_DESTS = {
     'reviewer_command', 'codex_bin', 'claude_bin', 'gemini_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_quality_polish', 'auto_commit', 'external_delivery',
     'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
+    'extra_writable_roots',
 }
 
 
@@ -10530,6 +10610,11 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
                              'or use an operator --config outside the workspace, run dir and author temp')
         if key == 'allowed_models':
             p.set_defaults(allowed_models=value)
+            continue
+        if key == 'extra_writable_roots':   # checked against the run dir when the run starts
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError('config extra_writable_roots must be an array of strings')
+            p.set_defaults(extra_writable_roots=value)
             continue
         action = actions[key]
         if action.dest in ('reviewer_command', 'docs_allowlist'):

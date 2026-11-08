@@ -188,7 +188,7 @@ class CodexWindowsSandboxTests(unittest.TestCase):
                   '-c', 'model_reasoning_effort="high"', '-c', 'approval_policy="never"', '-c', 'features.hooks=false',
                   '-c', 'features.plugins=false']
         self.assertEqual(self.command('reviewer', False),
-                         [*common, *rc.codex_readonly_profile_args(), '--ignore-rules', '-'])
+                         [*common, *rc.codex_reviewer_sandbox_args(), '--ignore-rules', '-'])
         self.assertEqual(self.command('author', False), [*common, '--author-sandbox', '--ignore-rules', '-'])
         for role in self.ROLES:
             self.assertNotIn('windows.sandbox="elevated"', self.command(role, False))

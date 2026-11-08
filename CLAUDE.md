@@ -117,7 +117,8 @@ The coordinator (`paired_session/coordinator.py`) starts every role as its own C
 role's sandbox and a JSON answer schema:
 - author, finisher, docs writer and the POLISH-Q writers write in the workspace; the code-simplifier writer inlines
   `agents/code-simplifier.md`;
-- the reviewer (persistent across rounds), the shadow, the gate and the stage reviewers are read-only; the POLISH-Q
+- the reviewer (persistent across rounds), the shadow, the gate and the stage reviewers do not change the workspace
+  (a Codex one runs workspace-write and the post-turn guard undoes tracked and non-ignored changes); the POLISH-Q
   specialists inline their `agents/<name>.md` body (`_specialist_turn`);
 - `agents/executor.md` and `agents/reviewer.md` are hashed into the frozen role manifest, and every `agents/*.md` is
   hashed: changing one aborts resume of an in-flight run, so agent edits ship only in a release that says so.

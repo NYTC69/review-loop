@@ -23,6 +23,16 @@ def readonly_profile(args):
     except ValueError: return {}
 
 
+def codex_sandbox(args):
+    """v3.6.0: what a Codex argv's sandbox lets a turn write: the workspace (sandbox_mode="workspace-write") and $TMPDIR (workspace-write
+    without exclude_tmpdir_env_var, or a permission profile whose :tmpdir is write)."""
+    configs = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('-c', '--config')]
+    workspace = 'sandbox_mode="workspace-write"' in configs
+    return {'workspace_write': workspace,
+            'tmpdir_write': (workspace and 'sandbox_workspace_write.exclude_tmpdir_env_var=true' not in configs)
+                            or readonly_profile(args).get(':tmpdir') == 'write'}
+
+
 def long_command(events, command):
     """FIELD-20: FAKE_CODEX_LONG=yield|started-only|killed makes `command` outlive exec_command's first yield; it then completes
     with exit 0 (the model polled), never completes (killed at the turn end), or completes with -1 (killed)."""
@@ -518,36 +528,31 @@ def main():
             command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
                                'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
                               for command in [allowed, *attacks] if command]
-            for row in command_events:   # b296-f1f/g: as in the field (codex-cli 0.160.0, P1/P2): rm of a file missing on disk is "No such
-                if row['command'].startswith('rm '):   # file", not a denial; checkout takes index.lock before it checks the pathspec, so a working
-                    name = shlex.split(row['command'])[-1]   # sandbox denies it whether or not the name is tracked or on disk
-                    if not os.path.lexists(name): row.update(output=f'rm: {name}: No such file or directory\n')
-                elif row['command'].startswith('git --literal-pathspecs checkout -- '):
-                    row.update(exit_code=128, output=f"fatal: Unable to create '{Path.cwd() / '.git' / 'index.lock'}': Operation not permitted\n")
             for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
                 if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
                     command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
             command_events = long_command(command_events, allowed)
-            fs = readonly_profile(args)   # b295-f1: the read-only profile in this argv decides the scratch and workspace writes
+            sandbox = codex_sandbox(args)   # the sandbox in this argv decides the scratch and workspace writes
             if 'Scratch write expected to succeed:\n' in prompt:
                 scratch = prompt.split('Scratch write expected to succeed:\n', 1)[1].splitlines()[0]
-                writable = fs.get(':tmpdir') == 'write' and os.environ.get('TMPDIR')
+                writable = sandbox['tmpdir_write'] and os.environ.get('TMPDIR')
                 if writable and not os.environ.get('FAKE_CODEX_SKIP_SCRATCH'):
                     (Path(os.environ['TMPDIR']) / 'paired-session-scratch-probe').write_text('probe')
                 command_events.append({'command': scratch, 'exit_code': 0 if writable else 1,
+                                       'output': '' if writable else 'fake: Operation not permitted'})
+            if 'Workspace write expected to succeed:\n' in prompt:   # v3.6.0
+                command = prompt.split('Workspace write expected to succeed:\n', 1)[1].splitlines()[0]
+                writable = sandbox['workspace_write'] and not os.environ.get('FAKE_CODEX_WORKSPACE_READONLY')
+                if writable: Path(shlex.split(command)[-1]).write_text('probe')
+                command_events.append({'command': command, 'exit_code': 0 if writable else 1,
                                        'output': '' if writable else 'fake: Operation not permitted'})
             for command in attacks:   # b296-f1 R1: a profile that lets the escape writes or the hard link land (selected by substring)
                 if not os.environ.get('FAKE_CODEX_PROBE_ESCAPE') or os.environ['FAKE_CODEX_PROBE_ESCAPE'] not in command:
                     continue
                 words = shlex.split(command.replace('$TMPDIR', os.environ.get('TMPDIR', '')))
                 if words[0] == 'ln': os.link(words[1], words[2])
-                elif words[0] == 'rm': Path(words[1]).unlink()   # b296-f1f: the tracked-file delete lands
-                elif words[0] == 'git': subprocess.run(words, check=True, capture_output=True)   # b296-f1g: the real checkout runs
                 elif command.startswith('printf probe > '): Path(words[-1]).write_text('probe')
                 command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] == command else row for row in command_events]
-            if fs.get(':workspace_roots', {}).get('.') == 'write':   # a profile that grants the workspace: the attacks land
-                (Path.cwd() / 'forbidden-probe').write_text('x\n')
-                command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] in attacks else row for row in command_events]
     else:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')

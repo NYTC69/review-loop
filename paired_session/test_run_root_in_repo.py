@@ -101,7 +101,7 @@ class RunRootTests(unittest.TestCase):
             self.assertEqual(env['TMP'], env['TMPDIR'])
             self.assertEqual(env['TEMP'], env['TMPDIR'])
             self.assertFalse(Path(env['TMPDIR']).exists())
-            trc.assert_codex_readonly_profile(self, turn['command'])
+            trc.assert_codex_reviewer_sandbox(self, turn['command'])
         co = rc.Coordinator(rc.parser().parse_args(self.command('--reviewer-vendor', 'claude', '--gate-vendor', 'codex', '--polish-round', 'off')[2:]))
         self.assertFalse(scratch.exists())
         self.assertEqual(co.author_temp_dir, scratch / 'author-tmp')

@@ -56,22 +56,20 @@ def unique_json_object(pairs):
     return result
 
 
-def assert_codex_readonly_profile(case, argv):
-    """b295-f1 (authorized replacement for `sandbox_mode="read-only"`): exactly one read-only permission profile: root read, workspace
-    read, only :tmpdir writable, network off, no sandbox_mode and no other permissions key. b296-f1e: `codex exec` has no -P, so the
-    profile is selected by exactly one `default_permissions` config and no -P/--permission-profile appears anywhere."""
+def assert_codex_reviewer_sandbox(case, argv, extra=()):
+    """v3.6.0 (owner decision; replaces the read-only permission profile): a Codex reviewer-type argv carries the author's sandbox
+    shape exactly once: workspace-write, the run's extra writable roots, $TMPDIR writable, /tmp excluded, network off; no permission
+    profile (`default_permissions`, `permissions.*`, -P) and --ignore-rules."""
     configs = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value in ('-c', '--config')]
-    case.assertFalse([value for value in configs if value.startswith(('sandbox_mode', 'sandbox_workspace_write'))], argv)
+    sandbox = [value for value in configs if value.startswith(('sandbox_mode', 'sandbox_workspace_write'))]
+    case.assertEqual(sandbox, ['sandbox_mode="workspace-write"',
+                               'sandbox_workspace_write.writable_roots=' + json.dumps([str(root) for root in extra]),
+                               'sandbox_workspace_write.exclude_tmpdir_env_var=false',
+                               'sandbox_workspace_write.exclude_slash_tmp=true',
+                               'sandbox_workspace_write.network_access=false'], argv)
+    case.assertFalse([value for value in configs if value.startswith(('default_permissions', 'permissions.'))], argv)
     case.assertFalse([value for value in argv if value.startswith(('-P', '--permission-profile'))], argv)
-    case.assertEqual([value for value in configs if value.startswith('default_permissions')],
-                     ['default_permissions="paired_session_readonly"'], argv)
-    name = 'paired_session_readonly'
-    granted = [value for value in configs if value.startswith('permissions.')]
-    case.assertEqual(len(granted), 2, argv)
-    filesystem = json.loads(granted[0].split('=', 1)[1].replace('"=', '":'))
-    case.assertEqual((granted[0].split('=', 1)[0], filesystem), (f'permissions.{name}.filesystem',
-                     {':root': 'read', ':tmpdir': 'write', ':workspace_roots': {'.': 'read'}}), argv)
-    case.assertEqual(granted[1], f'permissions.{name}.network.enabled=false', argv)
+    case.assertIn('--ignore-rules', argv)
 
 
 def allowed_tool_values(command):
@@ -3064,7 +3062,7 @@ sys.exit(result.returncode)
         for role in ('reviewer', 'shadow', 'gate', 'probe'):
             command = co._codex_command(role, schema, True)
             self.assertIn('--ignore-rules', command)
-            assert_codex_readonly_profile(self, command)                     # b295-f1: was assertIn('sandbox_mode="read-only"', command)
+            assert_codex_reviewer_sandbox(self, command)                     # v3.6.0: the workspace-write reviewer sandbox
             self.assertIn('approval_policy="never"', command)
         self.assertIn('--ignore-rules', co._codex_command('author', schema, False))
         self.assertTrue(co.reviewer_flags()['ignore_execpolicy_rules'])
@@ -3208,7 +3206,7 @@ sys.exit(result.returncode)
         gate = co.command('gate', schema, True)
         self.assertIn('acceptEdits', author)
         self.assertEqual(gate[0], 'codex')
-        assert_codex_readonly_profile(self, gate)                            # b295-f1: was assertIn('sandbox_mode="read-only"', gate)
+        assert_codex_reviewer_sandbox(self, gate)                            # v3.6.0: the workspace-write reviewer sandbox
         self.assertNotIn('resume', gate)
 
     def test_workitem_reviewer_allowlist_change_holds_without_widening(self):
@@ -4091,7 +4089,7 @@ sys.exit(result.returncode)
         self.assertTrue(any(row['command'] == "sed -n '1,20p' tracked.txt"
                             for row in result['answer']['observed_commands']))
         command = co.state['turns'][-1]['command']
-        assert_codex_readonly_profile(self, command)                         # b295-f1: was assertIn('sandbox_mode="read-only"', command)
+        assert_codex_reviewer_sandbox(self, command)                         # v3.6.0: the workspace-write reviewer sandbox
         self.assertIn('--ignore-rules', command)
         with patch.dict(os.environ, {'FAKE_PLAN_REVIEWER_MUTATE': '1'}):
             with self.assertRaisesRegex(RuntimeError, 'reviewer mutated workspace'):
