@@ -25,7 +25,7 @@ Categories A and B are mandatory. Category C was dropped: first from the default
   without `safety_mode` (made before D-EFF) resumes in the default mode.
 - `"safety_mode": "efficient"` stays accepted; any other value is refused.
 - `permission-probe` is refused before any state, lease or run dir: `REFUSED: permission-probe was removed in v3.7.0; runs
-  do not need it` (exit 2).
+  do not need it (use resume to continue a held run)` (exit 2).
 
 ## 2. CLI flags
 

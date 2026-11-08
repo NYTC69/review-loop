@@ -1,5 +1,23 @@
 # Changelog
 
+### v3.7.0：去掉 `permission-probe` 和 strict 模式
+
+Yuan 2026-11-08 决定：核心目标是好用，默认 agent 不会恶意改动。v3.6.0 起审查方已经可以写工作区，默认模式本来也不需要 probe，所以 probe 和 strict 模式整个去掉。
+
+**改动**
+- `permission-probe` 动作去掉：调用时直接拒绝，提示 run 不需要它、被 HOLD 的 run 用 resume 继续。`--skip-probe` 保留为隐藏的空操作；`--accept-unverified-codex-cli` 跟 v3.6.0 默认模式一样只打 NOTE；`--accept-probe-skip`、`--accept-unverified-claude-author` 照旧拒绝。旧脚本照常能跑。
+- strict 模式去掉：`--strict` 和 `safety_mode: strict` 只打一条 NOTE，按默认模式继续；以 strict 模式保存的 run 续跑时改用默认模式。
+- 以前 resume 遇到操作员程序或 PATH 变化、冻结的 gate prompt 变化、lifecycle-off 的 reviewer 命令块变化时会 HOLD，要求先跑 probe 重新冻结；现在自动重新冻结，打一条 NOTE 后继续。冻结的角色派发配置变化仍然 HOLD。
+- 冻结的角色清单与 v3.6.0 逐字节相同，所以 v3.6.0 开的 run（以及经 v3.6.0 迁移的 v3.5.x run）可以直接续跑。旧 run 里保存的 probe 状态字段照常读取；中断的旧 probe turn 用 `resume --retry-uncertain` 了结；归档清理也会清掉旧 probe 角色的临时目录。
+- 提示信息、文档、skill 和 lint needle 不再让人跑 probe；只测 probe 和 strict 的测试模块删除，钉旧行为的断言按意图更新。
+- 测试辅助：`test_detach` 在沙箱不让启动 `ps` 时改用 macOS libproc 判断进程状态。
+
+**检查**
+- paired-session run（Opus 作者、Sol 审查和 gate）：EXEC 3 轮后 APPROVE，gate APPROVE。
+- Opus 终审（临时 clone）APPROVE；按它的两条非阻塞意见补了 5884916（`--accept-unverified-codex-cli` 恢复为 NOTE、probe 拒绝提示加下一步），Codex Sol 审查 APPROVE。
+- CI d11：a4a9257 和 5884916 都全绿（runs 42493734770、42498271617）。
+- 真实 run（macOS）：新代码上开的 run 跑到 DONE；v3.6.0 开的 run 中途停掉后，在新代码上续跑，自动重新冻结 gate prompt 并跑到 DONE；`permission-probe` 被拒绝，`--strict` 只打 NOTE。
+
 ### v3.6.0：Codex 审查类角色可以写工作区；所有角色开网络；新增 `extra_writable_roots`
 
 Yuan 2026-11-07 决定：默认 agent 不作恶，审查方的只读沙箱属于过度加固，去掉。起因是现场问题（range-build-tool，Windows 原生，Rust/Tauri）：配置的测试在主机上通过，在 Codex 审查方的只读沙箱里失败，因为测试要写构建输出和缓存。v3.5.3 用操作员验证记录绕过了这个问题；这个版本从根上解决。

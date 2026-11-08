@@ -8939,8 +8939,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--polish', action='store_true',
                    help='removed in 3.0.0; retained only to report a refusal')
     p.add_argument('--skip-probe', action='store_true', help=argparse.SUPPRESS)   # v3.7.0: accepted and ignored (there is no probe)
-    p.add_argument('--accept-unverified-codex-cli', action='store_true', help=argparse.SUPPRESS)   # removed in v3.7.0 (refuse_removed_options)
-    p.add_argument('--accept-unverified-claude-author', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--accept-unverified-codex-cli', action='store_true', help=argparse.SUPPRESS)   # removed in v3.7.0: a NOTE and no-op (CODEX_CLI_WAIVER_NOTE)
+    p.add_argument('--accept-unverified-claude-author', action='store_true', help=argparse.SUPPRESS)   # removed in v3.7.0 (refuse_removed_options)
     p.add_argument('--accept-probe-skip', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--reason', help='operator reason for acceptance or withdraw-findings')
     p.add_argument('--text', help='operator note text for note or reject, including --scope-change')   # V325-NOTE
