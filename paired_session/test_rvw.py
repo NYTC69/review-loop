@@ -1,6 +1,6 @@
 """v3.6.0 (owner decision): Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers and their probes) run with the Codex
 author's sandbox shape (workspace-write, $TMPDIR writable, /tmp excluded, network off), and the optional profile key
-extra_writable_roots adds writable roots for the Codex author and those roles alike. The post-turn guard still undoes a tracked
+extra_writable_roots adds writable roots for the Codex author and those roles alike, and for every Claude role's Bash sandbox. The post-turn guard still undoes a tracked
 change and re-dispatches once; ignored paths stay free for them.
 
 Fake CLIs only: these tests prove the coordinator's argv, flags, config and guard logic, not that `codex exec` honours the sandbox.
@@ -103,6 +103,16 @@ class ExtraWritableRootsTests(Harness):
         self.assertIn('sandbox_workspace_write.writable_roots=' + json.dumps([str(co.author_temp_dir), root]), co.command('author', schema, True))
         self.assertEqual(co.reviewer_flags()['codex_reviewer_sandbox']['sandbox_workspace_write.writable_roots'], [root])
 
+    def test_the_roots_reach_the_claude_bash_sandbox_of_every_role_and_are_absent_by_default(self):
+        root = str(self.cargo.resolve())
+        co = self.profiled([str(self.cargo)])
+        for role in ('author', *REVIEWER_ROLES):
+            with self.subTest(role=role):
+                self.assertEqual(co._claude_sandbox_settings(role)['sandbox']['filesystem']['allowWrite'], [root])
+        self.h.run_dir = self.h.root / 'run-plain'
+        plain = self.profiled([])
+        self.assertNotIn('allowWrite', plain._claude_sandbox_settings('author')['sandbox']['filesystem'])   # default settings unchanged
+
     def test_a_bad_entry_is_refused_at_start_with_a_clear_message(self):
         a_file = self.h.root / 'a-file'
         a_file.write_text('x')
@@ -119,6 +129,8 @@ class ExtraWritableRootsTests(Harness):
             rc.validate_extra_writable_roots([str(inside)], self.h.root / 'run-in')
         with self.assertRaisesRegex(ValueError, 'extra_writable_roots entry is inside the run directory'):
             rc.validate_extra_writable_roots([str(inside.parent)], self.h.root / 'run-in')
+        with self.assertRaisesRegex(ValueError, 'extra_writable_roots entry contains the run directory'):
+            rc.validate_extra_writable_roots([str(self.h.root)], self.h.root / 'run-in')
         for bad in ('not-a-list', [1]):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'config extra_writable_roots must be an array of strings'):
                 self.profiled(bad)

@@ -196,7 +196,7 @@ pattern of `review_only`):
 - **Category B:** no writer exists, so the author sandbox is unused. Roles keep their flags, and those differ by vendor:
   - Claude roles get the credential-path deny (`~/.config/gh`, `~/.ssh`, `~/.npmrc`, `~/.netrc` and others;
     C:2392-2419, C:2404).
-  - Codex read-only roles run with `":root"="read"` (C:540): they can read the whole filesystem, credential files and
+  - Codex reviewer-type roles run workspace-write (v3.6.0): they can read the whole filesystem, credential files and
     other repositories included. With the default roles that is the gate (ADR-10). In efficient mode the evidence
     guard only logs (PSE).
   - A PR is untrusted content. A prompt injection in it can ask a role to quote a file it read into a finding, and the

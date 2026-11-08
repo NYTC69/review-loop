@@ -1109,6 +1109,8 @@ def validate_extra_writable_roots(values, run_dir: Path) -> list[str]:
         resolved = path.resolve()
         if resolved == run_dir or run_dir in resolved.parents:
             raise ValueError(f'extra_writable_roots entry is inside the run directory: {value}')
+        if resolved in run_dir.parents:
+            raise ValueError(f'extra_writable_roots entry contains the run directory: {value}')
         if str(resolved) not in roots:
             roots.append(str(resolved))
     return roots
@@ -3474,6 +3476,7 @@ class Coordinator:
                     'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path(role))] if role in ('probe', 'gate-probe') and self._probe_sandbox_commands else [])
                                  + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else [])   # the probe's context; the real one is under run_dir
                                  + ([str(probe_cache_root())] if role == 'author' and ((r := probe_cache_root().resolve()) == (w := self.workspace.resolve()) or r in w.parents or w in r.parents) else []),   # P0-4b: an overlapping workspace would make the cwd-bound Bash sandbox cover the cache
+                    **({'allowWrite': extra} if (extra := self._extra_writable_roots()) else {}),   # v3.6.0: the run's extra_writable_roots, as for Codex roles; absent by default
                 },
             },
             'permissions': {
@@ -6481,7 +6484,7 @@ class Coordinator:
         return self.scratch_base if self.scratch_base != self.run_dir else self.run_dir.parent
 
     def _scratch_root(self, role: str) -> Optional[Path]:
-        """b295-f1 FIELD-1: a fresh 0700 temp root under run_dir/role-tmp for one Codex read-only dispatch; never the workspace, never the
+        """b295-f1 FIELD-1: a fresh 0700 temp root under run_dir/role-tmp for one Codex reviewer-type dispatch; never the workspace, never the
         author's roots (workspace, author-tmp), never shared. Under the run lease one dispatch runs at a time, so a leftover is stale.
         b296-f1b: role-tmp must be a real 0700 directory we own (never a link), and everything is created and removed through it no-follow."""
         if role not in READONLY_SCRATCH_ROLES or self._role_vendor(role) not in ('codex', 'gemini'):   # ADR-21 G5: agy as Codex
@@ -9420,7 +9423,7 @@ class Coordinator:
         return prompt
 
     def _codex_escape_targets(self) -> dict:
-        """b296-f1 R1 M1/M2: what a Codex read-only probe turn must be refused: writes to /tmp, the user temp dir, the run dir, role-tmp beside
+        """b296-f1 R1 M1/M2: what a Codex reviewer-type probe turn must be refused (outside its writable roots): writes to /tmp, the user temp dir, the run dir, role-tmp beside
         its own scratch and the context, and a hard link from a run-dir file into its own scratch ({label: (path, exact command)})."""
         tag = uuid.uuid4().hex
         name = 'paired-session-codex-escape-' + tag
@@ -10720,7 +10723,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
               'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
     if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.scratch_base)):   # FIELD-28, a warning only
         print(f'WARNING: the run directory {co.run_dir} is inside the git repository {repo}; tools and test suites that refuse '
-              'scratch space inside a repository may fall back to /tmp, which the Codex read-only sandbox denies. Put the run root '
+              'scratch space inside a repository may fall back to /tmp, which the Codex sandbox excludes. Put the run root '
               'outside any repository.', file=sys.stderr)
     if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
             and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author

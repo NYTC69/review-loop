@@ -13,9 +13,11 @@
 # reviewer_vendor / gate_vendor only, with reviewer_model / gate_model required; see README.md (Configuration).
 # Profile key extra_writable_roots (paired-session.json or --config, not this file; default []): absolute paths of existing
 # directories outside the run directory that the Codex author and the Codex reviewer-type roles (reviewer, shadow, gate,
-# stage reviewers, probes) may also write, for build caches outside the repository, e.g.
+# stage reviewers, probes) may also write, and that every Claude role's Bash sandbox allows (allowWrite; native Windows has
+# no Claude Bash sandbox), for build caches outside the repository, e.g.
 # "extra_writable_roots": ["/Users/me/.cargo"]. Those roles already write the workspace and their own $TMPDIR. A relative,
-# missing or non-directory path, or one inside the run directory, is refused at start; the list is fixed at run start.
+# missing or non-directory path, or one inside or containing the run directory, is refused at start; the list is fixed at
+# run start, so each root must stay in place until the run ends.
 # Entry for fresh `/review-loop <work item>` (Claude) or the review-loop skill (Codex); default paired-session from v2.10.0.
 # "paired-session" (exact values only: since v2.13.0 "legacy" is refused, and anything else is warned about and treated as absent).
 # Fresh work, an existing plan (as the work item) and review-only requests (run --review-only) are routed; a legacy
