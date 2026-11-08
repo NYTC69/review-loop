@@ -118,30 +118,20 @@ class RecoveryHintTests(unittest.TestCase):
                 self.run_dir = self.root / ('terminal-' + route)
                 self.rejected_tree(route, terminal=True)
 
-    def test_saved_off_voided_probe_waiver_recommends_only_permission_probe(self):
-        # A format-2 run from before removal could record a waiver. Create it through
-        # the old fake-CLI surface, then resume through today's public surface.
+    def test_a_saved_probe_waiver_is_ignored_on_resume(self):   # v3.7.0: a waiver recorded by an earlier release names nothing
         flags = ('--lifecycle-mode', 'off', '--gate-vendor', 'claude', '--shadow', 'off')
-        with patch.dict(os.environ, {'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': '1'}):
-            held = self.run_coordinator(*flags, '--accept-probe-skip', '--reason', 'old operator waiver',
-                                        '--stop-after-plan')
+        held = self.run_coordinator(*flags, '--stop-after-plan')
         self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
-        self.assertIn('probe_skip_override', self.state())
+        state = self.state()
+        state['probe_skip_override'] = {'reason': 'old operator waiver', 'actor': 'operator', 'voided': {'reason': 'flags changed'}}
+        (self.run_dir / 'state.json').write_text(json.dumps(state))
         command = self.command(*flags)
         command[2] = 'resume'
         resumed = rc.subprocess.run(command, cwd=self.root, text=True, capture_output=True,
                                     env={**os.environ, 'FAKE_SECRET': 'changed credential environment'})
-        self.assertEqual(resumed.returncode, 2, resumed.stdout + resumed.stderr)
-        self.assertIn('the earlier --accept-probe-skip is void', resumed.stdout)
-        self.assertIn('; run permission-probe)', resumed.stdout)
-        self.assertNotIn('pass --accept-probe-skip', resumed.stdout)
-        self.assertNotIn('--reason TEXT again', resumed.stdout)
-        # The removed flag above names the historical waiver, not a recommendation. Take the hint from the
-        # REFUSED line (the last occurrence): the progress line before it now shows the reason's head (V319-REASON).
-        hint = resumed.stdout.rsplit('; run permission-probe)', 1)[1]
-        self.assertIn('run permission-probe before continuing', hint)
-        self.assert_public_hint(hint, [['permission-probe']])
-
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        for text in ('permission-probe', 'accept-probe-skip', 'is void'):
+            self.assertNotIn(text, resumed.stdout)
 
 if __name__ == '__main__':
     unittest.main()

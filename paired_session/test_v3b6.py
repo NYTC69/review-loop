@@ -22,7 +22,7 @@ class OldStateGateTests(unittest.TestCase):
         path = self.run_dir / 'state.json'
         path.write_text(json.dumps(OLD))
         before = path.read_bytes()
-        for action in ('resume', 'accept', 'reject', 'note', 'abort', 'attach-verification', 'permission-probe'):
+        for action in ('resume', 'accept', 'reject', 'note', 'abort', 'attach-verification'):
             with self.subTest(action=action):
                 result = self.cli(action)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)

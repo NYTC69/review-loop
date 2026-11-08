@@ -4,7 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
-import sys
+import os
 import unittest
 from unittest import mock
 
@@ -49,50 +49,33 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_waivers_gate_off_and_resume_polish_are_refused_before_state(self):
         cases = ((('--accept-unverified-claude-author', '--reason', 'owner opt-in'),
-                  'worktree lifecycle refuses --accept-unverified-claude-author'),
-                 (('--accept-probe-skip', '--reason', 'owner accepted'), 'worktree lifecycle refuses --accept-probe-skip'),
+                  'removed user option: --accept-unverified-claude-author; removed in v3.7.0'),
+                 (('--accept-probe-skip', '--reason', 'owner accepted'), 'removed user option: --accept-probe-skip; removed in v3.7.0'),
                  (('--adversarial-gate', 'off'), 'lifecycle refuses --adversarial-gate off'))
         for extra, message in cases:
-            with self.subTest(extra=extra):
+            internal = '0' if extra[0].startswith('--accept') else '1'   # --adversarial-gate off reaches the lifecycle check
+            with self.subTest(extra=extra), mock.patch.dict(os.environ, {'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': internal}):
                 with self.assertRaisesRegex(ValueError, message):
                     rc.Coordinator(self.args(*extra))
                 self.assertFalse((self.run_dir / 'state.json').exists())
         with self.assertRaisesRegex(ValueError, 'lifecycle refuses resume --polish'):
             rc.Coordinator(self.args('--polish', action='resume'))
 
-    def test_d7_refuses_waivers_only_in_strict_mode(self):   # D-EFF: an efficient run needs no waiver and records none
+    def test_a_worktree_run_records_no_waiver_with_or_without_strict(self):   # v3.7.0: the old fixtures' flags are no-ops
         waivers = ('--accept-unverified-claude-author', '--accept-probe-skip', '--reason', 'owner opt-in')
-
-        def default_mode(*extra, action='run'):   # neither --strict nor a profile mode: the product default decides
-            args = self.args(*extra, action=action)
-            args.safety_mode = None
-            return args
-        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():
-            pin = mock.patch.object(module, 'DEFAULT_SAFETY_MODE', 'efficient')
-            pin.start()
-            self.addCleanup(pin.stop)
-        argv = [a for a in self.command('--lifecycle-mode', 'on', *waivers) if a != '--strict'][2:]
-        out = io.StringIO()
-        with mock.patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
-                mock.patch.object(rc.Coordinator, 'drive', return_value='DONE'), contextlib.redirect_stdout(out):
-            code = rc.main(argv)   # main() is where a strict run would record the waivers
-        self.assertEqual(code, 0, out.getvalue())
-        self.assertIn('needs no probe waiver', out.getvalue())
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual((state['config']['safety_mode'], state['config']['lifecycle_mode']), ('efficient', 'on'))
-        self.assertFalse({'claude_author_override', 'probe_skip_override'} & state.keys())
-        rc.Coordinator(default_mode(*waivers, action='resume'))   # the saved efficient run is not refused either
-        self.run_dir = self.root / 'strict-run'
-        rc.Coordinator(self.args())   # --strict from the harness command
-        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-unverified-claude-author'):
-            rc.Coordinator(default_mode(*waivers, action='resume'))   # a saved strict run keeps D-7 without --strict
-        self.run_dir = self.root / 'profile-strict-run'
-        profile = self.root / 'strict-profile.json'
-        profile.write_text(json.dumps({'safety_mode': 'strict'}))
-        argv = [a for a in self.command('--lifecycle-mode', 'on', '--config', str(profile), *waivers) if a != '--strict'][2:]
-        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-unverified-claude-author'):
-            rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))   # the operator profile selects strict
-        self.assertFalse((self.run_dir / 'state.json').exists())
+        for extra in ((), ('--strict',)):
+            with self.subTest(extra=extra):
+                self.run_dir = self.root / ('waivers-' + str(len(extra)))
+                argv = self.command('--lifecycle-mode', 'on', *extra, *waivers)[2:]
+                out = io.StringIO()
+                with mock.patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
+                        mock.patch.object(rc.Coordinator, 'drive', return_value='DONE'), contextlib.redirect_stdout(out):
+                    code = rc.main(argv)
+                self.assertEqual(code, 0, out.getvalue())
+                state = json.loads((self.run_dir / 'state.json').read_text())
+                self.assertEqual((state['config']['safety_mode'], state['config']['lifecycle_mode']), ('efficient', 'on'))
+                self.assertFalse({'claude_author_override', 'probe_skip_override'} & state.keys())
+                rc.Coordinator(self.args(*waivers, action='resume'))   # nor refused on resume
 
     def test_operator_profile_enables_and_author_writable_profiles_stay_refused(self):
         operator = self.root / 'operator.json'
@@ -110,48 +93,24 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 explicit = self.command('--config', str(profile), '--lifecycle-mode', 'on')[2:]
                 self.assertEqual(rc.configure_parser(rc.parser(), explicit).parse_args(explicit).lifecycle_mode, 'on')
 
-    def test_fake_format_and_recorded_waiver_states_are_refused_on_the_real_path(self):
+    def test_fake_format_is_refused_and_recorded_waivers_are_ignored_on_the_real_path(self):
         co = rc.Coordinator(self.args())
-        for change, message in ((lambda state: state['lifecycle'].pop('format'), 'not a worktree-lifecycle run'),
-                                (lambda state: state.update(probe_skip_override={'actor': 'operator'}),
-                                 'recorded author waiver or probe-skip acceptance')):
-            with self.subTest(message=message):
-                saved = json.loads(co.state_path.read_text())
-                change(saved)
-                co.state_path.write_text(json.dumps(saved))
-                with self.assertRaisesRegex(ValueError, message):
-                    rc.Coordinator(self.args(action='resume'))
-                co.save()
+        saved = json.loads(co.state_path.read_text())
+        saved['lifecycle'].pop('format')
+        co.state_path.write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, 'not a worktree-lifecycle run'):
+            rc.Coordinator(self.args(action='resume'))
+        co.save()
+        saved = json.loads(co.state_path.read_text())   # v3.7.0: a waiver recorded by an earlier release is tolerated
+        saved.update(probe_skip_override={'actor': 'operator'}, claude_author_override={'actor': 'operator'})
+        co.state_path.write_text(json.dumps(saved))
+        resumed = rc.Coordinator(self.args(action='resume'))
+        self.assertEqual(resumed.state['lifecycle']['format'], 'worktree')
 
-    # --- INT-2c: D-7 is strict only (D-EFF, docs/efficient-mode.md §6) ---------------------------------------------------------
     def efficient_command(self, *extra, action='run'):
-        command = [arg for arg in self.command('--lifecycle-mode', 'on', *extra) if arg != '--strict']
+        command = self.command('--lifecycle-mode', 'on', *extra)
         command[2] = action
         return command
-
-    def test_a_strict_worktree_run_refuses_a_waiver_on_resume_too(self):
-        rc.Coordinator(self.args())
-        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-probe-skip'):
-            rc.Coordinator(self.args('--accept-probe-skip', '--reason', 'owner accepted', action='resume'))
-
-    def test_an_efficient_worktree_run_notes_a_waiver_and_records_none(self):
-        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():
-            pin = mock.patch.object(module, 'DEFAULT_SAFETY_MODE', 'efficient')   # the product default, which the harness pins
-            pin.start()
-            self.addCleanup(pin.stop)
-        for action, flag in (('run', '--accept-probe-skip'), ('resume', '--accept-unverified-claude-author')):
-            with self.subTest(action=action), mock.patch.object(rc.Coordinator, 'drive', return_value='DONE'), \
-                    mock.patch.object(rc.Coordinator, 'resume', return_value='DONE'), \
-                    mock.patch('sys.stdout', new_callable=io.StringIO) as out:
-                code = rc.main(self.efficient_command(flag, '--reason', 'checked', action=action)[2:])
-                self.assertEqual(code, 0, out.getvalue())
-                self.assertIn('needs no probe waiver', out.getvalue())
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual((state['config']['safety_mode'], state['lifecycle']['format']), ('efficient', 'worktree'))
-        self.assertFalse({'probe_skip_override', 'claude_author_override'} & state.keys())
-        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-probe-skip'):   # no turn yet: --strict may upgrade
-            rc.Coordinator(self.args('--accept-probe-skip', '--reason', 'checked'))
-        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['config']['safety_mode'], 'efficient')   # refused: unchanged
 
     def test_an_efficient_worktree_run_needs_no_probe_and_reaches_done(self):
         result = rc.subprocess.run(self.efficient_command(), cwd=self.root, text=True, stdout=rc.subprocess.PIPE,
@@ -961,9 +920,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('no delivery baseline (the run started before W3a)', co._security_preflight('w-SECURITY-0-1')['reason'])
 
     def test_the_delivery_baseline_is_captured_when_the_state_is_created(self):
-        probe = rc.Coordinator(self.args(action='permission-probe'))   # before any probe turn
-        baseline = probe.state['lifecycle']['security_baseline']
-        self.assertEqual((probe.state['sequence'], Path(baseline['path']).parent), (0, probe.evidence))
+        started = rc.Coordinator(self.args())   # before any turn
+        baseline = started.state['lifecycle']['security_baseline']
+        self.assertEqual((started.state['sequence'], Path(baseline['path']).parent), (0, started.evidence))
         self.assertEqual(hashlib.sha256(Path(baseline['path']).read_bytes()).hexdigest(), baseline['sha256'])
         self.run_dir = self.root / 'refused'
         failed = rc.subprocess.CompletedProcess([], 3, '', '{"error": "nested repository", "kind": "capture"}')
@@ -1521,11 +1480,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((co.state['hold_reason'], co.state['round_limit_hold']['hold_reason']),
                          ('EXEC round limit reached', 'EXEC round limit reached'))
 
-    def test_saved_config_paths_still_refuse_waivers_and_pre_lifecycle_states(self):
+    def test_saved_config_paths_still_refuse_removed_waivers_and_pre_lifecycle_states(self):
         rc.Coordinator(self.args())
         reject = self.command('--accept-probe-skip', '--reason', 'skip')
         reject[2] = 'reject'
-        with self.assertRaisesRegex(ValueError, 'worktree lifecycle refuses --accept-probe-skip'):
+        with mock.patch.dict(os.environ, {'PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS': '0'}), \
+                self.assertRaisesRegex(ValueError, 'removed user option: --accept-probe-skip'):
             rc.Coordinator(rc.parser().parse_args(reject[2:]))   # lifecycle_mode comes from the saved config here
         self.run_dir = self.root / 'pre-lifecycle'
         legacy = self.coordinator()

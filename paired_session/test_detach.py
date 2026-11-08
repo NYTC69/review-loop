@@ -1,4 +1,4 @@
-"""detach (FIELD-17 follow-up, docs/detach.md): `run|resume|reject|permission-probe --detach` leaves the host's process tree
+"""detach (FIELD-17 follow-up, docs/detach.md): `run|resume|reject --detach` leaves the host's process tree
 (setsid + a second fork) so a host that ends its turn (Claude Code: SIGTERM to the group; Codex: SIGKILL) cannot kill a run;
 `stop` ends it the way Ctrl-C does. Real coordinator processes on the fake CLIs."""
 from contextlib import redirect_stdout
@@ -22,7 +22,25 @@ def alive(pid):
         return False
     except PermissionError:
         return True
-    return subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()[:1] not in ('Z', '')
+    try:
+        return subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()[:1] not in ('Z', '')
+    except OSError:   # a sandboxed shell may refuse to launch ps: ask the kernel directly (macOS libproc)
+        return libproc_alive(pid)
+
+
+def libproc_alive(pid):
+    """macOS: proc_pidinfo(PROC_PIDTBSDINFO) fails for a zombie or a gone pid; pbi_status (offset 4) 5 is SZOMB. Elsewhere, or
+    without libproc, a pid that answers kill(pid, 0) counts as alive."""
+    import ctypes
+    import ctypes.util
+    try:
+        libproc = ctypes.CDLL(ctypes.util.find_library('proc') or '/usr/lib/libproc.dylib')
+    except OSError:
+        return True
+    info = ctypes.create_string_buffer(136)   # sizeof(struct proc_bsdinfo)
+    if libproc.proc_pidinfo(ctypes.c_int(pid), ctypes.c_int(3), ctypes.c_uint64(0), info, ctypes.c_int(len(info))) <= 0:
+        return False
+    return int.from_bytes(info.raw[4:8], 'little') != 5
 
 
 class DetachTests(unittest.TestCase):
@@ -80,8 +98,9 @@ class DetachTests(unittest.TestCase):
             self.assertFalse(alive(turn['pid']), turn)
 
     def test_status_stop_and_abort_take_the_workspace_and_workitem_from_the_run(self):   # WI-ROR part 2 (field: stop needed both)
-        result = self.call('--strict')
+        result = self.call('--strict')   # v3.7.0: --strict is a NOTE only
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('NOTE: strict mode was removed in v3.7.0; the run uses the default mode', result.stdout)
         def bare(*argv):
             return subprocess.run([trc.sys.executable, str(trc.MODULE_PATH), *argv], cwd=self.h.root, text=True,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -226,7 +245,7 @@ class DetachTests(unittest.TestCase):
     def test_detach_is_refused_for_other_actions(self):
         result = self.call('--detach', action='status')
         self.assertEqual(result.returncode, 2)
-        self.assertIn('REFUSED: --detach is only for run, resume, reject, permission-probe', result.stdout)
+        self.assertIn('REFUSED: --detach is only for run, resume, reject\n', result.stdout)   # v3.7.0: permission-probe is gone
 
 
 if __name__ == '__main__':

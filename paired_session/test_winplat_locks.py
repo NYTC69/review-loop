@@ -126,20 +126,11 @@ class WindowsSeamTests(unittest.TestCase):
         with patch.object(winplat.os, 'read', side_effect=OSError), patch.object(winplat.os, 'lseek'):
             self.assertEqual(winplat.read_holder(42, 4096), '')
 
-    def test_fresh_probe_lock_is_noop_and_whole_is_refused(self):
+    def test_detach_is_refused_on_windows(self):   # v3.7.0: the probe lock this test also covered is gone
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             args = argparse.Namespace(action='run', author_vendor='claude', timeout=10, run_dir=str(root / 'fresh'))
-            with patch.object(winplat, 'IS_WINDOWS', True), \
-                    patch.object(rc.ProbeParentLock, '_acquire', side_effect=AssertionError('no POSIX acquisition')):
-                with rc.ProbeParentLock(args, root, Path(args.run_dir)) as lock:
-                    lock.after_mkdir()
-                    self.assertIsNone(lock.fd)
-                    self.assertFalse(Path(args.run_dir).exists())
-                args.action = 'permission-probe'
-                with self.assertRaisesRegex(ValueError, 'not supported on Windows'):
-                    with rc.ProbeParentLock(args, root, Path(args.run_dir)):
-                        self.fail('whole probe entered')
+            with patch.object(winplat, 'IS_WINDOWS', True):
                 self.assertIsNone(rc.detach_holder(args.run_dir))
                 with self.assertRaisesRegex(ValueError, 'not supported on Windows'):
                     rc.detach([], args.run_dir)

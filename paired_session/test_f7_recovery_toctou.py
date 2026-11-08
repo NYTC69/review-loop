@@ -1,4 +1,4 @@
-"""F7 (1C / R22-1, LOW): `resume --retry-uncertain` (and `permission-probe --retry-uncertain`) compared the global config when
+"""F7 (1C / R22-1, LOW): `resume --retry-uncertain` compared the global config when
 it archived the stopped turn, then went on to dispatch; a change after that compare and before the next turn's baseline was
 taken silently into that baseline. The hashes the recovery validated are now checked against the next turn's own baseline
 (a change in between HOLDs before the child exists or the budget counts), and the Codex trust-entry check uses the same bytes
@@ -7,7 +7,6 @@ import hashlib
 import unittest
 from unittest.mock import patch
 
-from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc   # the module the harness's Coordinator comes from (patches must land there)
@@ -72,27 +71,6 @@ class RecoveryToctouTests(unittest.TestCase):
         self.assertIsNone(co._recovery_config_issue(rc.global_config_snapshot(co.global_config_home, co.global_codex_home)))
         self.assertNotIn('recovery_config_hashes', co.state)
 
-    def test_permission_probe_retry_holds_on_a_change_before_its_baseline(self):
-        use_lifecycle_on(self, self.h)
-        path = self.config('.codex/config.toml')
-        original = path.read_bytes()
-        co = self.uncertain('codex', 'codex_config', path, 'AUTHOR_PERMISSION_PROBE')
-        archive = co.archive_abandoned_turn
-        def archive_then_change(turn):
-            verified = archive(turn)
-            path.write_bytes(original + b'\n# changed\n')   # after the archive compare, before the probe's baseline
-            return verified
-        with patch('os.killpg', side_effect=ProcessLookupError), \
-                patch.object(co, 'archive_abandoned_turn', archive_then_change), \
-                patch.object(co, 'invoke', side_effect=AssertionError('no probe turn may start')) as invoke:
-            self.assertFalse(co.permission_probe(retry_uncertain=True))
-        invoke.assert_not_called()
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertIn('global config changed during uncertain-turn recovery (codex_config)', co.state['hold_reason'])
-        self.assertEqual([row['sequence'] for row in co.state['abandoned_turns']], [1])
-        self.assertIsNone(co.state['uncertain_active'])
-        self.assertNotIn('recovery_config_hashes', co.state)
-
     def test_a_failure_before_the_baseline_keeps_the_hashes_for_the_next_dispatch(self):
         path = self.config('.codex/config.toml')
         original = path.read_bytes()
@@ -107,31 +85,6 @@ class RecoveryToctouTests(unittest.TestCase):
         self.assertEqual(co.resume(), 'HOLD')
         self.assertIn('global config changed during uncertain-turn recovery (codex_config)', co.state['hold_reason'])
         self.assertEqual(list(co.evidence.glob('*.stdout.jsonl')), [])
-        self.assertNotIn('recovery_config_hashes', co.state)
-
-    def test_permission_probe_retry_holds_on_a_change_inside_the_probe_dispatch(self):
-        path = self.config('.codex/config.toml')
-        original = path.read_bytes()
-        co = self.uncertain('codex', 'codex_config', path, 'AUTHOR_PERMISSION_PROBE')
-        real_env, used = rc.cli_env, co.state['invocations_used']
-        def env_then_change(*args, **kwargs):   # after the probe's outer check, right before invoke()'s own baseline
-            path.write_bytes(original + b'\n# changed\n')
-            return real_env(*args, **kwargs)
-        outer = co._recovery_config_issue
-        def outer_check(snapshot, consume=True):
-            issue = outer(snapshot, consume)
-            if not consume: checks.append(issue)   # the probe's outer peek, as opposed to invoke()'s baseline
-            return issue
-        checks = []
-        with patch('os.killpg', side_effect=ProcessLookupError), patch.object(rc, 'cli_env', env_then_change), \
-                patch.object(co, '_recovery_config_issue', outer_check):
-            self.assertFalse(co.permission_probe(retry_uncertain=True))
-        self.assertEqual(checks, [None])   # the outer check passed; only invoke()'s own baseline saw the change
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertIn('global config changed during uncertain-turn recovery (codex_config)',
-                      (co.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(co.state['invocations_used'], used)
-        self.assertEqual(list(co.evidence.glob('*.stdout.jsonl')), [])   # no probe child started
         self.assertNotIn('recovery_config_hashes', co.state)
 
     def test_the_trust_check_uses_the_bytes_the_caller_hashed(self):

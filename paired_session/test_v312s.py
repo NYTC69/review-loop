@@ -151,7 +151,7 @@ class ScannerTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(entry), '--help'], env={**os.environ, 'PYTHONPATH': scratch},
                                     cwd=scratch, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
-        self.assertIn('permission-probe', result.stdout)
+        self.assertIn('attach-verification', result.stdout)   # the help text printed in full
         rules = Path(leak_scan.content_rules.__file__).resolve()             # this repository's table, whatever sys.path holds
         self.assertEqual(rules, Path(leak_scan.__file__).resolve().parents[1] / 'scripts' / 'content_rules.py')
 

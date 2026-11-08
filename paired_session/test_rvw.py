@@ -1,26 +1,26 @@
-"""v3.6.0 (owner decision): Codex reviewer-type roles (reviewer, shadow, gate, stage reviewers and their probes) run with the Codex
+"""v3.6.0 (owner decision): Codex reviewer-type roles (reviewer, shadow, gate and stage reviewers) run with the Codex
 author's sandbox shape (workspace-write, $TMPDIR writable, /tmp excluded, network on), and the optional profile key
 extra_writable_roots adds writable roots for the Codex author and those roles alike, and for every Claude role's Bash sandbox. The post-turn guard still undoes a tracked
 change and re-dispatches once; ignored paths stay free for them.
 
-Fake CLIs only: these tests prove the coordinator's argv, flags, config and guard logic, not that `codex exec` honours the sandbox.
-Only a real permission-probe shows that."""
+Fake CLIs only: these tests prove the coordinator's argv, flags, config and guard logic, not that `codex exec` honours the sandbox."""
 import json
 import os
 import subprocess
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import patch
 
-from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
+from paired_session import test_worktree_lifecycle as twl
 from paired_session import timeout_scale as tsc
 
 rc = trc.rc
 ALL_CODEX = ('--author-vendor', 'codex', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
-REVIEWER_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')
+REVIEWER_ROLES = ('reviewer', 'shadow', 'gate')   # v3.7.0: the probe roles are gone
 
 
 class Harness(unittest.TestCase):
@@ -68,7 +68,7 @@ class ReviewerSandboxTests(Harness):
                 self.assertEqual(command.count('windows.sandbox="elevated"'), 1)
                 trc.assert_codex_reviewer_sandbox(self, command)
 
-    def test_the_flags_name_the_new_sandbox_so_an_older_probe_pass_stops_matching(self):
+    def test_the_flags_name_the_new_sandbox_so_an_older_digest_stops_matching(self):
         co = self.h.coordinator(*ALL_CODEX)
         flags = co.reviewer_flags()
         self.assertEqual(flags['sandbox'], 'workspace-write')
@@ -199,27 +199,6 @@ class GuardTests(Harness):
         subprocess.run(['git', 'status', '--short'], cwd=self.h.workspace, check=True, capture_output=True)
 
 
-class ProbeTests(unittest.TestCase):
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
-
-    def test_the_probe_proves_the_workspace_write_and_the_refused_outside_writes(self):
-        report = self.probe(self.co('--reviewer-vendor', 'codex', '--gate-vendor', 'codex'), author={'status': 'PASS'})   # the reviewer half only
-        self.assertEqual((report['status'], report['snapshot_unchanged']), ('PASS', True), report['failure_reasons'])
-        commands = report['write_attempts_denied']
-        for marker in ('/tmp/paired-session-codex-escape-', '/context/paired-session-codex-escape-', 'ln '):
-            self.assertTrue(any(marker in command and denied for command, denied in commands.items()), marker)
-        self.assertFalse([command for command in commands if 'forbidden-probe' in command or command.startswith('rm ')])   # no workspace legs
-        self.assertFalse(list(self.h.workspace.glob('.paired-session-reviewer-write-probe-*')))
-
-    def test_an_in_repo_run_dir_is_not_an_outside_target(self):
-        self.h.run_dir = self.h.workspace / '.review-loop' / 'runs' / 'probe'
-        co = self.co('--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
-        targets = co._codex_escape_targets()
-        self.assertIn('slash_tmp', targets)
-        self.assertFalse({'run_dir', 'context', 'hardlink'} & set(targets), targets)
-
-
-
 class UpgradeMigrationTests(Harness):
     """Gate R4: a run frozen by v3.5.x (network off, Codex reviewer read-only profile) still resumes on v3.6.0; nothing else may differ."""
 
@@ -251,22 +230,81 @@ class UpgradeMigrationTests(Harness):
         self.assertIsNone(rc.v360_sandbox_migration(current))   # a v3.6.0 manifest has nothing to rewrite
 
 
-class ClaudeAuthorProbeRootsTests(unittest.TestCase):
-    """Gate R2 note: with extra_writable_roots set, the Claude author probe still passes and binds the real rules (allowWrite is
-    part of the probed --settings)."""
-    setUp, co, probe, write_report = (tor.ClaudeAuthorProbeTests.setUp, tor.ClaudeAuthorProbeTests.co,
-                                      tor.ClaudeAuthorProbeTests.probe, tor.ClaudeAuthorProbeTests.write_report)
+class ReleasedV353UpgradeTests(unittest.TestCase):
+    """v3.7.0 (item 7): a lifecycle run started by the released v3.5.3 source resumes here. _verify_frozen_role_dispatch accepts its
+    manifest after the v3.6.0 rewrite and re-freezes it; a tampered saved manifest is refused; and when the secret env-var names
+    also changed, the "restore the environment" hint survives the upgrade."""
+    locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in twl._HELPERS})
+    setUp = twl.WorktreeLifecycleActivationTests.setUp
+    TOKEN = 'V370_UPGRADE_TOKEN'
 
-    def test_a_probe_with_extra_roots_passes_and_binds_the_real_rules(self):
-        root = self.h.root / 'cargo-home'
-        root.mkdir()
-        with patch.object(tor.rc.Coordinator, '_extra_writable_roots', lambda _self: [str(root.resolve())]):
-            co, out = self.probe(co=self.co())
-            self.assertEqual(out['status'], 'PASS', out)
-            self.assertIn(str(root.resolve()), co._claude_sandbox_settings('author')['sandbox']['filesystem']['allowWrite'])
-            self.assertTrue(co._claude_probe_rules_match(out))
-            self.write_report(co, out)
-            self.assertEqual(co.probe_passed(), (True, ''))
+    @classmethod
+    def setUpClass(cls):
+        cls.released = None
+        try:
+            source = subprocess.check_output(['git', 'show', 'v3.5.3:paired_session/coordinator.py'], cwd=trc.MODULE_PATH.parent,
+                                             text=True, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            return   # a shallow checkout without the tag: only these tests skip
+        cls.released = types.ModuleType('v353_released_coordinator')
+        cls.released.__file__ = str(trc.MODULE_PATH)
+        exec(compile(source, str(trc.MODULE_PATH), 'exec'), cls.released.__dict__)
+
+    def start_released(self, env=None):
+        if self.released is None:
+            self.skipTest('v3.5.3 coordinator source unavailable (e.g. shallow checkout)')
+        with patch.dict(os.environ, env or {}):
+            old = self.released.Coordinator(self.released.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:]))
+        self.assertEqual(old.state['config']['lifecycle_mode'], 'on')
+        self.assertEqual(old.state['role_dispatch_manifest_version'], 1)
+        return json.loads((self.run_dir / 'state.json').read_text())
+
+    def resumed(self):
+        argv = self.command('--lifecycle-mode', 'on')[2:]
+        argv[0] = 'resume'
+        return rc.Coordinator(rc.parser().parse_args(argv))
+
+    def digest(self, value):
+        return rc.hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    def test_a_v353_lifecycle_run_is_accepted_and_refrozen(self):
+        saved = self.start_released()
+        co = self.resumed()
+        with patch('builtins.print') as printed:
+            co._verify_frozen_role_dispatch()
+        notes = [str(call.args[0]) for call in printed.call_args_list]
+        self.assertTrue(any(note.startswith('NOTE: this run was started by an earlier release') for note in notes), notes)
+        self.assertFalse(any('permission-probe' in note for note in notes), notes)
+        current = co._role_dispatch_manifest()
+        self.assertEqual(rc.v360_sandbox_migration(saved['role_dispatch_manifest']), current)
+        self.assertEqual(co.state['role_dispatch_manifest'], current)
+        self.assertEqual(co.state['role_dispatch_manifest_sha256'], self.digest(current))
+        with patch('builtins.print') as printed:   # re-frozen: a second check passes without a NOTE
+            co._verify_frozen_role_dispatch()
+        printed.assert_not_called()
+
+    def test_a_tampered_v353_manifest_is_refused(self):
+        saved = self.start_released()
+        manifest = saved['role_dispatch_manifest']
+        manifest['role_flags']['author']['model'] = 'another-model'
+        manifest['role_flags_sha256'] = self.digest(manifest['role_flags'])
+        saved['role_dispatch_manifest_sha256'] = self.digest(manifest)   # its own digest intact: only the content differs
+        (self.run_dir / 'state.json').write_text(json.dumps(saved))
+        co = self.resumed()
+        with self.assertRaisesRegex(RuntimeError, 'frozen role dispatch changed; abort or start a new run'):
+            co._verify_frozen_role_dispatch()
+        self.assertEqual(co.state['role_dispatch_manifest']['role_flags']['author']['model'], 'another-model')
+
+    def test_a_v353_run_with_changed_secret_env_names_keeps_the_restore_hint(self):
+        self.start_released(env={self.TOKEN: 'value-never-printed'})
+        os.environ.pop(self.TOKEN, None)
+        co = self.resumed()
+        with self.assertRaisesRegex(RuntimeError, 'restore the environment') as raised:
+            co._verify_frozen_role_dispatch()
+        self.assertIn('removed: ' + self.TOKEN, str(raised.exception))
+        self.assertNotIn('value-never-printed', str(raised.exception))
+        with patch.dict(os.environ, {self.TOKEN: 'value-never-printed'}), patch('builtins.print'):
+            self.resumed()._verify_frozen_role_dispatch()   # the environment restored: accepted and re-frozen
 
 
 if __name__ == '__main__':

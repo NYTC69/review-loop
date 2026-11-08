@@ -105,7 +105,7 @@ class PosixPinTests(unittest.TestCase):
 
     def test_no_refusal_on_posix(self):
         for args in (SimpleNamespace(detach=True, action='run', safety_mode='strict', run_dir='/nonexistent'),
-                     SimpleNamespace(detach=False, action='permission-probe', safety_mode=None, run_dir='/nonexistent')):
+                     SimpleNamespace(detach=False, action='resume', safety_mode=None, run_dir='/nonexistent')):
             self.assertIsNone(rc.windows_refusal(args))
 
 
@@ -151,34 +151,21 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(code, 2)
         return out.getvalue()
 
-    def test_strict_flag_and_profile_are_refused_before_the_run_dir_exists(self):
-        profile = self.root / 'profile.json'
-        profile.write_text(json.dumps({'safety_mode': 'strict'}), encoding='utf-8')
-        for extra in (('--strict',), ('--config', str(profile))):
-            for action in ('run', 'resume', 'reject'):
-                out = self.main(action, *extra)
-                self.assertIn('REFUSED: strict safety mode (--strict, or safety_mode "strict" in the --config profile) is not '
-                              'supported on Windows', out)
-                self.assertFalse(self.run_dir.exists())
-
-    def test_a_saved_strict_run_is_refused_and_left_untouched(self):
+    def test_strict_flag_profile_and_saved_strict_run_are_not_refused(self):   # v3.7.0: strict is a NOTE on every platform
+        for action in ('run', 'resume', 'reject'):
+            args = SimpleNamespace(detach=False, action=action, safety_mode='strict', run_dir=str(self.run_dir))
+            self.assertIsNone(rc.windows_refusal(args))
         self.run_dir.mkdir(parents=True)
         state = self.run_dir / 'state.json'
         state.write_text(json.dumps({'version': rc.STATE_VERSION, 'config': {'safety_mode': 'strict'}}), encoding='utf-8')
-        before = state.read_bytes()
         for action in ('resume', 'run', 'reject', 'accept'):
-            out = self.main(action)
-            self.assertIn('REFUSED: strict safety mode is not supported on Windows: this run was created strict', out)
-        self.assertEqual(state.read_bytes(), before)
-        self.assertEqual(sorted(p.name for p in self.run_dir.iterdir()), ['state.json'])
-        state.write_text(json.dumps({'version': rc.STATE_VERSION, 'config': {'safety_mode': 'efficient'}}), encoding='utf-8')
-        args = SimpleNamespace(detach=False, action='resume', safety_mode=None, run_dir=str(self.run_dir))
-        self.assertIsNone(rc.windows_refusal(args))
+            args = SimpleNamespace(detach=False, action=action, safety_mode=None, run_dir=str(self.run_dir))
+            self.assertIsNone(rc.windows_refusal(args))
 
-    def test_permission_probe_is_refused(self):
+    def test_permission_probe_is_refused_as_removed(self):
         for extra in ((), ('--strict',)):
             out = self.main('permission-probe', *extra)
-            self.assertIn('REFUSED: permission-probe is not supported on Windows', out)
+            self.assertIn('REFUSED: permission-probe was removed in v3.7.0; runs do not need it', out)
             self.assertFalse(self.run_dir.exists())
 
     def test_detach_is_refused_on_every_action_that_accepts_it(self):

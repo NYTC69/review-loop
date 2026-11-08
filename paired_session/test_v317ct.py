@@ -51,15 +51,13 @@ class PromptTests(unittest.TestCase):
     test_finisher_and_both_quality_writer_call_sites_include_long_command_rule = (
         ff.PromptAndPreflightTests.test_finisher_and_both_quality_writer_call_sites_include_long_command_rule)
 
-    def test_allowed_command_and_probe_call_sites_and_fresh_prompts(self):
+    def test_allowed_command_call_sites_and_fresh_prompts(self):
         co = self.coordinator('--lifecycle-mode', 'off')
         co.args.test_command = 'python3 -m unittest'
         co.state['phase'] = 'EXEC'
         (co.context / 'plan.md').write_text('# Plan\nImplement the feature.\n')
         prompts = [co.allowed_command_prompt(),
                    co._review_prompt('reviewer', 'snapshot')]
-        for vendor in ('claude', 'codex'):
-            prompts.append(co._probe_prompt(vendor, co.args.test_command, (), []))
         for role in ('shadow', 'gate'):
             prompt = co._gate_prompt('snapshot') if role == 'gate' else co._review_prompt(role, 'snapshot')
             prompts.append(prompt)
@@ -79,7 +77,7 @@ class PromptTests(unittest.TestCase):
                                     ('config', 'role_dispatch_manifest', 'operator_programs')})
         self.assertEqual(frozen['role_dispatch_manifest']['role_flags']['reviewer']['claude_child_env'], old_child_env)
         for inputs in (frozen['config'], frozen['role_dispatch_manifest']['role_flags'],
-                       co.author_flags(), co.reviewer_flags(), co.gate_flags()):
+                       co.reviewer_flags(), co.gate_flags()):
             for name in TIMEOUT_VARS:
                 self.assertNotIn(name, json.dumps(inputs, sort_keys=True))
         args = copy.deepcopy(co.args)

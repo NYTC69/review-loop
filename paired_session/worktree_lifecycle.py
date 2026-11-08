@@ -16,21 +16,14 @@ LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-
 QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')
 SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM': 'MAJOR', 'SECURITY': 'SECURITY',
             'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
-WAIVERS = (('accept_unverified_claude_author', '--accept-unverified-claude-author'),
-           ('accept_probe_skip', '--accept-probe-skip'))
 PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_quality_polish',   # E-4: operator-only
                 'auto_commit', 'external_delivery')
 
 
 def refuse_waivers(args):
-    """D-7 (strict only, D-EFF): a strict lifecycle run needs a real probe PASS; the operator waivers stay real-EXEC only.
-    An efficient run has no probe gate, so main() notes a waiver as unneeded and records none.
-    D-4/E-4 (both modes): lifecycle keys come from the CLI or an operator profile, never an author-writable one."""
-    used = [flag for dest, flag in WAIVERS if getattr(args, dest, False)]
-    if used and getattr(args, 'safety_mode', 'strict') != 'efficient':   # Coordinator.strict; resolved before this is called
-        raise ValueError('worktree lifecycle refuses ' + ' and '.join(used) + '; run permission-probe until it passes')
+    """D-4/E-4: lifecycle keys come from the CLI or an operator profile, never an author-writable one."""
     if (keys := getattr(args, 'workspace_lifecycle_keys', None)) and getattr(args, 'action', 'run') in (
-            'run', 'resume', 'permission-probe'):   # abort/status/note/accept/reject never read these keys
+            'run', 'resume'):   # abort/status/note/accept/reject never read these keys
         raise ValueError('worktree lifecycle refuses lifecycle keys from a workspace profile: ' + ', '.join(keys) +
                          '; set them on the command line or in an operator --config')
 
@@ -50,9 +43,8 @@ def refuse_saved(state, args):
         if 'on' in (state.get('config', {}).get('lifecycle_mode'), getattr(args, 'lifecycle_mode', None)):
             raise ValueError('saved lifecycle run cannot resume: it is not a worktree-lifecycle run')
         return
-    refuse_waivers(args)   # also on reject/accept/note, whose lifecycle_mode and safety_mode come from the saved config
-    if state.get('claude_author_override') or state.get('probe_skip_override'):
-        raise ValueError('worktree lifecycle refuses a recorded author waiver or probe-skip acceptance')
+    refuse_waivers(args)   # also on reject/accept/note, whose lifecycle_mode comes from the saved config
+    # v3.7.0: a recorded claude_author_override or probe_skip_override (saved by an earlier release) is ignored
 
 
 def reviewed_turns(turns):

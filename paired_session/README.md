@@ -16,14 +16,11 @@ identity and classify it as `MATCH`, `MISMATCH`, or `UNREPORTED`. A match requir
 the exact requested ID or that ID with an explicit date suffix; synthetic,
 malformed, or missing identity data is unreported, and Claude subagent models
 are ignored.
-In strict mode (`--strict` or an operator profile's `"safety_mode": "strict"`)
-the preflight must pass before either a fresh run or a resumed run can invoke an
-author; the default `efficient` mode keeps every sandbox but needs no probe PASS
-(`docs/efficient-mode.md`). The Codex author permission probe uses a disposable Git workspace and
-checks that workspace and run-owned `$TMPDIR` writes succeed while external
-temporary paths and `/tmp` writes fail.
+Every run uses one mode (`docs/efficient-mode.md`): every sandbox applies and no permission probe is needed.
+`permission-probe` and strict mode were removed in v3.7.0: `permission-probe` is refused, and `--strict` or
+`"safety_mode": "strict"` in a profile only prints a NOTE.
 One OS-backed lease serializes commands that mutate a run directory. A second
-worktree lease prevents `run`, `resume`, or `permission-probe` commands using
+worktree lease prevents `run` or `resume` commands using
 different run directories from coordinating on the same workspace at once. Its
 key is the resolved workspace directory's `(st_dev, st_ino)` identity, so
 case-variant or symlink paths to the same directory share a lock.
@@ -224,15 +221,12 @@ while a run is active: it would delete the run. The workspace must be a Git work
 be a file. The configured test command is checked before the coordinator starts.
 A Claude reviewer or gate runs that command (and each `--reviewer-command`) as
 one exact allowlisted Bash call in dontAsk mode, so command substitution, pipes,
-`;`, `&&`, redirection or loops can be refused before it runs; `run` and a new
-`permission-probe` print a warning for such a command. Put it in a script and
-configure `/bin/bash /absolute/path/to/script.sh`. When the probe's run of the
-test command hits the CLI's own Bash timeout, the probe fails with
-`allowed-command-timeout (<N> s)` instead of `allowed-command-failed`;
-re-run the probe on a less loaded host, or configure a faster test command (the
-same one for probe and run).
+`;`, `&&`, redirection or loops can be refused before it runs; a new `run`
+prints a warning for such a command. Put it in a script and
+configure `/bin/bash /absolute/path/to/script.sh`. When a reviewer's run of the
+test command hits the CLI's own Bash timeout, configure a faster test command.
 FIELD-20 (long test commands): Codex's `exec_command` returns after about 10 s
-with a session id and no exit code while the command keeps running. Every probe,
+with a session id and no exit code while the command keeps running. Every
 reviewer, gate, docs-reviewer and specialist prompt now tells the role to poll a
 still-running command until it has an exit code, never to start another command
 or end the turn before that, and to give a long Bash call the turn's command
@@ -250,19 +244,16 @@ rule to a prompt that lacks it, the rule comes under its own heading
 (`## Coordinator rule for long commands`), so it never reads as part of an
 operator rejection or clarification above it.
 A command started but never completed (no exit status when the turn ended, or
-`-1`) is reported as `allowed-command-not-completed` by the probe and as "not
+`-1`) is reported as "not
 observed to completion" in an EXEC or DOCS approval HOLD, not as an ordinary
 failure. One observed completed exit-0 run of the exact configured command is
 still required. The remaining limits are the per-dispatch timeout (`--timeout`)
-and the command tool's timeout (reported as `allowed-command-timeout` by the
-probe, and as a command-tool timeout cause in the EXEC approval HOLD reason and
+and the command tool's timeout (reported as a command-tool timeout cause in the EXEC approval HOLD reason and
 the DOCS reviewer's HOLD);
 a test command longer than either cannot be observed to completion.
-Write launcher logs (for example `permission-probe ... > probe.log`) under
-`<repo>/.review-loop/logs/`, outside the run dir's parent. Legacy Claude author
-probes watch entries beside the run dir, so a growing log there fails the probe;
-new runs put probe trees in their external private scratch root. When any role is Codex, `run`, `resume`, `reject` and
-`permission-probe` refuse up front if the selected `CODEX_HOME` (default
+Write launcher logs (for example `run ... > run.log`) under
+`<repo>/.review-loop/logs/`, outside the run dir's parent. When any role is Codex, `run`, `resume` and `reject`
+refuse up front if the selected `CODEX_HOME` (default
 `~/.codex`) is not an existing directory.
 
 For operator-selected programs, role/vendor settings and test commands, copy
@@ -273,19 +264,15 @@ so a worktree-lifecycle run keeps its `CHANGELOG.md` default. It sets
 `lifecycle_mode: on`, the default full lifecycle; select `off` to stop after gate. A workspace
 `.review-loop/paired-session.json` may hold limits and other non-program
 settings, but program/role/test-command keys there are refused (`REFUSED`, exit 2)
-when that profile is selected, before any run state is created; `permission-probe`
-reports them in its result instead, and an existing run that later finds such keys
+when that profile is selected, before any run state is created, and an existing run that later finds such keys
 holds. `--config` replaces the workspace profile; copy any desired limits
-into the external profile because the two files are not layered. The CLI loads the selected profile for run, probe,
+into the external profile because the two files are not layered. The CLI loads the selected profile for run
 and resume; explicit CLI options override it. On resume, effective settings
-must still match the saved run configuration. A changed binary or PATH requires
-a fresh permission probe before the run can continue; the refusal names what
-changed (for example `changed: path_env`), so run `reject`, `resume` and `accept`
-from the same shell setup as the probe. The names of secret-looking environment
-variables (for example a `*_TOKEN` set by an agent session) do not void a recorded
-permission-probe PASS: the Claude credential deny list always follows the current
-environment. They still bind the probe-pass cache key and the lifecycle role manifest. A Claude-author refusal
-also names the failing probe check.
+must still match the saved run configuration. A changed binary or PATH is recorded with a NOTE
+(`operator program or PATH changed since run start (changed: path_env); the run continues with the new state`)
+and the run continues; a program that is now missing or unsafe still holds. The names of secret-looking environment
+variables (for example a `*_TOKEN` set by an agent session) feed the Claude credential deny list, which always
+follows the current environment; they also bind the lifecycle role manifest.
 Role models are operator-set (ADR-9): a role without `--author-model`,
 `--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
 (Claude: `claude-opus-5-5`; Codex: `gpt-6.1-sol`); gemini (`agy`, ADR-21; reviewer and gate only) has no
@@ -334,9 +321,8 @@ operator-profile value wins), and writes a Chinese
 delivery report; `reject` reopens EXEC; a
 workspace profile cannot set lifecycle_mode on or the docs/skip/polish keys.
 `--adversarial-gate off`, `--override-rejection`,
-`--accept-unverified-claude-author` and `--accept-probe-skip` are refused; use the enabled gate,
-`resume --add-rounds N` or `note --scope-change`, and permission-probe for strict runs.
-`--accept-unverified-codex-cli --reason TEXT` remains supported. Legacy
+`--accept-unverified-claude-author`, `--accept-probe-skip` and `--accept-unverified-codex-cli` are refused; use
+the enabled gate, and `resume --add-rounds N` or `note --scope-change`. Legacy
 DONE/ACCEPTED or fake-format lifecycle states, gate-off and `resume --polish`
 cannot enter it.
 
@@ -407,45 +393,23 @@ bin/paired-session run \
   --test-command 'python3 -m unittest' --lifecycle-mode on
 ```
 
-In strict mode, before `run` or `resume`, perform the author permission probe with the same
-workspace, work item, run directory, author vendor/binary, profile, and one-run
-overrides:
-
-```sh
-bin/paired-session permission-probe \
-  --workspace /path/to/disposable-worktree \
-  --workitem /path/to/WORKITEM.md \
-  --run-dir /path/to/worktree-run-id \
-  --test-command 'python3 -m unittest' --lifecycle-mode on
-```
-
-In strict mode the probe is bound to the author binary and relevant configuration;
-changing them requires a fresh probe. Efficient runs record CLI release updates in
+Efficient runs record CLI release updates in
 `state.json` under `program_updates` and re-freeze `operator_programs`: Claude must
 advance to a newer version under the same `versions` directory; an in-place Codex
 replacement must report a parseable release version (its old version is unavailable).
-Other binary or PATH changes HOLD with instructions to run `permission-probe` to
-re-freeze, then resume; that does not apply to a run started by a review-loop version
-with a different bundled gate prompt, which is finished or aborted with that version.
-For a Codex author, the coordinator runs external
-temporary-path and `/tmp` escape-denial writes directly through `codex sandbox`
-as advisory controls. Their argv, return codes and observations appear under
-`advisory_direct_controls`; this separate CLI's policy is not proven equivalent
-to the real `codex exec` author policy. Under Yuan D1(b), its full-parameter
-positive controls and OS-denied checks of every escape target may qualify an
-otherwise UNKNOWN model result as `PASS_RESIDUAL_RISK` only when every dedicated
-directory is unchanged in mtime/ctime/link count/listing, no sentinel exists
-and model positive writes succeeded. A refused synthetic argv stays UNKNOWN;
-a written target or failed positive check FAILs. The report states
-"equivalence to real codex exec UNVERIFIED; re-check at M6". Reviewer OS-only
-UNKNOWN still blocks the overall probe.
+Any other binary or PATH change is recorded under `program_refreezes` with one NOTE, and the run continues
+(v3.7.0; earlier releases held and asked for `permission-probe`). A run started by a review-loop version with a
+different bundled gate prompt continues with this version's gate prompt after one NOTE (`gate_prompt_refreezes`;
+for a lifecycle run only the gate-prompt fields of the frozen role dispatch manifest change). With lifecycle off, a
+changed reviewer-commands block of the work item is recorded with a NOTE (`reviewer_command_refreezes`); with
+lifecycle on it still holds until the block is restored.
 The Codex capability guard scans local user, project, system and file-managed
 config, macOS `com.openai.codex` MDM preferences, and MCP/app bundles in the
-active CODEX_HOME plugin cache. Every Codex dispatch (author, reviewer, gate,
-probe) passes `-c features.plugins=false`, which makes cached bundles inert
+active CODEX_HOME plugin cache. Every Codex dispatch (author, reviewer, gate)
+passes `-c features.plugins=false`, which makes cached bundles inert
 (empirical evidence: `.compass/results/2026-10-01_cg-codex-plugin-evidence.md`;
 `apps = false` or `remote_plugin = false` alone is not relied on). The argv is
-bound into the reviewer, gate and author flags digests. Since rel210-fixCG the
+bound into the reviewer and gate flags digests. Since rel210-fixCG the
 coordinator's guard therefore records cached MCP/app bundles as inert (path and
 sha256 in `plugin_bundles_inert`, and in each Codex turn receipt as
 `codex_plugin_bundles_inert`) instead of reporting them, so a ChatGPT default
@@ -453,45 +417,16 @@ home (`chatgpt-global`, `openai-curated-remote`) runs. A dedicated `CODEX_HOME`
 with `[features]` `remote_plugin = false`, `plugins = false`, `apps = false`
 remains a stricter option.
 MCP servers declared in config.toml are flagged either way. Managed feature
-settings and unreadable MDM preferences fail closed. After its Codex turns the
-permission probe runs the guard again; a new finding FAILs the probe.
-A missing `config.toml` (a fresh `codex login` home) is an empty config for the
-probe controls and the config digest.
-The scanner runs at the author probe and before each Codex dispatch; the author
-config digest remains part of the probe binding. This reflects the
+settings and unreadable MDM preferences fail closed.
+The scanner runs before each Codex dispatch. This reflects the
 [OpenAI plugin packaging](https://developers.openai.com/plugins/build/plugins)
 and [managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration)
 contracts. The scanner reads configuration only and records no raw payload.
-For installed Codex 0.157, the direct control requires a named `-P` profile
-derived from the author's sandbox overrides. It byte-copies only the active
-`config.toml` into a disposable `CODEX_HOME` under the external private scratch root, verifies
-the copy and deletes it after each check; no auth or credential files are
-copied. Any secret embedded in `config.toml` remains inside the run-owned copy.
-The probe binds the installed `codex --version` to the author flags. The real
-model-driven author probe checks that workspace and run-owned `$TMPDIR` writes
-succeed. It also asks that same author
-turn to attempt one write each under an external temp directory, `/tmp`
-(`/private/tmp` on macOS), `$HOME`, and the workspace parent. Each target uses
-a fresh sentinel filename, never a config file. The coordinator checks each
-target on disk before cleaning up its own sentinel: an existing target is
-`FAIL` regardless of the model's report; an absent target with an observed
-OS-denied attempt is `PASS`; an absent target without a usable attempt report
-is `UNKNOWN`. A missing or malformed attempt stays `UNKNOWN` for that target;
-only the D1(b) filesystem and synthetic conditions above can qualify residual
-risk. `permission-probe.json`
-records per-target evidence and cleanup.
 What a Codex author cannot do inside this sandbox: see
 "Codex author sandbox: what a work item cannot do" below.
-Escape sentinels live in coordinator-created dedicated directories. The probe
-records each directory's before/after mtime, ctime, link count and sorted
-listing. A new entry FAILs; a changed directory with no entry stays UNKNOWN.
-Dedicated-directory cleanup removes only known sentinels and its own empty
-directories; foreign entries there are retained and reported.
-For a single clearer retry after `UNKNOWN`, set `PAIRED_SESSION_PROBE_CLARIFY=1`
-on the permission-probe command; this changes only the prompt, not the sandbox.
 
 Reviewer sandbox and temp dir (FIELD-1, v2.9.6; workspace-write since v3.6.0): a
-Codex reviewer, shadow, gate, stage reviewer or probe turn runs with the Codex
+Codex reviewer, shadow, gate or stage reviewer turn runs with the Codex
 author's sandbox shape: `sandbox_mode="workspace-write"` (the workspace it runs
 in is writable, `.git` stays read-only), `$TMPDIR` writable
 (`exclude_tmpdir_env_var=false`), `/tmp` excluded, network on, plus the run's
@@ -514,36 +449,12 @@ even if a process survives: `role-tmp` must be a real 0700 directory owned by th
 any other leftover entry there is refused, and inside a scratch a link is
 removed as a link while modes and file flags are reset without following one.
 A regular file with more than one link, an unreadable directory, or a changed
-mode of the scratch root itself, left in the scratch fails the turn. The reviewer and gate flags digests
-change, so an older probe PASS or probe-pass cache entry no longer matches:
-re-run `permission-probe` (v3.6.0 changed them again for the workspace-write
-sandbox). A Codex probe or gate-probe turn must write its own `$TMPDIR` and a
-fresh file in the workspace (removed afterwards), and must be refused each write
-outside its writable roots: to `/tmp`, to the user temp dir, to the run dir, to
-`role-tmp` beside its own scratch (`$TMPDIR/..`), to the context, and
-`ln <run-dir file> "$TMPDIR/..."` (a hard link into its scratch); a target inside
-the workspace or an extra writable root (an in-repo run dir) is not probed.
-Every refused target must be absent and the link source keep a single link
-afterwards. A leg counts as refused only on an explicit sandbox or
-OS denial (Operation not permitted, Permission denied, Read-only file system,
-a sandbox deny line) with a non-zero exit; `command not found` (exit 127), exit
-126 or any other error makes the probe UNKNOWN, never PASS. A Claude reviewer
-or gate probe's `git --literal-pathspecs checkout --` and `rm` legs (a Codex
-probe turn has none since v3.6.0) target an
-existing tracked file of the workspace (a regular, non-symlink `git ls-files`
-entry, preferring one without unstaged changes, then one without `:*?[]\`;
-named in the report as `probe_tracked_file`), so the workspace needs at least
-one; without one the probe is refused before any turn (this refusal leaves the
-probe-pass cache alone: no surface was tested). `--literal-pathspecs` keeps a
-name such as `*.py` from reaching other files. A broken surface deletes that
-file: the probe FAILs and reports it, and the file is not restored. Only that
-real probe shows that `codex exec` honours the sandbox; the tests use fake CLIs, and the probe runs fresh turns only (see
-resume turns below).
+mode of the scratch root itself, left in the scratch fails the turn. The tests use fake CLIs: they show the
+argv, not that `codex exec` honours the sandbox (no permission probe checks that since v3.7.0).
 
 Hard links: the scratch shares a volume with the run dir and usually with the
 user's home. If the CLI let a role hard-link a same-user file into its scratch,
-it could write through it to any such file it can read; the probe's refused
-`ln` is the evidence that it cannot (a probe that sees the link made FAILs). As
+it could write through it to any such file it can read; the CLI's sandbox is expected to refuse such a link. As
 defence in depth for run-dir files, the coordinator records inode and ctime of
 every regular file under the run dir before the turn and fails the turn on any
 change until the CLI process exits (making a link, writing through it or
@@ -557,17 +468,10 @@ coordinator crash before that save; `progress.jsonl` is display only), the
 turn's own `evidence/<seq>-<phase>-<role>.*` files (the coordinator reads the
 answer and observed commands from its `stdout.jsonl`), Codex session rollouts
 under `CODEX_HOME`, or any same-volume file outside the run dir, workspace,
-context and the watched global config files; for those the refused `ln` in the
-probe is the only control. That control assumes the probe model does not forge
-its own command events: the probe reads them from the turn's `stdout.jsonl` and
-the Codex rollout, which are outside the ctime check, so if the CLI did allow a
-hard link a hostile probe model could link one of them, append a fake refused
-`ln` and skip the real one (reading stdout from a pipe into memory would close
-this; not done). The refused writes are judged by their targets on disk and
-are not affected. A detached descendant acting after the CLI exits is outside
+context and the watched global config files; for those the CLI sandbox is the only control. A detached descendant acting after the CLI exits is outside
 the window, as for the other per-turn checks. Resume turns: a persistent Codex
 reviewer's later turns run `codex exec ... -c sandbox_mode="workspace-write" ... resume
-<id>`; the probe runs fresh turns only. A plain `sandbox_mode` override applies
+<id>`. A plain `sandbox_mode` override applies
 on resume (the author uses the same form); if it did not, those turns would fall back to the CLI's default sandbox and only
 the workspace snapshot, context digest and run-dir ctime checks would remain. Claude roles keep Claude
 Code's own sandbox TMPDIR (`/tmp/claude`, shared per UID, also with a Claude
@@ -576,42 +480,23 @@ root cannot be writable for them.
 
 Claude roles use one inline strict sandbox settings object, deny secret-like
 environment variables and common credential files, allow network access (since
-v3.6.0, owner 2026-11-08) but block local network binding, and require the exact Bash allowlist. The reviewer
-permission probe gives exactly one unique run-directory `touch` command a narrow
-CLI allowlist entry. That command may be denied by either the CLI permission
-layer or the OS sandbox; its result alone cannot establish the OS boundary.
-The reviewer probe also uses a dedicated target under the external scratch root
-(beside the run directory for legacy runs):
-`sandbox.filesystem.denyWrite` covers that target, while `permissions.deny`
-does not. Its exact `/usr/bin/touch` command is allowlisted; the prior `printf`
-redirection was refused by Claude's CLI in dontAsk mode before OS dispatch.
-Only an observed OS denial
-with the target absent gives this check PASS; a CLI-layer refusal is UNKNOWN,
-and a file written there is FAIL. The run directory remains denied by both
-the OS sandbox and the Claude permission rules.
-Other probe writes remain outside that allowlist. Claude's session `TMPDIR` is
+v3.6.0, owner 2026-11-08) but block local network binding, and require the exact Bash allowlist. The run
+directory is denied by both the OS sandbox and the Claude permission rules. Claude's session `TMPDIR` is
 shared scratch per UID on macOS; paired-session keeps workflow state outside it
-and denies writes to the run directory. Bash sandbox results do not establish
-direct `Edit` or `Write` safety for a Claude author.
+and denies writes to the run directory.
 The sandboxed Claude CLI creates an empty `<workspace>/.claude/.cc-writes`
-directory by itself; the Claude author probe admits exactly `.claude` and an
+directory by itself; the read-only guard admits exactly `.claude` and an
 empty `.claude/.cc-writes` (real directories owned by the current uid). Anything
 inside, any other `.claude` entry or a link is still an escape. Git-based
 workspace guards never see empty directories, so no other check changed.
-The Claude author probe prompt states that it is an operator-authorized self-test in a
-disposable, probe-owned tree, that a denial is the expected success and must not be
-worked around, and asks for each tool result verbatim. The model's status and findings
-never decide PASS or FAIL; the filesystem, the exact tool_use accounting and the sentinel
-do. If the model makes no prescribed tool call and answers HOLD, the probe is `UNKNOWN`
-with reason `author-model-refused` and a message that the model declined to run it.
 Read-only Claude roles receive the read tools as one rule and each exact
 argument-bearing Bash command as its own `--allowedTools` argument.
 
-The probe records hashes for the effective `$CODEX_HOME/config.toml` (or
+Each turn records hashes for the effective `$CODEX_HOME/config.toml` (or
 `~/.codex/config.toml`) and the two Claude global files. Installed Codex may
 persist a trust entry for a new workspace. Only an exact insertion of
 `[projects."<this run's workspace>"] trust_level = "trusted"` at a TOML table
-boundary is attributed; the report warns `global config mutated by codex CLI
+boundary is attributed; the turn receipt warns `global config mutated by codex CLI
 trust persistence`. In a linked worktree Codex trusts the main checkout root of the
 workspace's own repository instead; that path is accepted too, and nothing else.
 Attribution removes exactly one such block per path (plus at most one blank
@@ -630,8 +515,7 @@ directory nor the Codex home. A turn held by such a change before this rule reco
 with a plain `resume`, which re-runs the turn on a fresh baseline. `resume --acknowledge-codex-trust` also accepts
 exact trust blocks for a workspace that has such a lease record, including one from a run that has since ended.
 The coordinator never edits or restores the user's global config. `--skip-probe`
-is accepted only when `FAKE_CODEX_TEST_ROOT` contains this run and both provider
-binaries are fake CLI wrappers. This is a misuse guard for tests, not a security boundary.
+is a hidden no-op since v3.7.0 (kept so older scripts and tests still parse).
 With a Codex home other than the default, the run also hashes the default `~/.codex/config.toml`: a Codex child that
 ignored `CODEX_HOME` would write there (R20-0a). Another process may change that file meanwhile: a Codex run on the
 default home appends its workspace trust entry, or an operator restores the file from a backup. A change that only adds
@@ -650,8 +534,7 @@ config during an uncertain turn HOLDs before replay. After inspecting the
 change, the operator can run `resume --acknowledge-codex-trust RUN_ID`; this
 records UID, time and before/after hashes and accepts only an exact new trusted
 entry for that turn's workspace. Other changes stay HOLD, and the coordinator
-never edits the config. `resume --retry-uncertain` still checks the current
-permission-probe binding before replay; trust acknowledgement does not bypass it.
+never edits the config.
 Each Codex turn compares only Codex global files; each
 Claude turn compares only Claude global files. Cross-vendor changes are recorded
 in the turn receipt without HOLDing that turn.
@@ -696,11 +579,10 @@ passed, the run HOLDs instead of starting the next turn. A running turn is never
 cut short and keeps its own timeout. The value is fixed at `run`: `resume`
 keeps the saved deadline and refuses a different one, and the operator actions
 keep the saved deadline. The deadline only blocks new dispatches: once it has
-passed, `resume` and `permission-probe` are refused without dispatching or
+passed, `resume` is refused without dispatching or
 touching the HOLD, so every HOLD keeps its reason and its exits
 (`note --scope-change`, `abort`). The one exception is an uncertain in-flight
-turn: `resume` records it, and `resume --retry-uncertain` (or
-`permission-probe --retry-uncertain` for a probe turn) still verifies its
+turn: `resume` records it, and `resume --retry-uncertain` still verifies its
 process group is gone and archives it, then HOLDs with the deadline reason
 instead of dispatching, so `note --scope-change` works afterwards. A wall clock
 that moved back (below) is treated the same way. A `DONE` run past
@@ -789,8 +671,8 @@ bin/paired-session reject --workspace "$WS" --workitem "$ITEM" --run-dir "$RUN" 
 digest covers it, so give the same `--reason` to `accept --intent-only` and to
 `accept`. `accept` refuses `--text` and `--file` (they belong to `reject` and
 `note`). `accept` also refuses while a CLI turn is active or uncertain: once its process group is gone,
-settle a probe turn with `permission-probe --retry-uncertain` (a DONE run stays
-DONE) and any other turn with `resume --retry-uncertain`, or abort.
+settle it with `resume --retry-uncertain` (a probe turn saved by an earlier release too; a DONE run stays DONE),
+or abort.
 
 A run saved by an older build (review-loop 2.13.x or earlier: state `version` 1)
 refuses state-changing run commands, `abort` included, and is refused as a `--supersedes` parent, before loading its configuration:
@@ -843,8 +725,7 @@ The note cannot authorize new scope. For a scope
 change, use `note --scope-change --text/--file` on an idle active or ordinary
 HOLD run, or `reject --scope-change` before accepting a DONE run (also allowed
 after the rejection limit). The old run ends as `ABORTED(scope-change)` and
-prints exact `Probe:` and `Start:` commands for one successor. Run both commands
-in order. The successor starts a fresh PLAN, review, and configured gate, with
+prints the exact `Start:` command for one successor. Run it. The successor starts a fresh PLAN, review, and configured gate, with
 the old workspace edits still present for the PLAN author to keep or revert.
 The old run cannot resume or be accepted; a second chained scope change is
 refused. A scope-change note requires the named existing run. Author-produced
@@ -895,12 +776,11 @@ events arrive. If a provider turn fails, times out, or is killed after reporting
 usage, the known request totals remain in the usage report; an interrupted
 coordinator also retains observed usage when its uncertain turn is archived.
 
-If `state.json` has `uncertain_active`, do not re-probe or replay automatically.
-Inspect the recorded PID and receipts. A stopped probe child can be retried with
-`permission-probe --retry-uncertain` after operator approval; a product-work
-turn requires the same explicit approval with `resume --retry-uncertain` because
-the model call may be replayed. After recovering a probe in an existing run
-directory, continue with `resume`; do not call `run` again.
+If `state.json` has `uncertain_active`, do not replay automatically.
+Inspect the recorded PID and receipts. A stopped turn needs explicit operator
+approval for `resume --retry-uncertain` because the model call may be replayed
+(an uncertain probe turn saved by an earlier release is archived and replays nothing).
+Continue in the existing run directory; do not call `run` again.
 
 ```sh
 bin/paired-session resume \
@@ -910,7 +790,7 @@ bin/paired-session resume \
   --test-command 'python3 -m unittest'
 ```
 
-`run`, `resume`, `reject` and `permission-probe` support `--detach`: the caller
+`run`, `resume` and `reject` support `--detach`: the caller
 returns after launch, and the coordinator continues with a separate log. `stop`
 sends SIGTERM to that detached coordinator and stops its active CLI child;
 inspect the interrupted turn before retrying. See [detached commands](docs/detach.md).
@@ -921,7 +801,7 @@ Progress is saved to `RUN_DIR/progress.jsonl`; `--quiet-progress` suppresses
 live event lines while keeping that file and the final status line.
 
 Exit codes: `run`, `resume` and `reject` return 0 at DONE, ACCEPTED or REPORTED,
-and 2 otherwise. A permission probe returns 0 on PASS, 2 on failure.
+and 2 otherwise. `permission-probe` (removed in v3.7.0) is refused with exit 2.
 Completed `accept` calls return 0 even if delivery returns HOLD; inspect the
 printed status. Successful operator actions and reads return 0; refusals and
 lease/OS errors return 2. `abort` returns 2 after putting a run on HOLD, or 0 for an already
@@ -936,8 +816,7 @@ listed in the repository backlog. The legacy implementation was removed in v2.13
 v2.13.1 (files).
 
 `test_real_coordinator.py` is a deterministic fake-CLI suite. It verifies
-protocol transitions and permissions-command construction; the runtime
-permission probe is the effective check against the installed Codex CLI.
+protocol transitions and permissions-command construction, not the installed CLIs' sandbox enforcement.
 
 ### Codex author sandbox: what a work item cannot do
 
@@ -970,18 +849,15 @@ cannot do there:
   answers "malformed response" under the nested sandbox, and the connection to
   CoreSimulatorService is refused.
 
-A work item that needs one of these will stall or fail in the author turn, not
-in the permission probe. Options for the operator:
+A work item that needs one of these will stall or fail in the author turn. Options for the operator:
 
-1. Pick a Claude author (`--author-vendor claude`) for that item. The default
-   efficient mode needs no probe for it. In strict mode it needs a
-   passing Claude-author permission-probe. Run permission-probe until it passes before starting a strict run.
+1. Pick a Claude author (`--author-vendor claude`) for that item.
 2. Split out the step that needs the capability and keep the rest in the work item.
 3. Run that step outside paired-session, by hand, and feed the result back as
    ordinary workspace content.
 
-Do not loosen the sandbox to make such an item pass; the probe PASS and the
-safety rows in `docs/1c-safety-controls.md` are bound to the sandbox as probed.
+Do not loosen the sandbox to make such an item pass; the safety rows in `docs/1c-safety-controls.md`
+describe the sandbox as configured.
 
 ### Removed: the fake lifecycle
 

@@ -18,12 +18,12 @@ Today the coordinator installs no signal handler: SIGTERM ends it at once, and t
 recorded as `active`, kills the turn's process group and waits for it.
 
 ## Mechanism
-- `bin/paired-session run|resume|reject|permission-probe ... --detach` runs every synchronous check first (argument, model,
+- `bin/paired-session run|resume|reject ... --detach` runs every synchronous check first (argument, model,
   profile and gate-surface refusals still print in the caller's shell), then forks; the child calls `setsid()` and forks
   again; the grandchild re-enters `main()` with the same arguments minus `--detach`, its stdin on `/dev/null` and stdout and
   stderr appended to a log. The caller prints `DETACHED: pid <pid>; log <path>; ...` and exits 0 at once.
 - Record, lock and log live in `<system temp>/paired-session-detached-<uid>/` (mode 0700, owner checked; never in the run
-  dir or its parent, which the Claude author probe watches), keyed by the resolved run dir: `<key>.json` holds pid, run dir,
+  dir or its parent), keyed by the resolved run dir: `<key>.json` holds pid, run dir,
   argv, log, status (`running`, then `exited` with the exit code). The caller takes an exclusive `flock` on `<key>.lock`
   before forking and marks the record `starting`; the grandchild inherits the lock, holds it until it exits and is the only
   writer of the record from then on (pid, session id, `running`). So a second `--detach` for the run dir is refused, and an
@@ -43,13 +43,12 @@ recorded as `active`, kills the turn's process group and waits for it.
   a HOLD while a holder is still starting.
 
 ## What stays the same
-The detached grandchild is an ordinary coordinator process: run lease, workspace lease, FIELD-13 probe lock, `active` and
+The detached grandchild is an ordinary coordinator process: run lease, workspace lease, `active` and
 `uncertain_active`, per-turn process-group cleanup (start, timeout, failure, stop), every Category A/B guard and the exit codes.
 After `stop` the next command sees the interrupted turn as uncertain, as after Ctrl-C today: check the process group, then
-`resume --retry-uncertain` (or `permission-probe --retry-uncertain` for a probe) or `abort`. Progress: `RUN_DIR/state.json`,
+`resume --retry-uncertain` or `abort`. Progress: `RUN_DIR/state.json`,
 `status --brief`, the log. Wait until the printed pid has exited (the printed record path then reads "exited"
-with the exit code), then read the last line of its log and `status --brief`. A successful permission probe stays ACTIVE with "permission probe passed; run resume
-to continue"; a report run ends in REPORTED. Without `--detach` nothing changes, including SIGTERM.
+with the exit code), then read the last line of its log and `status --brief`. A report run ends in REPORTED. Without `--detach` nothing changes, including SIGTERM.
 
 ## Limits
 - macOS only (it uses fork and setsid; Linux is not supported, ADR-15 amendment). On native Windows the coordinator

@@ -113,28 +113,13 @@ class ProgressTests(unittest.TestCase):
             self.assertEqual(rc.status_brief(run_dir, 5), 0)
         output.assert_called_once_with('no progress events yet')
 
-    def test_probe_turns_get_their_own_kinds_and_are_never_real_turns(self):
-        command = self.command('--gate-vendor', 'codex', '--exercise-revisions')
-        command[2] = 'permission-probe'
-        probed = subprocess.run(command, cwd=self.root, env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': 'deny'}, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertIn(probed.returncode, (0, 2), probed.stdout + probed.stderr)
-        kinds = {row['kind'] for row in self.rows()}
-        self.assertEqual(kinds & {'probe:reviewer', 'probe:author-escape', 'probe:gate'}, {'probe:reviewer', 'probe:author-escape', 'probe:gate'})
-        self.assertFalse(kinds & {'dispatch', 'phase', 'verdict'})
-        self.assertFalse([row for row in self.rows() if row['kind'].startswith('probe') and 'label' in row])
-        self.assertFalse([line for line in probed.stdout.splitlines() if LIVE.match(line) and 'running author' in line])
-        self.assertTrue(probed.stdout.splitlines()[-1].startswith(('PASS', 'FAIL')))
-
-    def test_dispatch_outcomes_name_rate_limits_and_probe_roles(self):
+    def test_dispatch_outcomes_name_rate_limits(self):
         co = self.coordinator()
         with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}):
             with self.assertRaisesRegex(RuntimeError, 'rate_limited'):
                 co.invoke('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
         end = self.rows()[-1]
         self.assertEqual((end['kind'], end['step'], end['outcome']), ('dispatch', 'end', 'rate-limited'))
-        co.progress('probe:reviewer', step='start')
-        self.assertNotIn('label', self.rows()[-1])
 
     def test_an_rf5_conversion_is_named_in_the_verdict_event(self):
         use_lifecycle_on(self, self)

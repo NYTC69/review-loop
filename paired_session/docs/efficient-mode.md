@@ -1,41 +1,40 @@
-# Efficient safety mode (D-EFF, owner 2026-10-04, amended)
+# Efficient safety mode (D-EFF, owner 2026-10-04, amended; the only mode since v3.7.0)
 
 For CODEX_HOME provisioning, run roots and fallback rules, see the [project overview](../../README.md).
 
 Owner decision D-EFF, amended:
 > "A类+B类的…这些要求还是要在以后的review-loop里遵守，但是c类的严格沙箱要求，不需要再加固或者花时间开发了"
 
-Categories A and B are mandatory in every mode. Only category C is dropped from the default.
+Categories A and B are mandatory. Category C was dropped: first from the default (D-EFF), then entirely in v3.7.0
+(owner decision 2026-11-08), which removed strict mode and the permission probe. Efficient is the only mode.
 
-| Category | What it requires | efficient (default) | strict |
-|---|---|---|---|
-| A, collaboration integrity | Read-only roles do not change the workspace. Roles cannot alter the coordinator records. Test results never come from a model's claim. | kept | kept |
-| B, the operator's machine | The author writes only the workspace and its own tmp. No role writes other repos, the home dir or global `~/.claude` / `~/.codex`. Secret env vars are kept from roles. The git guard. | kept | kept |
-| C, strict sandbox assurance | A permission-probe PASS before dispatch; an evidence guard that holds; further sandbox hardening. | dropped | as today, frozen |
+| Category | What it requires | Since v3.7.0 |
+|---|---|---|
+| A, collaboration integrity | Read-only roles do not change the workspace. Roles cannot alter the coordinator records. Test results never come from a model's claim. | kept |
+| B, the operator's machine | The author writes only the workspace and its own tmp. No role writes other repos, the home dir or global `~/.claude` / `~/.codex`. Secret env vars are kept from roles. The git guard. | kept |
+| C, strict sandbox assurance | A permission-probe PASS before dispatch; an evidence guard that holds; further sandbox hardening. | dropped (strict mode removed) |
 
-**Efficient is not yolo.** Both modes run every role with today's sandbox flags. Efficient differs from strict only in category C.
+**Efficient is not yolo.** Every role runs with the sandbox flags below. Only category C is gone.
 
-## 1. Choosing the mode
+## 1. The mode
 
-- `safety_mode` is chosen by the command that creates the run state (`run` by default; `permission-probe`, which comes first, in strict mode) and saved in `state['config']`.
-  - Pass `--strict` from `permission-probe` on.
-  - A request that differs from the saved mode is refused by `run`, `resume`, `reject` and `permission-probe`, with one exception: `--strict` after only probe turns (none `active` or `uncertain_active` either) upgrades the run. This is a tightening, and the probe report stays valid because the flags are identical.
-  - Commands that dispatch no turn (`status`, `abort`, `accept`, `note`, `attach-verification`) print a NOTE and keep the saved mode.
-  - A run saved before D-EFF writes `safety_mode: strict` into its successor config.
-- **Default:** `efficient` (module constant `DEFAULT_SAFETY_MODE`).
-- **Strict is opt-in:** `--strict`, or `"safety_mode": "strict"` in an operator profile given with `--config FILE`.
-  - The workspace config `<workspace>/.review-loop/paired-session.json` cannot set it; the key is refused there.
-  - Valid values are `efficient` and `strict`.
-- **Migration:** a saved state without `safety_mode` (any run made before D-EFF) resumes as `strict`.
+- `efficient` is the only mode (module constant `DEFAULT_SAFETY_MODE`).
+- `--strict` on the command line, or `"safety_mode": "strict"` in any profile (operator or workspace), prints one NOTE
+  (`NOTE: strict mode was removed in v3.7.0; the run uses the default mode`) and the run continues in the default mode.
+- A run saved strict resumes in the default mode with the same NOTE; its saved config is left as saved. A run saved
+  without `safety_mode` (made before D-EFF) resumes in the default mode.
+- `"safety_mode": "efficient"` stays accepted; any other value is refused.
+- `permission-probe` is refused before any state, lease or run dir: `REFUSED: permission-probe was removed in v3.7.0; runs
+  do not need it` (exit 2).
 
-## 2. CLI flags: the same in both modes
+## 2. CLI flags
 
-Every role keeps today's flags in both modes. Nothing in this change touches `_claude_command`, `_codex_command` or `_claude_sandbox_settings`.
+Every role keeps the flags it had before v3.7.0. Removing strict mode did not change `_claude_command`, `_codex_command` or `_claude_sandbox_settings`.
 
 | Role | Claude | Codex |
 |---|---|---|
-| Author | `--permission-mode acceptEdits`; path-scoped `--allowedTools Edit(//<workspace>/**)`; the `--disallowedTools` deny rules for the context, the probe cache and `~/.claude` `~/.codex` `~/.ssh` `~/.aws`; `--settings` with the Bash OS sandbox: `denyWrite` the run dir, the credential env-var and file deny lists, network on (v3.6.0) | `-c approval_policy="never" -c sandbox_mode="workspace-write"`, writable roots = author-tmp and `extra_writable_roots`, network on (v3.6.0), `exclude_slash_tmp`, `TMPDIR=author-tmp`, `--ignore-rules` |
-| Reviewer, gate, shadow, probe | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | v3.6.0: the author's shape, `-c sandbox_mode="workspace-write"`, writable roots = the workspace, the dispatch's own `$TMPDIR` scratch root and `extra_writable_roots`, network on, `exclude_slash_tmp`; `--ignore-rules` (the guard in §4a still undoes tracked and non-ignored changes) |
+| Author | `--permission-mode acceptEdits`; path-scoped `--allowedTools Edit(//<workspace>/**)`; the `--disallowedTools` deny rules for the context, the former probe-cache path (kept so a v3.6.0 frozen role dispatch manifest stays byte-identical) and `~/.claude` `~/.codex` `~/.ssh` `~/.aws`; `--settings` with the Bash OS sandbox: `denyWrite` the run dir, the credential env-var and file deny lists, network on (v3.6.0) | `-c approval_policy="never" -c sandbox_mode="workspace-write"`, writable roots = author-tmp and `extra_writable_roots`, network on (v3.6.0), `exclude_slash_tmp`, `TMPDIR=author-tmp`, `--ignore-rules` |
+| Reviewer, gate, shadow | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | v3.6.0: the author's shape, `-c sandbox_mode="workspace-write"`, writable roots = the workspace, the dispatch's own `$TMPDIR` scratch root and `extra_writable_roots`, network on, `exclude_slash_tmp`; `--ignore-rules` (the guard in §4a still undoes tracked and non-ignored changes) |
 
 What these flags deliver:
 - **B:** the author writes only the workspace and author-tmp; global and home config are denied; secret env vars are denied to Claude's Bash; Codex's shell excludes secret-named variables by default.
@@ -44,8 +43,8 @@ What these flags deliver:
 
 **Native Windows exception (v3.3.0, ADR-20 D1).** Claude Code has no Bash sandbox on native Windows, so there
 `_claude_sandbox_settings` sets `sandbox.enabled` and `sandbox.failIfUnavailable` to false; the rest of the settings
-keeps its shape and the macOS settings are byte-identical. Only efficient mode runs: `--strict` (or a strict
-profile, or a saved strict run), `permission-probe` and `--detach` are refused before any lease or state write.
+keeps its shape and the macOS settings are byte-identical. `--detach` and gemini roles are refused before any lease or
+state write; `--strict` and a strict run get the NOTE of §1, as on macOS.
 - Claude read-only roles keep `--restricted --permission-mode dontAsk`, the exact `Bash(<cmd>)` allow rules and the
   Edit/Write/NotebookEdit/Agent denies, with no OS layer under them; the post-turn read-only workspace check (§4a)
   still voids, restores and holds. On Windows it compares content and existence, not permission bits.
@@ -64,19 +63,32 @@ not act maliciously.
 
 **Owner question (friction).** Friction must be listed with evidence before any flag is removed, and this change removes none. Recorded so far: the read-only roles' exact `Bash(<cmd>)` allowlist makes a reviewer that runs an unlisted command get a denial, not a run. The supervisor may want to collect real-run evidence on this.
 
-## 3. Category C gates
+## 3. Category C gates (removed in v3.7.0)
 
-| Gate | strict | efficient |
-|---|---|---|
-| Permission probe before run, resume and reject (`probe_gate`); `_probe_gate_required` re-checks after an uncertain turn | required | not required. `permission-probe` still runs and its report is still recorded |
-| Claude author probe PASS (`claude_author_verified`, in `_execute_locked` and `drive`) | required | not required |
-| Codex CLI sandbox-contract verification (`codex_contract_verified`) | required | not required |
-| `--accept-unverified-codex-cli` | honoured with `--reason` | unnecessary: accepted with `--reason`, but not recorded or checked |
-| `--accept-probe-skip`, `--accept-unverified-claude-author` | refused (removed); use `permission-probe` | refused (removed); no probe waiver needed |
-| Evidence guard (`sensitive_access`) | holds | log-only: the reason goes to `receipt['evidence_guard']['would_hold']` |
-| Codex capability scan (`codex_capabilities`: MCP servers, profiles, permissions in the Codex config) | refuses | refuses. It keeps the sandbox configuration honest (B) |
+| Former gate | Since v3.7.0 |
+|---|---|
+| Permission probe before run, resume and reject | removed; `permission-probe` is refused. No probe report, probe cache, probe lock or gate probe exists |
+| Claude author probe PASS | removed; a real Claude author is never refused |
+| Codex CLI sandbox-contract verification (the verified codex-cli version list) | removed |
+| `--accept-unverified-codex-cli`, `--accept-probe-skip`, `--accept-unverified-claude-author` | refused as removed options ("removed in v3.7.0; runs need no probe or waiver") |
+| `--skip-probe` | a hidden no-op |
+| Evidence guard (`sensitive_access`) | log-only: the reason goes to `receipt['evidence_guard']['would_hold']` |
+| Codex capability scan (`codex_capabilities`: MCP servers, profiles, permissions in the Codex config) | still refuses. It keeps the sandbox configuration honest (B) |
 
-## 4. Category A and B detection, in both modes
+**Program and gate-prompt changes without a probe.** When the operator programs or PATH changed since run start, the
+next dispatch records the new state (state key `program_refreezes`) and prints one NOTE ("operator program or PATH
+changed since run start (changed: X); the run continues with the new state"); a missing or unsafe program still HOLDs. A
+run started by another release, whose bundled gate prompt differs, continues with this release's gate prompt after one
+NOTE (`gate_prompt_refreezes`); for a lifecycle run only the gate-prompt fields of the frozen role dispatch manifest are
+updated. With lifecycle off, a changed reviewer-commands block of the work item is recorded with a NOTE
+(`reviewer_command_refreezes`); with lifecycle on it still HOLDs ("restore the reviewer-commands block of the work item
+and resume, or abort and start a new run").
+
+**Saved runs from earlier releases.** The state keys `permission_probe`, `permission_probe_superseded`,
+`probe_skip_override`, `claude_author_override` and `residual_risk` are tolerated and ignored. An uncertain `PROBE` or
+`AUTHOR_PERMISSION_PROBE` turn saved by an earlier release is settled with `resume --retry-uncertain`.
+
+## 4. Category A and B detection
 
 ### a. Read-only roles (reviewer, gate, shadow) do not change the workspace (sub-batch eff-b)
 
@@ -100,7 +112,7 @@ For a restore it also keeps a byte copy of `.git/index` and a tree of the worktr
 
 If the restore verifies, the turn is re-dispatched once. If it does not, or the capture failed, the run HOLDs, naming the evidence file. A second violation is restored and HOLDs.
 
-**Change from today:** strict mode used to HOLD at once, with no restore. The probe roles keep `allow_mutation_report`.
+Before D-EFF, strict mode held at once, with no restore.
 
 **Cost:** one `git add -A` into a temporary index per read-only turn. It is stat-cached, so a large repository with few changes stays fast.
 
@@ -118,7 +130,7 @@ lstat below), of symlinks and directories, and ACLs, extended attributes and fil
 A workspace below the repository top is not a case: the coordinator requires `.git` in the workspace.
 
 **Ignored entries (eff-e).** For Claude and Gemini read-only roles the read-only sandbox is the first barrier and this is the second
-line. The check runs in both modes. Codex reviewer-type roles (workspace-write since v3.6.0) may write ignored paths: a changed
+line. Codex reviewer-type roles (workspace-write since v3.6.0) may write ignored paths: a changed
 entry is recorded in the receipt as `readonly_ignored_kept` and the turn stands.
 - `capture()` records the lstat metadata (type, size, mtime_ns, mode, symlink target) of each ignored entry exactly as
   `git ls-files -o -i --exclude-standard --directory` lists it, so a collapsed directory is one entry.
@@ -130,14 +142,11 @@ entry is recorded in the receipt as `readonly_ignored_kept` and the turn stands.
   not checked`.
 - For a Claude or Gemini role, a CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__`
   or a test runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write)
-  HOLDs every read-only turn, in both modes. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
+  HOLDs every read-only turn. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
   are excluded from workspace scans, so the recommended isolated homes may live there.
 
 **An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The
 unrestored record keeps the pre-turn baseline, and dispatch and accept refuse until the workspace matches it again.
-
-**Mode selection (eff-e).** A `--config` profile under the workspace, run dir or author temp cannot set `safety_mode`, either at
-creation or through the probe-only upgrade.
 
 **A failed undo (eff-c)** leads the HOLD reason ("read-only turn changed the workspace and it could not be restored; manual restore
 needed"), whatever else the turn tripped, and is recorded as `state['unrestored_readonly_turn']`. `run`, `resume`, `reject`,
@@ -158,51 +167,49 @@ turn's processes, then restores the workspace by hand.
 
 ### c. Test results never come from a model's claim
 
-- An EXEC approval needs an observed successful run of the configured test command (`observed_test_succeeded`). The exit code and output come from the vendor CLI's event stream, not from the model's `self_run_evidence`. This holds in both modes.
+- An EXEC approval needs an observed successful run of the configured test command (`observed_test_succeeded`). The exit code and output come from the vendor CLI's event stream, not from the model's `self_run_evidence`.
 - **Owner question:** EXEC approval is not gated on a test run of the coordinator's own. The coordinator runs the configured test command itself only for the quality writers' baseline and checks (`_test_run`, D09). The owner's wording, "coordinator-run test command", would be a new step: run the configured test after the author turn and gate EXEC on that result. Not built here.
 
 ### d. Git guard (B)
 
-- A HEAD or branch change in an author turn is a HOLD ("author changed HEAD or the branch"), in both modes. Read-only roles are covered by **a**. Index staging by the author is allowed.
+- A HEAD or branch change in an author turn is a HOLD ("author changed HEAD or the branch"). Read-only roles are covered by **a**. Index staging by the author is allowed.
 - The author's sandbox keeps it out of other repos. Its edits inside the workspace, a discard of unrelated work included, appear in the candidate diff that the reviewer and gate judge.
 
 ### Global config and secret env (B)
 
-- The global Codex and Claude config check (`global_config_changes`) and the env-var deny list are the same in both modes. Tests verify them in efficient mode.
-- One outcome differs by mode (FIELD-21, poker-news-bot WI-102). A new Claude Code session outside the run can rewrite a plugin's entry in `installed_plugins.json` when it materializes a new plugin version. That happened in WI-102, where review-loop went from 2.10.0 to 2.10.1. `normal_plugin_update` recognizes such a normal update precisely:
+- The global Codex and Claude config check (`global_config_changes`) and the env-var deny list apply. Tests verify them.
+- A normal plugin update is kept (FIELD-21, poker-news-bot WI-102). A new Claude Code session outside the run can rewrite a plugin's entry in `installed_plugins.json` when it materializes a new plugin version. That happened in WI-102, where review-loop went from 2.10.0 to 2.10.1. `normal_plugin_update` recognizes such a normal update precisely:
   - the document outside `plugins` is unchanged;
   - the plugin keys, the entries and each entry's keys are unchanged;
   - a changed entry differs only in the scalar values of `version`, `installPath`, `gitCommitSha` and `lastUpdated`;
   - a changed `installPath` is the canonical cache directory `<plugins>/cache/<marketplace>/<plugin>/<new version>`, present on disk as a real directory.
 
-  The update is recorded in both modes as `global_config_changes.plugin_update`.
-  - Efficient mode (FIELD-24, supervisor 2026-10-06; it replaces FIELD-21's void and re-dispatch): the turn is kept. The running CLI loaded its plugins at start, and the old versioned cache directory stays on disk, so the turn's work is unaffected. The finding is cleared, and the receipt adds `next_turn_registry` ("the next turn starts on the updated plugin registry: <plugin> <old> -> <new>"), so a reader sees the version change between turns. Nothing is voided or re-dispatched, and a later update in another turn is recorded the same way; there is no second-update HOLD. FIELD-24 came from poker-news-bot WI-109, where a release relaunch voided a 78-minute author turn.
-  - Strict mode holds with `PLUGIN_UPDATE_HINT`, and `resume` re-runs the turn (unchanged).
+  The update is recorded as `global_config_changes.plugin_update`.
+  - FIELD-24 (supervisor 2026-10-06; it replaces FIELD-21's void and re-dispatch): the turn is kept. The running CLI loaded its plugins at start, and the old versioned cache directory stays on disk, so the turn's work is unaffected. The finding is cleared, and the receipt adds `next_turn_registry` ("the next turn starts on the updated plugin registry: <plugin> <old> -> <new>"), so a reader sees the version change between turns. Nothing is voided or re-dispatched, and a later update in another turn is recorded the same way; there is no second-update HOLD. FIELD-24 came from poker-news-bot WI-109, where a release relaunch voided a 78-minute author turn.
   - Any other change, or a turn that also tripped another check (a workspace void, a run-dir touch, or a later check of the same turn), is a hard finding as before. RF-4's version/lastUpdated bump is one case of a normal update.
-- V325-CFG (gg-pipeline WI-266h): in efficient mode a read-only Claude turn (reviewer, shadow or gate) whose only finding is a changed `~/.claude/settings.json` is kept. Such a turn cannot write that file, so another process (the owner's interactive session, another run) changed it. The receipt records `concurrent_settings_change` (before/after sha256), a NOTE is printed, and the next turn takes its own baseline. Author and writer turns, probes, strict mode, a change together with another finding and a voided turn still hold. In both modes a global-config HOLD message now ends with `GLOBAL_CONFIG_HINT`: the change may come from another process on the machine, and `resume` re-runs the turn (a normal plugin update keeps `PLUGIN_UPDATE_HINT`).
+- V325-CFG (gg-pipeline WI-266h): a read-only Claude turn (reviewer, shadow or gate) whose only finding is a changed `settings.json` in its CLI's global config home is kept. Such a turn cannot write that file, so another process (the owner's interactive session, another run) changed it. The receipt records `concurrent_settings_change` (before/after sha256), a NOTE is printed, and the next turn takes its own baseline. Author and writer turns, a change together with another finding and a voided turn still hold. A global-config HOLD message now ends with `GLOBAL_CONFIG_HINT`: the change may come from another process on the machine, and `resume` re-runs the turn (a normal plugin update keeps `PLUGIN_UPDATE_HINT`).
 
 ## 5. Docs
 
-`README.md` (an addition only; the lint-SSOT text is not trimmed) and the paired-session `SKILL.md` must say plainly:
-- the sandboxes apply in both modes;
-- efficient (the default) does not require a permission-probe PASS, and its evidence guard only logs;
-- strict (`--strict` or an operator profile) also requires the probe PASS and lets the evidence guard hold.
+`README.md` and the paired-session `SKILL.md` must say plainly:
+- every sandbox applies;
+- there is no permission probe and no strict mode, and the evidence guard only logs.
 
 ## 6. Lifecycle hook (D-7)
 
-- D-7 ("lifecycle refuses probe waivers") is W1a's strict-only internal `worktree_lifecycle.refuse_waivers` check. The public surface first refuses the removed Claude-author and probe-skip flags in both modes. Efficient mode needs no waiver; the supported `--accept-unverified-codex-cli` is unneeded and not recorded.
+- D-7 ("lifecycle refuses probe waivers") was W1a's strict-only internal `worktree_lifecycle.refuse_waivers` check. Since
+  v3.7.0 every waiver flag is refused at the public surface as a removed option, and no waiver is needed.
 
 ## 7. Tests
 
-- **Strict pin.** Existing tests keep strict without assertion edits:
-  - `RealCoordinatorTests.setUp` patches `DEFAULT_SAFETY_MODE='strict'` in both coordinator module objects (`real_coordinator` and `paired_session.coordinator`);
-  - `RealCoordinatorTests.command()` appends `--strict`.
-- **New tests:**
-  - mode selection: the default, `--strict`, the operator profile, the workspace config refused, an old state resumes strict, the mode fixed on resume;
-  - efficient mode: no probe needed; the evidence guard log-only; the sandbox flags identical to strict;
-  - in efficient mode: run-dir placement and the context check, the observed-test requirement, the global-config check and the env deny list;
-  - the author HEAD guard;
-  - eff-b: a reviewer or gate write voids the turn, restores, re-dispatches once and then HOLDs; an unverifiable restore HOLDs.
-- **Sub-batches:**
+- Before v3.7.0 the strict pin (`RealCoordinatorTests` patched `DEFAULT_SAFETY_MODE='strict'` and appended `--strict`)
+  kept the older tests on strict. v3.7.0 removed the pin and the probe tests.
+- `test_efficient_mode.py` covers: `--strict`, a strict profile and a run saved strict print the NOTE and run in the
+  default mode; an unknown `safety_mode` is refused; no probe or opt-in is needed and the evidence guard only logs;
+  waiver flags are refused as removed options; every role keeps its sandbox flags; run-dir placement, the observed-test
+  requirement and the global-config check; the author HEAD guard.
+- `test_readonly_guard.py` covers eff-b: a reviewer or gate write voids the turn, restores, re-dispatches once and then
+  HOLDs; an unverifiable restore HOLDs.
+- **Sub-batches (history):**
   - **eff-a:** mode plumbing, category C gating and the author HEAD guard;
   - **eff-b:** read-only-turn detection, restore and re-dispatch.

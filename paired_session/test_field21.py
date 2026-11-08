@@ -2,15 +2,12 @@
 claude_plugins" because a NEW Claude Code session outside the run materialized review-loop 2.10.1 and rewrote that plugin's entry
 in installed_plugins.json (version, installPath, gitCommitSha and lastUpdated together). RF-4 recognized only version/lastUpdated.
 A normal plugin update is now recognized precisely (normal_plugin_update). Efficient mode keeps the turn and records the update
-(FIELD-24, supervisor 2026-10-06, replacing FIELD-21's void and re-dispatch); strict mode holds with the hint; anything else
-stays a hard finding."""
+(FIELD-24, supervisor 2026-10-06, replacing FIELD-21's void and re-dispatch); anything else stays a hard finding."""
 import copy
 import json
 import os
 import subprocess
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from paired_session import test_real_coordinator as trc
@@ -25,10 +22,6 @@ class Field21Tests(unittest.TestCase):
         self.h.setUp()
         self.addCleanup(self.h.doCleanups)
         self.addCleanup(self.h.tearDown)
-        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():
-            pin = patch.object(module, 'DEFAULT_SAFETY_MODE', 'efficient')   # the product default, which the harness pins to strict
-            pin.start()
-            self.addCleanup(pin.stop)
         self.plugins = self.h.test_home / '.claude' / 'plugins'
         for version in ('2.10.0', '2.10.1', '2.10.2'):
             self.install_dir(version).mkdir(parents=True)
@@ -103,10 +96,8 @@ class Field21Tests(unittest.TestCase):
         queue.write_text(json.dumps(list(docs)))
         return queue
 
-    def launch(self, *docs, strict=False, extra=(), env=None, role='author'):
-        command = [a for a in self.h.command('--author-vendor', 'claude', '--shadow', 'off', '--adversarial-gate', 'off', *extra)
-                   if strict or a != '--strict']
-        if strict: command.append('--skip-probe')
+    def launch(self, *docs, extra=(), env=None, role='author'):
+        command = self.h.command('--author-vendor', 'claude', '--shadow', 'off', '--adversarial-gate', 'off', *extra)
         result = subprocess.run(command, cwd=self.h.root, env={**os.environ, 'FAKE_PLUGIN_UPDATES': str(self.queue(docs)), **(env or {})},
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         state = json.loads((self.h.run_dir / 'state.json').read_text())
@@ -149,13 +140,6 @@ class Field21Tests(unittest.TestCase):
         self.assertEqual(state['status'], 'DONE')
         self.assertEqual([turn['global_config_changes']['plugin_update'][0]['version'] for turn in authors[:2]],
                          [['2.10.0', '2.10.1'], ['2.10.1', '2.10.2']])
-
-    def test_strict_holds_with_the_hint_and_records_the_update(self):
-        result, state, authors = self.launch(self.updated(), strict=True)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertEqual(state['hold_reason'], 'claude turn changed global config: claude_plugins' + rc.PLUGIN_UPDATE_HINT)
-        [turn] = authors
-        self.assertEqual(turn['global_config_changes']['plugin_update'][0]['plugin'], KEY)
 
     def test_an_abnormal_change_stays_a_hard_finding_in_efficient_mode(self):
         extra = self.updated(); extra['plugins'][KEY][0]['scope'] = 'project'

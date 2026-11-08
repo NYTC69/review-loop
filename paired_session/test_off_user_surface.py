@@ -27,17 +27,18 @@ class OffUserSurfaceTests(unittest.TestCase):
             code = rc.main(argv)
         return code, output.getvalue()
 
-    def test_four_removed_flags_are_refused_without_claiming_off_is_removed(self):
+    def test_removed_flags_are_refused_without_claiming_off_is_removed(self):
         cases = ((('--adversarial-gate', 'off'), 'keep --adversarial-gate on'),
                  (('--override-rejection',), 'use resume --add-rounds N or note --scope-change'),
-                 (('--accept-unverified-claude-author',), 'run permission-probe'),
-                 (('--accept-probe-skip',), 'run permission-probe'))
+                 (('--accept-unverified-claude-author',), 'removed in v3.7.0; runs need no probe or waiver'),
+                 (('--accept-probe-skip',), 'removed in v3.7.0; runs need no probe or waiver'),
+                 (('--accept-unverified-codex-cli', '--reason', 'x'), 'removed in v3.7.0; runs need no probe or waiver'))
         for options, alternative in cases:
             with self.subTest(options=options):
                 argv = self.public_argv('run', *options)
                 code, output = self.call_public(argv)
                 self.assertEqual(code, 2, output)
-                self.assertIn('removed user option: ' + ' '.join(options), output)
+                self.assertIn('removed user option: ' + options[0], output)
                 self.assertIn(alternative, output)
                 self.assertNotIn('lifecycle-off was removed', output)
                 self.assertFalse((self.run_dir / 'state.json').exists())
@@ -147,12 +148,12 @@ class OffUserSurfaceTests(unittest.TestCase):
                 self.assertEqual(co.state['config']['lifecycle_mode'], 'on')
                 self.assertEqual(co.state['lifecycle']['format'], 'worktree')
 
-    def test_public_help_describes_both_modes_and_supported_override(self):
+    def test_public_help_describes_both_modes_and_hides_removed_options(self):
         help_text = rc.parser().format_help()
         self.assertIn('--lifecycle-mode {off,on}', help_text)
         self.assertIn('stop after gate', ' '.join(help_text.split()))
-        self.assertIn('--accept-unverified-codex-cli', help_text)
-        for flag in ('--accept-unverified-claude-author', '--accept-probe-skip', '--override-rejection', INTERNAL_OPTIONS):
+        for flag in ('--accept-unverified-codex-cli', '--accept-unverified-claude-author', '--accept-probe-skip', '--override-rejection',
+                     '--strict', '--skip-probe', 'permission-probe', INTERNAL_OPTIONS):
             self.assertNotIn(flag, help_text)
 
     def test_saved_off_inspection_and_stop_preserve_state_with_off_profiles(self):
@@ -176,16 +177,6 @@ class OffUserSurfaceTests(unittest.TestCase):
                 code, output = self.call_public(self.public_argv('status'))
                 self.assertEqual(code, 0, output)
                 self.assertEqual(output.strip(), raw)
-
-    def test_codex_cli_override_remains_supported(self):
-        # Admission and creation run normally; only provider dispatch is stubbed.
-        argv = self.public_argv('run', '--lifecycle-mode', 'on', '--accept-unverified-codex-cli', '--reason', 'owner version ruling', '--skip-probe')
-        with patch.object(rc.Coordinator, 'drive', return_value='DONE'):
-            code, output = self.call_public(argv)
-        self.assertEqual(code, 0, output)
-        self.assertNotIn('removed user option', output)
-        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['config']['lifecycle_mode'], 'on')
-
 
 if __name__ == '__main__':
     unittest.main()

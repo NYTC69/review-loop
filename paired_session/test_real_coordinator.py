@@ -1,5 +1,4 @@
 import importlib.util
-import copy
 import errno
 import hashlib
 import io
@@ -7,7 +6,6 @@ import json
 import os
 import signal
 import shlex
-import socket
 from pathlib import Path
 import subprocess
 import shutil
@@ -124,10 +122,6 @@ class RealCoordinatorTests(unittest.TestCase):
         self.addCleanup(self._fake_codex_env.stop)
         self.original_home = os.environ.get('HOME')
         os.environ['HOME'] = str(self.test_home)
-        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():   # D-EFF: these tests pin strict
-            pin = patch.object(module, 'DEFAULT_SAFETY_MODE', 'strict')
-            pin.start()
-            self.addCleanup(pin.stop)
         self._unpatched_popen = subprocess.Popen
         self._real_provider_paths = {str(Path(path).resolve()) for name in ('claude', 'codex')   # the stubs and any real CLI behind them
                                      for search in (os.environ['PATH'], os.environ['PATH'].split(os.pathsep, 1)[-1])
@@ -304,29 +298,6 @@ class RealCoordinatorTests(unittest.TestCase):
         split_entry = rc.attribute_global_config_changes(before, rc.global_config_snapshot(home), [self.workspace])
         self.assertEqual(split_entry['status'], 'FAIL')
 
-    def test_effective_codex_home_trust_warning_does_not_touch_default_home(self):
-        isolated = self.root / 'isolated-codex-home'
-        isolated.mkdir()
-        (isolated / 'config.toml').write_bytes((self.test_home / '.codex/config.toml').read_bytes())
-        default_before = (self.test_home / '.codex/config.toml').read_bytes()
-        command = self.command()
-        command[2] = 'permission-probe'
-        result = subprocess.run(command, cwd=self.root,
-            env={**os.environ, 'CODEX_HOME': str(isolated), 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'},
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['global_config_changes']['status'], 'PASS')
-        self.assertIn('global config mutated by codex CLI trust persistence',
-                      report['global_config_changes']['warnings'])
-        self.assertEqual((self.test_home / '.codex/config.toml').read_bytes(), default_before)
-        self.assertNotEqual((isolated / 'config.toml').read_bytes(), default_before)
-        before = rc.global_config_snapshot(self.test_home, isolated)
-        (self.test_home / '.codex/config.toml').write_bytes(default_before + b'\n[unexpected]\nflag = true\n')
-        default_changed = rc.attribute_global_config_changes(
-            before, rc.global_config_snapshot(self.test_home, isolated), [self.workspace])
-        self.assertEqual(default_changed['status'], 'FAIL')
-
     def test_relative_codex_home_is_refused_before_run_state(self):
         args = rc.parser().parse_args(self.command()[2:])
         with patch.dict(os.environ, {'CODEX_HOME': 'relative-home'}):
@@ -428,44 +399,11 @@ class RealCoordinatorTests(unittest.TestCase):
         after = rc.global_config_snapshot(separated_home)
         self.assertEqual(rc.attribute_global_config_changes(before, after, [workspace])['status'], 'FAIL')
 
-    def test_permission_probe_records_known_codex_and_claude_autoupdates(self):
-        home = self.root / 'probe-home'
-        (home / '.codex').mkdir(parents=True)
-        (home / '.claude' / 'plugins').mkdir(parents=True)
-        (home / '.codex' / 'config.toml').write_text('model = "gpt-6-luna"\n')
-        (home / '.claude' / 'settings.json').write_text('{}\n')
-        (home / '.claude' / 'plugins' / 'installed_plugins.json').write_text(
-            json.dumps({'plugins': [{'name': 'compass', 'version': '0.6.1', 'lastUpdated': 'before'}]}))
-        command = self.command()
-        command[2] = 'permission-probe'
-        command += ['--claude-bin', str(self.fake_claude_cli())]
-        result = subprocess.run(command, cwd=self.root,
-                                env={**os.environ, 'HOME': str(home),
-                                     'FAKE_CODEX_AUTO_TRUST_ENTRY': '1',
-                                     'FAKE_CLAUDE_PLUGIN_LAST_UPDATED': '1'},
-                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn('global config mutated by codex CLI trust persistence', result.stdout)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        changes = report['global_config_changes']
-        self.assertEqual(changes['status'], 'PASS', changes)
-        self.assertEqual({(row['file'], row['change']) for row in changes['expected_changes']}, {
-            ('codex_config', 'trusted-probe-workspace-entry'),
-            ('claude_plugins', 'plugin-lastUpdated'),
-        })
-        self.assertEqual(changes['findings'], [])
-        self.assertIn(str(Path(report['author_permission_probe']['workspace']).resolve()), result.stdout)
-
     def test_product_codex_turn_warns_and_unrelated_global_change_holds(self):
         for unexpected in (False, True):
             with self.subTest(unexpected=unexpected):
                 self.run_dir = self.root / ('product-global-' + str(unexpected).lower())
-                probe_command = self.command('--exercise-revisions', '--gate-vendor', 'claude')   # explicit: default moved by owner decision 2026-09-30 (a codex gate-probe turn would take the one-time trust warning)
-                probe_command[2] = 'permission-probe'
                 base_env = {**os.environ, 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'}
-                probe = subprocess.run(probe_command, cwd=self.root, env=base_env,
-                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
                 run_env = {**base_env, **({'FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE': '1'} if unexpected else {})}
                 run = subprocess.run(self.command('--exercise-revisions', '--gate-vendor', 'claude'), cwd=self.root, env=run_env,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -480,268 +418,38 @@ class RealCoordinatorTests(unittest.TestCase):
                     self.assertTrue(any(str(self.workspace) in row.get('global_config_warning', '')
                                         for row in state['turns']))
 
-    def test_permission_probe_fails_on_unrelated_fake_global_change(self):
-        home = self.root / 'probe-home-unexpected'
-        (home / '.codex').mkdir(parents=True)
-        (home / '.claude' / 'plugins').mkdir(parents=True)
-        (home / '.codex' / 'config.toml').write_text('model = "gpt-6-luna"\n')
-        (home / '.claude' / 'settings.json').write_text('{}\n')
-        (home / '.claude' / 'plugins' / 'installed_plugins.json').write_text('{}\n')
-        command = self.command()
-        command[2] = 'permission-probe'
-        result = subprocess.run(command, cwd=self.root,
-                                env={**os.environ, 'HOME': str(home),
-                                     'FAKE_CODEX_AUTO_TRUST_ENTRY': '1',
-                                     'FAKE_CODEX_UNEXPECTED_GLOBAL_CHANGE': '1'},
-                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertIn('unexpected-global-config-change', report['failure_reasons'])
-        self.assertEqual(report['global_config_changes']['status'], 'FAIL')
-        self.assertTrue(any(row['file'] == 'codex_config'
-                            for row in report['global_config_changes']['findings']))
-
-    def test_permission_probe_direct_controls_are_advisory(self):
-        for mode in ('readonly', 'no-writable-root', 'escape', 'no-marker'):
-            with self.subTest(mode=mode):
-                self.run_dir = self.root / ('codex-sandbox-' + mode)
-                command = self.command()
-                command[2] = 'permission-probe'
-                result = subprocess.run(command, cwd=self.root,
-                                        env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': mode},
-                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode, 0 if mode == 'no-marker' else 2,
-                                 result.stdout + result.stderr)
-                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                self.assertEqual(report['status'], 'PASS' if mode == 'no-marker' else 'FAIL')
-                self.assertEqual(report['author_permission_probe']['model_probe'], 'ATTEMPTED')
-                advisory = report['author_permission_probe']['advisory_direct_controls']
-                self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
-                checks = report['author_permission_probe']['codex_sandbox_checks']['checks']
-                self.assertEqual(advisory['checks'], checks)
-                if mode == 'readonly':
-                    self.assertFalse(checks['workspace_write_allowed']['policy_observed'])
-                    self.assertFalse(checks['run_tmpdir_write_allowed']['policy_observed'])
-                    self.assertTrue(checks['external_tmpdir_denied']['policy_observed'])
-                    self.assertTrue(checks['slash_tmp_denied']['policy_observed'])
-                elif mode == 'no-writable-root':
-                    self.assertTrue(checks['workspace_write_allowed']['policy_observed'])
-                    self.assertFalse(checks['run_tmpdir_write_allowed']['policy_observed'])
-                    self.assertTrue(checks['external_tmpdir_denied']['policy_observed'])
-                    self.assertTrue(checks['slash_tmp_denied']['policy_observed'])
-                else:
-                    self.assertTrue(checks['workspace_write_allowed']['policy_observed'])
-                    self.assertTrue(checks['run_tmpdir_write_allowed']['policy_observed'])
-                    self.assertFalse(checks['external_tmpdir_denied']['policy_observed'])
-                    self.assertFalse(checks['slash_tmp_denied']['policy_observed'])
-
-    def test_codex_direct_contract_refusal_does_not_block_model_probe(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_CONTRACT_REJECT': '1'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['status'], 'PASS', report)
-        self.assertEqual(report['model_probe'], 'ATTEMPTED')
-        self.assertTrue(all(row['status'] == 'PASS' for row in report['model_escape_checks'].values()))
-        advisory = report['advisory_direct_controls']
-        self.assertEqual(advisory['note'], 'advisory: not proven policy-equivalent to codex exec')
-        self.assertTrue(all(row['returncode'] == 2 and row['status'] == 'FAIL'
-                            for row in advisory['checks'].values()))
-        self.assertEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
-        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
-            self.assertNotEqual(co.author_flags()['codex_cli_version'], 'codex-cli 0.160.0')
-
-    def test_codex_capability_config_fails_probe_and_prevents_dispatch(self):
+    def test_codex_capability_config_prevents_dispatch(self):
         use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         for key, value in (('mcp_servers', '{}'), ('notify', '"hook"')):
             with self.subTest(key=key):
                 config.write_text(f'{key} = {value}\n')
                 co = self.coordinator('--author-vendor', 'codex')
-                result = co._author_permission_probe()
-                self.assertEqual(result['status'], 'FAIL')
                 label = 'MCP servers' if key == 'mcp_servers' else key
-                self.assertIn(label, result['reason'])
                 with self.assertRaisesRegex(RuntimeError, label):
                     co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
                 self.assertEqual(co.state['sequence'], 0)
 
-    def test_clean_codex_capability_config_allows_probe(self):
+    def test_clean_codex_capability_config_passes(self):
         use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         config.write_text('model = "gpt-6-luna"\n')
         co = self.coordinator('--author-vendor', 'codex')
         self.assertEqual(co.codex_capabilities()['status'], 'PASS')
 
-    def test_plugin_bundle_blocks_codex_probe_and_dispatch(self):
-        # rel210-fixCG: pins "without the launch flag a live bundle blocks probe and dispatch"; the default flag (bundles inert, recorded) is covered in test_cg_fixes.py: test_the_launch_flag_makes_cached_bundles_inert_and_they_stay_recorded, test_every_codex_role_argv_carries_the_launch_flag_so_the_guard_treats_bundles_as_inert
+    def test_plugin_bundle_blocks_codex_dispatch(self):
+        # rel210-fixCG: pins "without the launch flag a live bundle blocks dispatch"; the default flag (bundles inert, recorded) is covered in test_cg_fixes.py: test_the_launch_flag_makes_cached_bundles_inert_and_they_stay_recorded, test_every_codex_role_argv_carries_the_launch_flag_so_the_guard_treats_bundles_as_inert
         use_lifecycle_on(self, self)
         with patch.object(rc, 'CODEX_PLUGINS_OFF', ()):
             plugin = self.test_home / '.codex/plugins/cache/local/probe/1.0'
             plugin.mkdir(parents=True)
             (plugin / '.mcp.json').write_text('{"mcpServers":{"unsafe":{"command":"node"}}}')
             co = self.coordinator('--author-vendor', 'codex')
-            self.assertEqual(co._author_permission_probe()['status'], 'FAIL')
             with self.assertRaisesRegex(RuntimeError, 'plugin MCP'):
                 co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
             self.assertEqual(co.state['sequence'], 0)
 
-    def test_codex_direct_control_pass_cannot_override_model_escape_failure(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
-                                     'FAKE_AUTHOR_ESCAPE_WRITE': 'home'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['codex_sandbox_checks']['status'], 'PASS')
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertEqual(report['model_escape_checks']['home']['status'], 'FAIL')
-
-    def test_codex_direct_control_pass_qualifies_untouched_model_unknown(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
-                                     'FAKE_AUTHOR_ESCAPE_SKIP': 'home'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['codex_sandbox_checks']['status'], 'PASS')
-        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
-        self.assertEqual(report['model_escape_checks']['home']['status'], 'UNKNOWN')
-
-    def test_d1b_untouched_directories_support_residual_risk(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'all'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['d1a_model_verdict'], 'UNKNOWN')
-        self.assertEqual(report['d1b_synthetic_verdict'], 'PASS')
-        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
-        self.assertIn('UNVERIFIED; re-check at M6', report['residual_risk'])
-        self.assertTrue(all(row['directory_before'] == row['directory_after']
-                            for row in report['model_escape_checks'].values()))
-        self.assertEqual(len(report['advisory_direct_controls']['model_target_checks']),
-                         5 if sys.platform == 'darwin' else 4)
-
-    def test_d1b_refused_and_synthetic_write_have_distinct_verdicts(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'all',
-                                     'FAKE_CODEX_SANDBOX_CONTRACT_REJECT': '1'}):
-            refused = co._author_permission_probe()
-        self.assertEqual((refused['d1b_synthetic_verdict'], refused['status']), ('UNKNOWN', 'UNKNOWN'))
-        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'all', 'FAKE_CODEX_SANDBOX_MODE': 'escape'}):
-            written = co._author_permission_probe()
-        self.assertEqual((written['d1b_synthetic_verdict'], written['status']), ('FAIL', 'FAIL'))
-
-    def test_d1b_positive_write_failure_fails(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_AUTHOR_POSITIVE_FAIL': 'workspace'}):
-            report = co._author_permission_probe()
-        self.assertFalse(report['outcomes']['workspace_write_allowed'])
-        self.assertEqual(report['status'], 'FAIL')
-
-    def test_author_probe_refuses_live_process_group_before_directory_snapshot(self):
-        co = self.coordinator()
-        with patch.object(rc, 'retry_killpg_eperm', return_value=None):
-            report = co._author_permission_probe()
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertIn('process group is still alive', report['reason'])
-        self.assertTrue(all(not Path(path).exists() for path in report['escape_directory_cleanup']['removed']))
-
-    def test_reviewer_os_unknown_blocks_residual_author_probe(self):
-        command = self.command(); command[2] = 'permission-probe'
-        result = subprocess.run(command, cwd=self.root,
-            env={**os.environ, 'FAKE_AUTHOR_ESCAPE_SKIP': 'all', 'FAKE_CLAUDE_DENY_OS_PROBE': '1'},
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['author_permission_probe']['status'], 'PASS_RESIDUAL_RISK')
-        self.assertEqual(report['claude_os_denial_probe']['status'], 'UNKNOWN')
-        self.assertEqual(report['status'], 'UNKNOWN')
-
-    def test_d1b_residual_probe_allows_run_and_reports_risk(self):
-        command = self.command('--exercise-revisions'); command[2] = 'permission-probe'
-        env = {**os.environ, 'FAKE_AUTHOR_ESCAPE_SKIP': 'all', 'FAKE_CODEX_AUTO_TRUST_ENTRY': '1'}
-        probe = subprocess.run(command, cwd=self.root, env=env, text=True, capture_output=True)
-        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
-        self.assertEqual(report['author_permission_probe']['d1b_synthetic_verdict'], 'PASS')
-        run = subprocess.run(self.command('--exercise-revisions'), cwd=self.root, env=env,
-                             text=True, capture_output=True)
-        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['residual_risk'], 'equivalence to real codex exec UNVERIFIED; re-check at M6')
-        self.assertIn('Residual risk: equivalence to real codex exec UNVERIFIED',
-                      (self.run_dir / 'review-comparison.md').read_text())
-
-    def test_author_policy_digest_ignores_only_known_trust_entries(self):
-        use_lifecycle_on(self, self)
-        co = self.coordinator()
-        config = self.test_home / '.codex/config.toml'
-        original = config.read_text()
-        before = co.author_flags()['codex_config_sha256']
-        for path in (co.scratch_base / 'paired-session-author-probe-abc' / 'workspace', self.workspace):
-            with config.open('a') as handle:
-                handle.write('\n[projects.' + json.dumps(str(path)) + ']\ntrust_level = "trusted"\n')
-        self.assertEqual(co.author_flags()['codex_config_sha256'], before)
-        with config.open('a') as handle:
-            handle.write('\n[projects."/tmp/unrelated"]\ntrust_level = "trusted"\n')
-        self.assertNotEqual(co.author_flags()['codex_config_sha256'], before)
-        config.write_text(original)
-
-    def test_resume_refuses_probe_with_unattributed_global_config_change(self):
-        self.run_dir = self.root / 'resume-global-change'
-        initial = self.run_coordinator('--stop-after-plan')
-        self.assertIn('HOLD', initial.stdout)
-        args = rc.parser().parse_args(self.command()[2:])
-        co = rc.Coordinator(args)
-        rc.atomic_json(self.run_dir / 'permission-probe.json', {
-            'status': 'PASS',
-            'reviewer_flags_digest': co.reviewer_flags_digest(),
-            'author_flags_digest': co.author_flags_digest(),
-            'author_permission_probe': {'status': 'PASS'},
-            'global_config_changes': {'status': 'FAIL', 'findings': [
-                {'file': 'claude_settings', 'reason': 'unexpected-content-change'}]},
-        })
-        command = self.command()
-        command[2] = 'resume'
-        resumed = subprocess.run(command, cwd=self.root, text=True,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(resumed.returncode, 2)
-        self.assertIn('global config changes were not fully attributed', resumed.stdout)
-
-    def test_author_escape_checks_use_codex_sandbox_with_author_overrides(self):
-        co = self.coordinator('--author-vendor', 'codex')
-        co.author_temp_dir.mkdir(parents=True, exist_ok=True)
-        log = self.root / 'codex-sandbox-log.jsonl'
-        target = self.root / 'external-target'
-        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'deny',
-                                     'FAKE_CODEX_SANDBOX_LOG': str(log)}):
-            denied = co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', target)
-        self.assertEqual(denied['status'], 'PASS', denied)
-        self.assertIn('touch ', denied['command'])
-        self.assertTrue(denied['os_denial_observed'])
-        self.assertTrue(denied['target_absent_before_cleanup'])
-        invocation = json.loads(log.read_text().splitlines()[0])
-        self.assertIn('-P', invocation['args'])
-        self.assertEqual(denied['copied_policy_files'], ['config.toml'])
-        self.assertEqual(denied['source_config_sha256'], denied['copy_config_sha256'])
-        self.assertEqual(Path(invocation['codex_home']).parent, co.scratch_base)
-        self.assertFalse(Path(invocation['codex_home']).exists())
-        self.assertEqual(invocation['codex_home_entries'], ['config.toml'])
-        self.assertIn('--log-denials', invocation['args'])
-        self.assertEqual(invocation['tmpdir'], str(co.author_temp_dir))
-        config_values = [invocation['args'][i + 1] for i, arg in
-                         enumerate(invocation['args'][:-1]) if arg == '-c']
-        expected = co._author_sandbox_config_args()
-        self.assertEqual(config_values, expected[1::2])
-        self.assertEqual(invocation['command'][0], '/usr/bin/touch')
-
-        escaped_target = self.root / 'escaped-target'
-        with patch.dict(os.environ, {'FAKE_CODEX_SANDBOX_MODE': 'escape',
-                                     'FAKE_CODEX_SANDBOX_LOG': str(log)}):
-            escaped = co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', escaped_target)
-        self.assertEqual(escaped['status'], 'FAIL')
-        self.assertFalse(escaped['target_absent_before_cleanup'])
-        self.assertTrue(escaped['cleanup_ok'])
-        self.assertFalse(escaped_target.exists())
-
-    def test_workspace_program_and_relative_path_shims_cannot_drive_probe(self):
+    def test_workspace_program_and_relative_path_shims_cannot_drive_a_run(self):
         shim_dir = self.workspace / 'bin'
         shim_dir.mkdir()
         for name in ('touch', 'node', 'codex'):
@@ -755,28 +463,33 @@ class RealCoordinatorTests(unittest.TestCase):
             self.assertNotIn(str(shim_dir), programs['path_env'])
             self.assertNotIn('::', programs['path_env'])
             self.assertFalse(any(not Path(p).is_absolute() for p in programs['path_env'].split(os.pathsep)))
-            target = self.root / 'safe-control-target'
-            co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', target)
         self.run_dir = self.root / 'forbidden-program-run'
         forbidden = self.command('--codex-bin', str(shim_dir / 'codex'))
-        forbidden[2] = 'permission-probe'
         result = subprocess.run(forbidden, cwd=self.root, text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['status'], 'HOLD')
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertIn('author-writable root', json.dumps(report['failure_reasons']))
+        self.assertIn('author-writable root', result.stdout)
 
-    def test_bound_provider_binary_change_holds_before_dispatch(self):
+    def test_bound_provider_binary_change_is_refrozen_and_a_missing_one_holds_before_dispatch(self):   # v3.7.0
         co = self.coordinator()
         programs, issue = co._program_state()
         self.assertIsNone(issue)
         binary = Path(programs['codex_bin']['path'])
-        binary.write_bytes(binary.read_bytes() + b'\n# changed after probe\n')
+        original = binary.read_bytes()
+        extra = self.root / 'extra-bin'
+        extra.mkdir()
+        with patch.dict(os.environ, {'PATH': os.environ['PATH'] + os.pathsep + str(extra)}), patch('builtins.print') as printed:
+            programs, issue = co._program_state(hold=True)
+        self.assertIsNone(issue)
+        self.assertEqual(co.state['operator_programs'], programs)
+        self.assertEqual(co.state['program_refreezes'][-1]['changed'], ['path_env'])
+        self.assertEqual([call.args[0] for call in printed.call_args_list],
+                         ['NOTE: operator program or PATH changed since run start (changed: path_env); the run continues with the new state'])
+        binary.unlink()
         with self.assertRaisesRegex(RuntimeError, 'operator program or PATH changed'):
             co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', rc.author_schema())
         self.assertEqual(co.state['status'], 'HOLD')
         self.assertEqual(co.state['invocations_used'], 0)
+        binary.write_bytes(original)
 
     def test_workspace_profile_symlink_to_prior_author_tmp_is_refused(self):
         prior_tmp = self.root / 'prior-run' / 'author-tmp'
@@ -786,28 +499,10 @@ class RealCoordinatorTests(unittest.TestCase):
         profile = self.workspace / '.review-loop' / 'paired-session.json'
         profile.parent.mkdir()
         profile.symlink_to(unsafe)
-        command = self.command()
-        command[2] = 'permission-probe'
-        result = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
+        result = subprocess.run(self.command(), cwd=self.root, text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertIn('workspace profile cannot select operator programs',
-                      json.dumps(report['failure_reasons']))
-
-    def test_fresh_permission_probe_rebinds_changed_operator_binary(self):
-        use_lifecycle_on(self, self)
-        co = self.coordinator()
-        before, issue = co._program_state()
-        self.assertIsNone(issue)
-        binary = Path(before['codex_bin']['path'])
-        binary.write_bytes(binary.read_bytes() + b'\n# upgraded\n')
-        co.args.action = 'permission-probe'
-        after, issue = co._program_state()
-        self.assertIsNone(issue)
-        self.assertNotEqual(before['codex_bin']['sha256'], after['codex_bin']['sha256'])
-        self.assertEqual(co.state['operator_programs'], after)
-        co.args.action = 'run'
-        self.assertIsNone(co._program_state()[1])
+        self.assertIn('workspace profile cannot select operator programs', result.stdout)
+        self.assertFalse((self.run_dir / 'state.json').exists())
 
     def test_done_program_drift_does_not_mutate_acceptance_state(self):
         co = self.coordinator()
@@ -817,13 +512,12 @@ class RealCoordinatorTests(unittest.TestCase):
         co.save()
         binary = Path(programs['codex_bin']['path'])
         binary.write_bytes(binary.read_bytes() + b'\n# updated while DONE\n')
-        passed, reason = co.probe_passed()
-        self.assertFalse(passed)
-        self.assertIn('operator program or PATH changed', reason)
+        with patch('builtins.print'):
+            self.assertIsNone(co._program_state(hold=True)[1])   # v3.7.0: re-frozen with a NOTE
         self.assertEqual(co.state['status'], 'DONE')
         self.assertEqual(co.state['acceptance_state'], 'PENDING')
 
-    def test_done_missing_codex_probe_fails_without_losing_accept(self):
+    def test_done_missing_codex_binary_does_not_lose_accept(self):
         command = self.command()
         co = rc.Coordinator(rc.parser().parse_args(command[2:]))
         self.assertIsNone(co._program_state()[1])
@@ -831,11 +525,8 @@ class RealCoordinatorTests(unittest.TestCase):
         co.state['approved_snapshot'] = rc.git_snapshot(co.workspace)[0]
         co.save()
         Path(co.args.codex_bin).unlink()
-        command[2] = 'permission-probe'
-        probe = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
-        self.assertEqual(probe.returncode, 2)
-        self.assertIn('FAIL', probe.stdout)
-        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'DONE')
+        self.assertIn('operator program or PATH changed', co._program_state(hold=True)[1])
+        self.assertEqual(json.loads(co.state_path.read_text())['status'], 'DONE')   # a DONE run is never held for it
         command[2] = 'accept'
         command.append('--intent-only')
         intent = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
@@ -846,18 +537,6 @@ class RealCoordinatorTests(unittest.TestCase):
         accepted = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertIn('ACCEPTED', accepted.stdout)
-
-    def test_program_issue_never_executes_version_or_synthetic_control(self):
-        use_lifecycle_on(self, self)
-        co = self.coordinator()
-        programs, issue = co._program_state()
-        self.assertIsNone(issue)
-        binary = Path(programs['codex_bin']['path'])
-        binary.write_bytes(binary.read_bytes() + b'\n# changed before control\n')
-        self.assertEqual(co._codex_cli_version(), 'UNAVAILABLE')
-        with self.assertRaisesRegex(RuntimeError, 'operator program or PATH changed'):
-            co._codex_sandbox_escape_check(self.workspace, 'external_tmpdir', self.root / 'target')
-        self.assertFalse((self.root / 'target').exists())
 
     def test_snapshot_action_cannot_choose_workspace_git_from_relative_path(self):
         marker = self.root / 'workspace-git-ran'
@@ -871,35 +550,6 @@ class RealCoordinatorTests(unittest.TestCase):
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(marker.exists())
-
-    def test_synthetic_codex_contract_refuses_old_argv_and_unknown_version(self):
-        co = self.coordinator('--author-vendor', 'codex')
-        co.author_temp_dir.mkdir(parents=True, exist_ok=True)
-        old = subprocess.run([str(self.fake_codex_cli()), 'sandbox', '-C', str(self.workspace),
-            *co._author_sandbox_config_args(), '--', 'touch', str(self.root / 'old-control-target')],
-            cwd=self.workspace, text=True, capture_output=True)
-        self.assertEqual(old.returncode, 2)
-        self.assertFalse((self.root / 'old-control-target').exists())
-        with patch.dict(os.environ, {'FAKE_CODEX_VERSION': 'codex-cli 0.158.0'}):
-            unknown = co._codex_sandbox_escape_check(self.workspace, 'unknown-version', self.root / 'target')
-        self.assertEqual(unknown['status'], 'CONTRACT-FAIL')
-        self.assertFalse((self.root / 'target').exists())
-
-    def test_synthetic_profile_rejects_extra_writable_root_and_credentials(self):
-        use_lifecycle_on(self, self)
-        co = self.coordinator('--author-vendor', 'codex')
-        co.author_temp_dir.mkdir(parents=True, exist_ok=True)
-        (self.test_home / '.codex' / 'auth.json').write_text('{"private":"do not copy"}')
-        profile = co._codex_sandbox_profile_args()
-        changed = list(profile)
-        position = next(i for i, arg in enumerate(changed) if arg.startswith('permissions.paired_session_author.filesystem='))
-        changed[position] = changed[position][:-1] + ', "/tmp"="write"}'
-        with patch.object(co, '_codex_sandbox_profile_args', return_value=changed):
-            refused = co._codex_sandbox_escape_check(self.workspace, 'extra-root', self.root / 'target')
-        self.assertEqual(refused['returncode'], 2)
-        self.assertEqual(refused['status'], 'FAIL')
-        self.assertEqual(refused['copied_policy_files'], ['config.toml'])
-        self.assertFalse((self.root / 'target').exists())
 
     def tearDown(self):
         if self.original_home is None:
@@ -1094,7 +744,7 @@ sys.exit(result.returncode)
                 '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
                 '--codex-bin', str(self.fake_codex_cli()), '--claude-bin', str(self.fake_claude_cli()), '--timeout', tsc.scaled_arg(10),
                 '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
-                '--test-command', 'python3 -m unittest', '--strict',   # D-EFF: the subprocess and main() paths pin strict too
+                '--test-command', 'python3 -m unittest',
                 *old_lifecycle_default(self.workspace, extra), *extra]
 
     def run_coordinator(self, *extra, env=None, skip_probe=True):
@@ -2073,7 +1723,7 @@ sys.exit(result.returncode)
         self.assertEqual(aborted.returncode, 2)
         self.assertEqual(json.loads(path.read_text())['terminal_hold_kind'], 'rejection_limit')
         paused = json.loads(path.read_text())
-        paused['hold_reason'] = 'permission probe passed; run resume to continue'
+        paused['hold_reason'] = 'paused by the operator; run resume to continue'
         path.write_text(json.dumps(paused))
         resumed = self.run_operator_action('resume', '--shadow', 'off',
                                            '--adversarial-gate', 'off', '--polish-round', 'off')
@@ -2155,9 +1805,9 @@ sys.exit(result.returncode)
             co.scope_change('Claude reviewer said REVISE', None)
         self.assertNotIn('scope_change_intent', co.state)
         command = co.scope_change('Also handle negative values.', None)
-        self.assertIn('Probe: ', command)
+        self.assertNotIn('Probe: ', command)   # v3.7.0: the successor starts with run only
         self.assertIn('Start: ', command)
-        self.assertEqual(command.count('--supersedes'), 2)
+        self.assertEqual(command.count('--supersedes'), 1)   # the Start: line only
         self.assertNotIn('--skip-probe', command)
         saved = json.loads(co.state_path.read_text())
         self.assertEqual(saved['status'], 'ABORTED')
@@ -2266,8 +1916,6 @@ sys.exit(result.returncode)
         first = self.run_operator_action('note', '--text', 'Use a wider negative input.')
         second = self.run_operator_action('note', '--text', 'Use the negative input case.')
         self.assertEqual((first.returncode, second.returncode), (0, 0), first.stdout + second.stdout)
-        probe = self.run_operator_action('permission-probe', '--polish-round', 'off')
-        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
         self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['pending_operator_note_id'], 'N002')
         resumed = self.run_operator_action('resume', '--polish-round', 'off')
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
@@ -2372,9 +2020,9 @@ sys.exit(result.returncode)
         result = self.run_operator_action('note', '--scope-change', '--text', 'Also handle negatives.')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         commands = dict(line.split(': ', 1) for line in result.stdout.strip().splitlines())
-        for label in ('Probe', 'Start'):
-            self.assertIn('--supersedes', commands[label])
-            self.assertNotIn('--skip-probe', commands[label])
+        self.assertEqual(set(commands), {'Start'})   # v3.7.0: no probe step before the successor
+        self.assertIn('--supersedes', commands['Start'])
+        self.assertNotIn('--skip-probe', commands['Start'])
         aborted = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual((aborted['status'], aborted['abort_kind']), ('ABORTED', 'scope-change'))
         for action in ('resume', 'accept', 'abort'):
@@ -2384,9 +2032,6 @@ sys.exit(result.returncode)
         self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'ABORTED')
         old_fresh = list((self.run_dir / 'evidence').glob('*-*.independence-inputs.json'))
         self.assertTrue(all('Also handle negatives.' not in path.read_text() for path in old_fresh))
-        probe = subprocess.run(shlex.split(commands['Probe']), cwd=self.root, text=True,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
         started = subprocess.run(shlex.split(commands['Start']), cwd=self.root, text=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
@@ -2510,23 +2155,6 @@ sys.exit(result.returncode)
         prompts = [path.read_text() for path in
                    (self.run_dir / 'evidence').glob('*-exec-author.prompt.txt')]
         self.assertGreaterEqual(sum(feedback in prompt for prompt in prompts), 2)
-
-    def test_reject_runs_permission_probe_gate_before_reopening(self):
-        completed = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
-                                         '--polish-round', 'off')
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        before = json.loads((self.run_dir / 'state.json').read_text())
-        argv = self.command('--text', 'in-scope feedback', '--polish-round', 'off')[2:]
-        argv[0] = 'reject'
-        args = rc.configure_parser(rc.parser(), argv).parse_args(argv)
-        with patch.object(rc.Coordinator, 'probe_passed', return_value=(False, 'probe failed')):
-            with patch('builtins.print') as output:
-                self.assertEqual(rc._execute_locked(args), 2)
-        output.assert_called_once_with('REFUSED: probe failed; run permission-probe before continuing')
-        after = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(after['status'], 'DONE')
-        self.assertEqual(after['sequence'], before['sequence'])
-        self.assertEqual(after.get('rejections', []), [])
 
     def test_failed_cli_without_usage_is_unknown_in_usage_reconciliation(self):
         co = self.coordinator()
@@ -3059,14 +2687,13 @@ sys.exit(result.returncode)
             '--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--gate-model', 'gpt-6-luna'])   # explicit: default moved by owner decision 2026-09-30
         co = rc.Coordinator(args)
         schema = self.root / 'schema.json'
-        for role in ('reviewer', 'shadow', 'gate', 'probe'):
+        for role in ('reviewer', 'shadow', 'gate'):
             command = co._codex_command(role, schema, True)
             self.assertIn('--ignore-rules', command)
             assert_codex_reviewer_sandbox(self, command)                     # v3.6.0: the workspace-write reviewer sandbox
             self.assertIn('approval_policy="never"', command)
         self.assertIn('--ignore-rules', co._codex_command('author', schema, False))
         self.assertTrue(co.reviewer_flags()['ignore_execpolicy_rules'])
-        self.assertEqual(co.author_flags()['author_binary'], args.claude_bin)
 
     def test_model_facing_review_schemas_do_not_request_snapshot_or_exit_code(self):
         for schema in (rc.review_schema(), rc.gate_schema()):
@@ -3179,7 +2806,7 @@ sys.exit(result.returncode)
 
         with patch.object(rc.subprocess, 'Popen', side_effect=capture_cli_spawn):
             with self.assertRaisesRegex(RuntimeError, 'CLI process failed to start'):
-                co._invoke_once('author', 'AUTHOR_PERMISSION_PROBE', 'disposable workspace probe',
+                co._invoke_once('author', 'EXEC', 'disposable workspace turn',
                                 rc.review_schema(verified=False), fresh=True,
                                 workspace_override=disposable)
         self.assertEqual(captured['cwd'], disposable.resolve())
@@ -3209,34 +2836,26 @@ sys.exit(result.returncode)
         assert_codex_reviewer_sandbox(self, gate)                            # v3.6.0: the workspace-write reviewer sandbox
         self.assertNotIn('resume', gate)
 
-    def test_workitem_reviewer_allowlist_change_holds_without_widening(self):
+    def test_workitem_reviewer_allowlist_change_is_recorded_with_a_note_when_lifecycle_is_off(self):   # v3.7.0
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--codex-bin', str(FAKE), '--claude-bin', str(self.fake_claude_cli())])
         co = rc.Coordinator(args)
+        self.assertEqual(co.state['config']['lifecycle_mode'], 'off')
         frozen = list(co.state['config']['workitem_reviewer_commands'])
-        old_report = {'status': 'PASS', 'reviewer_flags_digest': co.reviewer_flags_digest(),
-                      'author_flags_digest': co.author_flags_digest(),
-                      'author_permission_probe': {'status': 'PASS'},
-                      'global_config_changes': {'status': 'PASS'}}
-        (co.run_dir / 'permission-probe.json').write_text(json.dumps(old_report))
         with patch.dict(os.environ, {'FAKE_APPEND_REVIEWER_COMMAND': 'node injected-reviewer.js',
                                      'FAKE_APPEND_REVIEWER_COMMAND_FILE': str(self.workitem)}):
             co._invoke_once('author', 'EXEC', 'Role: persistent codex implementer. Phase: EXEC.\n', rc.author_schema())
         self.assertEqual(rc.workitem_reviewer_commands(self.workitem.read_text()), ['node injected-reviewer.js'])
-        before = (co.state['invocations_used'], len(co.state['turns']))
-        with self.assertRaisesRegex(RuntimeError, 'allowlist changed; run permission-probe'):
-            co._invoke_once('reviewer', 'EXEC', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
-        self.assertEqual((co.state['invocations_used'], len(co.state['turns'])), before)
-        self.assertEqual(co.state['config']['workitem_reviewer_commands'], frozen)
-        self.assertEqual(co.state['status'], 'HOLD')
-        probe_args = rc.parser().parse_args(['permission-probe', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', co.state['config']['codex_bin'], '--claude-bin', co.state['config']['claude_bin']])
-        refreshed = rc.Coordinator(probe_args)
-        self.assertEqual(refreshed.state['config']['workitem_reviewer_commands'],
-                         ['node injected-reviewer.js'])
-        self.assertFalse(refreshed.probe_passed()[0], 'refresh invalidates the prior probe digest')
+        with patch('builtins.print') as printed:
+            self.assertIn('node injected-reviewer.js', co.reviewer_commands())
+        self.assertEqual([call.args[0] for call in printed.call_args_list],
+                         ["NOTE: the work item's reviewer commands changed; the run uses the new block"])
+        self.assertEqual(co.state['config']['workitem_reviewer_commands'], ['node injected-reviewer.js'])
+        self.assertEqual(co.state['reviewer_command_refreezes'][-1]['from'], frozen)
+        self.assertNotEqual(co.state['status'], 'HOLD')
+        saved = json.loads(co.state_path.read_text())
+        self.assertEqual(saved['config']['workitem_reviewer_commands'], ['node injected-reviewer.js'])
 
     def test_optional_reviewer_command_is_an_exact_rule(self):
         run_dir = self.root / 'extra-command-run'
@@ -3275,7 +2894,7 @@ sys.exit(result.returncode)
         self.assertEqual(result.returncode, 2)
         self.assertIn('require separate --allowedTools arguments', result.stderr)
 
-    def test_all_readonly_roles_receive_extra_exact_commands_and_probe_digest_covers_them(self):
+    def test_all_readonly_roles_receive_extra_exact_commands_and_the_flags_digest_covers_them(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
             '--reviewer-command', 'node corpus.js'])
@@ -3298,7 +2917,7 @@ sys.exit(result.returncode)
         prior_surface['surface_version'] = 5
         prior_digest = __import__('hashlib').sha256(json.dumps(
             prior_surface, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        self.assertNotEqual(digest, prior_digest, 'surface bump must stale pre-sandbox permission probes')
+        self.assertNotEqual(digest, prior_digest, 'the surface version is part of the frozen flags')
         args_without = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.root / 'other-run')])
         self.assertNotEqual(digest, rc.Coordinator(args_without).reviewer_flags_digest())
@@ -3458,11 +3077,7 @@ sys.exit(result.returncode)
 
     def test_lifecycle_on_and_old_done_are_refused_before_dispatch(self):
         self.run_dir = self.root / 'lifecycle-refusal'
-        for flags, message in ((['--lifecycle-mode', 'on', '--accept-unverified-claude-author', '--reason', 'opt-in'],
-                                'worktree lifecycle refuses --accept-unverified-claude-author'),
-                               (['--lifecycle-mode', 'on', '--accept-probe-skip', '--reason', 'skip'],
-                                'worktree lifecycle refuses --accept-probe-skip'),
-                               (['--lifecycle-mode', 'on', '--adversarial-gate', 'off'], 'lifecycle refuses --adversarial-gate off')):
+        for flags, message in ((['--lifecycle-mode', 'on', '--adversarial-gate', 'off'], 'lifecycle refuses --adversarial-gate off'),):
             with self.subTest(flags=flags):
                 args = rc.parser().parse_args(self.command(*flags)[2:])
                 with self.assertRaisesRegex(ValueError, message): rc.Coordinator(args)
@@ -4476,7 +4091,7 @@ sys.exit(result.returncode)
                     low = next(row for row in state['finding_ledger'] if row['severity'] == 'LOW')
                     self.assertTrue(low['advisory'])
 
-    def test_workitem_reviewer_commands_merge_into_roles_and_probe_digest(self):
+    def test_workitem_reviewer_commands_merge_into_roles_and_flags(self):
         use_lifecycle_on(self, self)
         self.workitem.write_text('# Toy\n```reviewer-commands\nnode verify-real-data.mjs\npython3 audit.py\n```\n')
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -4676,451 +4291,6 @@ sys.exit(result.returncode)
                 if source:
                     self.assertTrue(all(row['reported_model_source'] == source for row in receipts))
 
-    def test_permission_probe_runs_exact_allowed_and_checks_writes(self):
-        command = self.command('--exercise-revisions', '--gate-vendor', 'claude')   # explicit gate (here and below): default moved by owner decision 2026-09-30
-        command[2] = 'permission-probe'
-        sandbox_log = self.root / 'codex-sandbox-invocations.jsonl'
-        result = subprocess.run(command, cwd=self.root,
-                                env={**os.environ, 'FAKE_CODEX_SANDBOX_MODE': 'deny',
-                                     'FAKE_CODEX_SANDBOX_LOG': str(sandbox_log)}, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'PASS')
-        self.assertEqual(report['author_permission_probe']['status'], 'PASS')
-        self.assertTrue(all(report['author_permission_probe']['outcomes'].values()))
-        self.assertTrue(report['author_permission_probe']['outcomes']['run_tmpdir_write_allowed'])
-        model_checks = report['author_permission_probe']['model_escape_checks']
-        expected_model_checks = {'external_tmpdir', 'slash_tmp', 'home', 'workspace_parent'}
-        if sys.platform == 'darwin':
-            expected_model_checks.add('private_tmp')
-        self.assertEqual(set(model_checks), expected_model_checks)
-        self.assertTrue(all(row['status'] == 'PASS' and not row['target_exists_after_turn']
-                            for row in model_checks.values()))
-        sandbox_checks = report['author_permission_probe']['codex_sandbox_checks']
-        self.assertEqual(sandbox_checks['status'], 'PASS')
-        self.assertEqual(set(sandbox_checks['checks']), {
-            'workspace_write_allowed', 'run_tmpdir_write_allowed',
-            'external_tmpdir_denied', 'slash_tmp_denied'})
-        self.assertTrue(all(sandbox_checks['checks'][name]['policy_observed']
-                            and sandbox_checks['checks'][name]['target_present_after_command']
-                            and sandbox_checks['checks'][name]['cleanup_ok']
-                            for name in ('workspace_write_allowed', 'run_tmpdir_write_allowed')))
-        self.assertTrue(all(sandbox_checks['checks'][name]['policy_observed']
-                            and sandbox_checks['checks'][name]['os_denial_observed']
-                            and sandbox_checks['checks'][name]['target_absent_before_cleanup']
-                            and sandbox_checks['checks'][name]['cleanup_ok']
-                            for name in ('external_tmpdir_denied', 'slash_tmp_denied')))
-        invocations = [json.loads(line) for line in sandbox_log.read_text().splitlines()]
-        self.assertEqual(len(invocations), 4)
-        expected_tmpdir = Path(json.loads((self.run_dir / 'state.json').read_text())['scratch_root']) / 'author-tmp'
-        for invocation in invocations:
-            self.assertIn('--log-denials', invocation['args'])
-            self.assertEqual(invocation['tmpdir'], str(expected_tmpdir))
-            configs = [invocation['args'][i + 1] for i, arg in enumerate(invocation['args'][:-1])
-                       if arg == '-c']
-            self.assertIn('sandbox_mode="workspace-write"', configs)
-            self.assertIn('sandbox_workspace_write.writable_roots=' +
-                          json.dumps([str(expected_tmpdir)]), configs)
-            self.assertIn('sandbox_workspace_write.exclude_tmpdir_env_var=false', configs)
-            self.assertIn('sandbox_workspace_write.exclude_slash_tmp=true', configs)
-        self.assertEqual(report['global_config_changes']['status'], 'PASS')
-        probe_args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-                                             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-                                             '--author-effort', 'low', '--reviewer-effort', 'low',
-                                             '--gate-effort', 'low', '--test-command', 'python3 -m unittest',
-                                             '--timeout', tsc.scaled_arg(10), '--exercise-revisions', '--gate-vendor', 'claude',
-                                             '--codex-bin', str(self.fake_codex_cli()),
-                                             '--claude-bin', str(self.fake_claude_cli())])
-        self.assertEqual(report['author_flags_digest'], rc.Coordinator(probe_args).author_flags_digest())
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        author_probe_turns = [row for row in state['turns']
-                              if row['role'] == 'author' and row['phase'] == 'AUTHOR_PERMISSION_PROBE']
-        self.assertEqual(len(author_probe_turns), 1)
-        author_probe_command = author_probe_turns[0]['command']
-        self.assertIn('--ignore-rules', author_probe_command)
-        self.assertIn('sandbox_mode="workspace-write"', author_probe_command)
-        expected_tmpdir = rc.Coordinator(probe_args).author_temp_dir
-        self.assertIn('sandbox_workspace_write.writable_roots=' +
-                      json.dumps([str(expected_tmpdir)]), author_probe_command)
-        for setting in ('sandbox_workspace_write.exclude_tmpdir_env_var=false',
-                        'sandbox_workspace_write.exclude_slash_tmp=true'):
-            self.assertIn(setting, author_probe_command)
-        self.assertEqual(author_probe_turns[0]['environment_overrides'],
-                         {'TMPDIR': str(expected_tmpdir)})
-        self.assertTrue(report['allowed_command_ran'])
-        self.assertEqual(len(report['write_attempts_denied']), 10)
-        self.assertTrue(all(report['write_attempts_denied'].values()))
-        self.assertEqual(set(report['write_attempt_outcomes'].values()), {'denied'})
-        self.assertEqual(report['failure_reasons'], [])
-        self.assertTrue(report['snapshot_unchanged'])
-        probe_prompt = next((self.run_dir / 'evidence').glob('*-probe-probe.prompt.txt')).read_text()
-        self.assertIn('authorized test of the harness', probe_prompt)
-        self.assertIn('MUST attempt every command', probe_prompt)
-        self.assertIn('Exactly one dedicated run-directory touch command', probe_prompt)
-        self.assertNotIn('read-only permission probe', probe_prompt)
-        main = self.run_coordinator('--exercise-revisions', '--gate-vendor', 'claude', skip_probe=False)
-        self.assertEqual(main.returncode, 0, main.stderr + main.stdout)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(len(state['turns']), 13)
-        usage = json.loads((self.run_dir / 'usage.json').read_text())
-        self.assertIn('probe', usage['by_role'])
-        self.assertEqual(usage['by_role']['probe']['cli_turns'], 1)
-
-    def test_author_model_escape_core_statuses_and_cleanup(self):
-        cases = (
-            ('write-home', 'FAKE_AUTHOR_ESCAPE_WRITE', 'home', 'FAIL', True),
-            ('write-parent', 'FAKE_AUTHOR_ESCAPE_WRITE', 'workspace_parent', 'FAIL', True),
-            ('write-external', 'FAKE_AUTHOR_ESCAPE_WRITE', 'external_tmpdir', 'FAIL', True),
-            ('write-delete', 'FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE', 'home', 'FAIL', False),
-            ('skip', 'FAKE_AUTHOR_ESCAPE_SKIP', 'home', 'UNKNOWN', False),
-            ('malformed', 'FAKE_AUTHOR_ESCAPE_MALFORMED', 'home', 'UNKNOWN', False),
-            ('no-os-marker', 'FAKE_AUTHOR_ESCAPE_NO_OS', 'home', 'UNKNOWN', False),
-        )
-        for name, setting, label, expected, found_expected in cases:
-            with self.subTest(name=name):
-                self.run_dir = self.root / ('escape-core-' + name)
-                co = self.coordinator()
-                with patch.dict(os.environ, {setting: label, 'FAKE_CODEX_SANDBOX_MODE': 'deny'}):
-                    result = co._author_permission_probe()
-                self.assertEqual(result['status'], 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected, result)
-                self.assertEqual(result['model_escape_checks'][label]['status'], expected)
-                found = result['model_escape_targets_found']
-                self.assertEqual(bool(found), found_expected)
-                self.assertEqual(found, result['model_escape_targets_cleaned'])
-                self.assertTrue(all(not Path(path).exists() for path in found))
-
-    def test_dedicated_escape_directory_evidence_and_cleanup(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_SKIP': 'home'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK')
-        for row in report['model_escape_checks'].values():
-            before, after = row['directory_before'], row['directory_after']
-            self.assertEqual(before, after)
-            self.assertEqual(before['listing'], [])
-            self.assertTrue(all(key in before for key in ('st_mtime_ns', 'st_ctime_ns', 'st_nlink')))
-        self.assertEqual(len(report['escape_directory_cleanup']['removed']), 4)
-        self.assertFalse(report['escape_directory_cleanup']['retained'])
-        self.assertTrue(all(not Path(path).exists() for path in report['escape_directory_cleanup']['removed']))
-
-    def test_escape_directory_cleanup_preserves_foreign_file(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_FOREIGN': 'home'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['status'], 'FAIL')
-        root = Path(report['model_escape_checks']['home']['target']).parent
-        self.assertIn(str(root), report['escape_directory_cleanup']['retained'])
-        self.assertEqual((root / 'foreign-file').read_text(), 'not a coordinator sentinel\n')
-
-    def test_escape_directory_write_delete_with_denial_is_unknown(self):
-        co = self.coordinator()
-        with patch.dict(os.environ, {'FAKE_AUTHOR_ESCAPE_WRITE_DELETE_DENIED': 'home'}):
-            report = co._author_permission_probe()
-        row = report['model_escape_checks']['home']
-        self.assertEqual(row['directory_before']['listing'], row['directory_after']['listing'])
-        self.assertNotEqual((row['directory_before']['st_mtime_ns'], row['directory_before']['st_ctime_ns']),
-                            (row['directory_after']['st_mtime_ns'], row['directory_after']['st_ctime_ns']))
-        self.assertEqual(row['status'], 'UNKNOWN')
-        self.assertEqual(report['status'], 'UNKNOWN')
-        self.assertFalse(report['model_escape_targets_found'])
-
-    def test_author_model_escape_probe_fail_unknown_and_cleanup(self):
-        for mode, setting, expected in (
-                ('write', 'FAKE_AUTHOR_ESCAPE_WRITE', 'FAIL'),
-                ('skip', 'FAKE_AUTHOR_ESCAPE_SKIP', 'UNKNOWN'),
-                ('malformed', 'FAKE_AUTHOR_ESCAPE_MALFORMED', 'UNKNOWN')):
-            with self.subTest(mode=mode):
-                self.run_dir = self.root / ('escape-' + mode)
-                command = self.command()
-                command[2] = 'permission-probe'
-                result = subprocess.run(command, cwd=self.root,
-                    env={**os.environ, setting: 'home', 'FAKE_CODEX_SANDBOX_MODE': 'deny'},
-                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode, 0 if expected == 'UNKNOWN' else 2,
-                                 result.stdout + result.stderr)
-                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                author = report['author_permission_probe']
-                self.assertEqual(author['status'], 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected)
-                self.assertEqual(author['model_escape_checks']['home']['status'], expected)
-                self.assertEqual(report['status'], 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected)
-                if mode == 'write':
-                    found = author['model_escape_targets_found']
-                    self.assertEqual(len(found), 1)
-                    self.assertEqual(found, author['model_escape_targets_cleaned'])
-                    self.assertFalse(Path(found[0]).exists())
-                    state = json.loads((self.run_dir / 'state.json').read_text())
-                    self.assertEqual(state['status'], 'HOLD')
-                    self.assertIn(found[0], state['hold_reason'])
-                else:
-                    self.assertEqual(author['model_escape_targets_found'], [])
-
-    def test_author_model_escape_duplicate_success_and_reviewer_fail_precedence(self):
-        cases = (
-            ('duplicate-success', {'FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE': 'home',
-                                   'FAKE_AUTHOR_ESCAPE_DUPLICATE': 'home'}, 'FAIL'),
-            ('reviewer-fail', {'FAKE_AUTHOR_ESCAPE_SKIP': 'home',
-                               'FAKE_REVIEW_NO_TEST_EVENT': '1'}, 'FAIL'),
-            ('no-os-marker', {'FAKE_AUTHOR_ESCAPE_NO_OS': 'home'}, 'UNKNOWN'),
-            ('clarify', {'FAKE_AUTHOR_ESCAPE_SKIP': 'home',
-                         'PAIRED_SESSION_PROBE_CLARIFY': '1'}, 'UNKNOWN'),
-        )
-        for name, settings, expected in cases:
-            with self.subTest(name=name):
-                self.run_dir = self.root / ('escape-extra-' + name)
-                command = self.command(); command[2] = 'permission-probe'
-                result = subprocess.run(command, cwd=self.root,
-                    env={**os.environ, **settings, 'FAKE_CODEX_SANDBOX_MODE': 'deny'},
-                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                overall = 'PASS_RESIDUAL_RISK' if expected == 'UNKNOWN' else expected
-                self.assertEqual(result.returncode, 0 if overall == 'PASS_RESIDUAL_RISK' else 2,
-                                 result.stdout + result.stderr)
-                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                self.assertEqual(report['status'], overall)
-                if name == 'duplicate-success':
-                    self.assertEqual(report['author_permission_probe']['model_escape_checks']['home']['status'], 'FAIL')
-                    self.assertEqual(report['author_permission_probe']['model_escape_targets_found'], [])
-                    self.assertIn('1C FAIL', json.loads((self.run_dir / 'state.json').read_text())['hold_reason'])
-                if name == 'clarify':
-                    prompt = next((self.run_dir / 'evidence').glob('*-author_permission_probe-author.prompt.txt'))
-                    self.assertIn('Clarification:', prompt.read_text())
-
-    def test_claude_permission_probe_requires_observed_os_sandbox_denial_and_cleans_escape(self):
-        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        command[2] = 'permission-probe'
-        invocation_log = self.root / 'fake-claude-invocation.json'
-        passing = subprocess.run(command, cwd=self.root,
-                                 env={**os.environ, 'FAKE_CLAUDE_INVOCATION_LOG': str(invocation_log)},
-                                 text=True, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
-        self.assertEqual(passing.returncode, 0, passing.stderr + passing.stdout)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'PASS')
-        self.assertTrue(report['claude_sandbox_write_denied'])
-        self.assertEqual(report['claude_os_denial_probe']['status'], 'PASS')
-        self.assertTrue(report['claude_os_denial_probe']['command'].startswith('/usr/bin/touch '))
-        os_target = Path(report['claude_os_denial_probe']['target'])
-        self.assertNotIn(self.run_dir, os_target.parents)
-        self.assertFalse(os_target.exists())
-        invocation = json.loads(invocation_log.read_text())
-        settings = json.loads(invocation[invocation.index('--settings') + 1])
-        self.assertIn(str(os_target), settings['sandbox']['filesystem']['denyWrite'])
-        self.assertEqual(settings['permissions']['deny'],
-                         [f'Edit(//{self.run_dir.as_posix().lstrip("/")}/**)'])
-        allowed = allowed_tool_values(invocation)
-        bash_allowed = '\n'.join(value for value in allowed if value.startswith('Bash('))
-        self.assertEqual(bash_allowed.count('Bash(touch '), 1)
-        self.assertIn('.paired-session-run-dir-probe-', bash_allowed)
-        self.assertIn('.paired-session-os-probe-', bash_allowed)
-        self.assertNotIn('paired-session-claude-sandbox-', bash_allowed)
-        self.assertNotIn('.paired-session-context-probe-', bash_allowed)
-        transient = [row for row in report['observed_commands']
-                     if ('paired-session-claude-sandbox-' in row.get('command', '') or
-                     '.paired-session-run-dir-probe-' in row.get('command', '') or
-                     '.paired-session-context-probe-' in row.get('command', ''))]
-        self.assertEqual(len(transient), 3)
-        self.assertTrue(all(row['error'] for row in transient))
-        self.assertNotIn(json.dumps(transient), json.dumps(report['reviewer_flags']))
-        config = json.loads((self.run_dir / 'state.json').read_text())['config']
-        self.assertNotIn(json.dumps(transient), json.dumps(config))
-        self.assertEqual(set(report['claude_sandbox_write_denials']), {'host_tmp', 'run_dir', 'context'})
-        checks = report['claude_sandbox_write_denials']
-        self.assertTrue(checks['run_dir']['failed_at_os_sandbox'])
-        self.assertFalse(checks['run_dir']['cli_permission_denied'])
-        for label in ('host_tmp', 'context'):
-            self.assertTrue(checks[label]['cli_permission_denied'])
-            self.assertFalse(checks[label]['failed_at_os_sandbox'])
-        for row in transient:
-            import shlex
-            parts = shlex.split(row['command'])
-            target = Path(parts[-1] if parts[0] == 'touch' else parts[parts.index('>') + 1])
-            self.assertFalse(target.exists())
-
-        self.run_dir = self.root / 'sandbox-escape-run'
-        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        command[2] = 'permission-probe'
-        escaped = subprocess.run(command, cwd=self.root, env={**os.environ, 'FAKE_SANDBOX_WRITE': '1'},
-                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(escaped.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertEqual(report['claude_os_denial_probe']['status'], 'FAIL')
-        self.assertFalse(report['claude_sandbox_write_denied'])
-
-        self.assertIn('claude_sandbox_write_denials', report)
-        self.assertFalse(report['claude_sandbox_write_denials']['run_dir']['failed_at_os_sandbox'])
-        self.assertTrue(any(reason.startswith('claude-sandbox-') and 'write-not-denied-at-os' in reason
-                            for reason in report['failure_reasons']))
-        escaped_rows = [row for row in report['observed_commands']
-                        if ('paired-session-claude-sandbox-' in row.get('command', '') or
-                        '.paired-session-run-dir-probe-' in row.get('command', '') or
-                        '.paired-session-context-probe-' in row.get('command', ''))]
-        self.assertEqual(len(escaped_rows), 3)
-        import shlex
-        def target_path(command):
-            parts = shlex.split(command)
-            return Path(parts[-1] if parts[0] == 'touch' else parts[parts.index('>') + 1])
-        escaped_paths = [target_path(row['command']) for row in escaped_rows]
-        self.assertTrue(all(not path.exists() for path in escaped_paths),
-                        'coordinator must clean only its unique transient probe files')
-
-        self.run_dir = self.root / 'sandbox-mixed-denial-run'
-        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        command[2] = 'permission-probe'
-        mixed = subprocess.run(command, cwd=self.root,
-                               env={**os.environ, 'FAKE_CLAUDE_DENY_RUN_DIR_ONLY': '1'},
-                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(mixed.returncode, 0, mixed.stdout + mixed.stderr)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'PASS')
-        self.assertTrue(report['claude_sandbox_write_denials']['run_dir']['cli_permission_denied'])
-        self.assertEqual(report['claude_os_denial_probe']['status'], 'PASS')
-        self.assertTrue(report['claude_sandbox_write_denied'])
-        self.assertEqual(report['claude_flag_semantics'], 'OS-level denial observed for the dedicated OS-only probe')
-
-        self.run_dir = self.root / 'sandbox-no-os-marker-run'
-        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        command[2] = 'permission-probe'
-        no_marker = subprocess.run(command, cwd=self.root,
-                                   env={**os.environ, 'FAKE_SANDBOX_NO_OS_MARKER': '1'},
-                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(no_marker.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertEqual(report['claude_os_denial_probe']['status'], 'UNKNOWN')
-        checks = report['claude_sandbox_write_denials']
-        self.assertTrue(checks['run_dir']['exact_command_observed_once'] and checks['run_dir']['target_absent'])
-        self.assertFalse(checks['run_dir']['failed_at_os_sandbox'])
-
-        self.run_dir = self.root / 'sandbox-cli-layer-only-run'
-        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        command[2] = 'permission-probe'
-        cli_blocked = subprocess.run(command, cwd=self.root,
-                                     env={**os.environ, 'FAKE_CLAUDE_DENY_OS_PROBE': '1'},
-                                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(cli_blocked.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        dedicated = report['claude_sandbox_write_denials']['run_dir']
-        self.assertEqual(report['status'], 'UNKNOWN')
-        self.assertEqual(report['claude_os_denial_probe']['status'], 'UNKNOWN')
-        self.assertTrue(dedicated['cli_permission_denied'])
-        self.assertFalse(dedicated['failed_at_os_sandbox'])
-        self.assertFalse(report['claude_sandbox_write_denied'])
-
-        self.run_dir = self.root / 'sandbox-more-than-one-allowlisted-run'
-        command = self.command('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        command[2] = 'permission-probe'
-        extra_allowed = subprocess.run(command, cwd=self.root,
-                                       env={**os.environ, 'FAKE_CLAUDE_ALLOW_OTHER_PROBE': '1'},
-                                       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(extra_allowed.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        for label in ('host_tmp', 'context'):
-            self.assertFalse(report['claude_sandbox_write_denials'][label]['cli_permission_denied'])
-            self.assertTrue(any(f'claude-sandbox-{label}-write-not-cli-blocked' in reason
-                                for reason in report['failure_reasons']))
-
-    def test_claude_probe_runtime_error_records_escape_before_cleanup(self):
-        use_lifecycle_on(self, self)
-        co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        created = []
-
-        def escape_then_fail(role, phase, prompt, schema, **kwargs):
-            import shlex
-            # Extract the literal unique write commands from the generated probe.
-            for line in prompt.splitlines():
-                if line.startswith('printf probe > ') or line.startswith('touch '):
-                    target = Path(shlex.split(line)[-1])
-                    target.write_text('escaped')
-                    created.append(target)
-            raise RuntimeError('simulated probe failure')
-
-        with patch.object(co, 'invoke', side_effect=escape_then_fail):
-            self.assertFalse(co.permission_probe())
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertIn('claude-sandbox-probe-write-escaped', report['failure_reasons'])
-        self.assertEqual(len(created), 3)
-        self.assertEqual(report['claude_sandbox_escape_targets_found'], [str(path) for path in created])
-        self.assertEqual(report['claude_sandbox_escape_targets_cleaned'], [str(path) for path in created])
-        self.assertEqual(report['claude_sandbox_escape_targets_remaining'], [])
-        self.assertEqual(set(report['claude_sandbox_write_denials']), {'host_tmp', 'run_dir', 'context'})
-        self.assertTrue(all(not check['target_absent']
-                            for check in report['claude_sandbox_write_denials'].values()))
-        self.assertTrue(all(not path.exists() for path in created))
-
-    def test_claude_probe_reports_a_target_that_cleanup_could_not_remove(self):
-        use_lifecycle_on(self, self)
-        co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'claude')
-        created = []
-
-        def escape_then_fail(role, phase, prompt, schema, **kwargs):
-            import shlex
-            for line in prompt.splitlines():
-                if line.startswith('printf probe > ') or line.startswith('touch '):
-                    target = Path(shlex.split(line)[-1])
-                    target.write_text('escaped')
-                    created.append(target)
-            raise RuntimeError('simulated probe failure')
-
-        real_unlink = Path.unlink
-
-        def fail_first_cleanup(path, *args, **kwargs):
-            if created and path == created[0]:
-                raise OSError('simulated cleanup denial')
-            return real_unlink(path, *args, **kwargs)
-
-        try:
-            with patch.object(co, 'invoke', side_effect=escape_then_fail):
-                with patch.object(Path, 'unlink', new=fail_first_cleanup):
-                    self.assertFalse(co.permission_probe())
-            report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-            self.assertEqual(report['claude_sandbox_escape_targets_found'], [str(path) for path in created])
-            self.assertEqual(report['claude_sandbox_escape_targets_cleaned'], [str(path) for path in created[1:]])
-            self.assertEqual(report['claude_sandbox_escape_targets_remaining'], [str(created[0])])
-            self.assertEqual(report['claude_sandbox_cleanup_errors'], [
-                {'path': str(created[0]), 'error': 'OSError'}])
-            self.assertIn('claude-sandbox-probe-cleanup-incomplete', report['failure_reasons'])
-        finally:
-            if created:
-                real_unlink(created[0], missing_ok=True)
-
-    def test_author_permission_probe_requires_unique_structured_exit_events(self):
-        for mode in ('missing-exit', 'duplicate-event'):
-            with self.subTest(mode=mode):
-                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-                    '--workitem', str(self.workitem), '--run-dir', str(self.root / ('probe-' + mode)),
-                    '--codex-bin', str(self.fake_codex_cli()), '--author-vendor', 'codex'])
-                co = rc.Coordinator(args)
-
-                def simulate(role, phase, prompt, schema, **kwargs):
-                    self.assertEqual((role, phase), ('author', 'AUTHOR_PERMISSION_PROBE'))
-                    commands = json.loads(prompt.split('PROBE_COMMANDS_JSON: ', 1)[1].splitlines()[0])
-                    import shlex
-                    for command in commands[:2]:
-                        parts = shlex.split(command)
-                        target_arg = parts[parts.index('>') + 1]
-                        target = (co.author_temp_dir / target_arg[len('$TMPDIR/'):]
-                                  if target_arg.startswith('$TMPDIR/') else Path(target_arg))
-                        target.write_text('probe\n')
-                    rows = [{'command': command,
-                             'exit_code': (None if mode == 'missing-exit' and index == 1 else
-                                           0 if index < 2 else 126),
-                             'error': index >= 2}
-                            for index, command in enumerate(commands)]
-                    if mode == 'duplicate-event':
-                        rows.append(dict(rows[0]))
-                    co.state['turns'].append({'pid': 987654321})
-                    return {'answer': {'observed_commands': rows}, 'snapshot': 'scratch-snapshot'}
-
-                with patch.object(co, 'invoke', side_effect=simulate):
-                    with patch.object(rc, 'retry_killpg_eperm', side_effect=ProcessLookupError):
-                        report = co._author_permission_probe()
-                self.assertEqual(report['status'], 'FAIL')
-                failed_outcome = ('workspace_write_allowed' if mode == 'duplicate-event'
-                                  else 'run_tmpdir_write_allowed')
-                self.assertFalse(report['outcomes'][failed_outcome])
-
     def test_fresh_shadow_critical_is_ledgered_and_delivered_even_if_reviewer_approves(self):
         use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -5182,112 +4352,6 @@ sys.exit(result.returncode)
                     result = co.resume()
                 self.assertEqual(result, 'HOLD')
                 self.assertIn('F900', co.state['hold_reason'])
-
-    def test_run_refuses_pass_probe_bound_to_different_author_flags(self):
-        command = self.command()
-        command[2] = 'permission-probe'
-        probe = subprocess.run(command, cwd=self.root, text=True,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(probe.returncode, 0, probe.stderr + probe.stdout)
-        report_path = self.run_dir / 'permission-probe.json'
-        report = json.loads(report_path.read_text())
-        report['author_flags_digest'] = '0' * 64
-        rc.atomic_json(report_path, report)
-        result = self.run_coordinator(skip_probe=False)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('author flags do not match', result.stdout)
-
-    def test_failed_mutating_probe_always_writes_report(self):
-        command = self.command()
-        command[2] = 'permission-probe'
-        env = os.environ.copy()
-        env['FAKE_PROBE_MUTATE'] = '1'
-        result = subprocess.run(command, cwd=self.root, env=env, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertFalse(report['snapshot_unchanged'])
-        self.assertIn('snapshot-mutated', report['failure_reasons'])
-
-    def test_run_refuses_pass_probe_bound_to_different_reviewer_flags(self):
-        command = self.command()
-        command[2] = 'permission-probe'
-        probe = subprocess.run(command, cwd=self.root, text=True,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(probe.returncode, 0, probe.stderr + probe.stdout)
-        report_path = self.run_dir / 'permission-probe.json'
-        report = json.loads(report_path.read_text())
-        report['reviewer_flags_digest'] = '0' * 64
-        rc.atomic_json(report_path, report)
-        result = self.run_coordinator(skip_probe=False)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('reviewer flags do not match', result.stdout)
-
-    def test_skip_probe_requires_fake_harness_and_fake_cli_wrappers(self):
-        command = self.command('--skip-probe')
-        env = os.environ.copy(); env.pop('FAKE_CODEX_TEST_ROOT', None)
-        refused = subprocess.run(command, cwd=self.root, env=env, text=True,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(refused.returncode, 2)
-        self.assertIn('fake test harness', refused.stdout)
-        self.assertFalse((self.run_dir / 'state.json').exists())
-        invalid = self.root / 'not-fake-codex'
-        invalid.write_text('#!/bin/sh\nexit 0\n'); invalid.chmod(0o755)
-        command[command.index('--codex-bin') + 1] = str(invalid)
-        refused = subprocess.run(command, cwd=self.root, text=True,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(refused.returncode, 2)
-        self.assertIn('fake test harness', refused.stdout)
-        self.assertFalse((self.run_dir / 'state.json').exists())
-
-    def test_claude_author_requires_fake_harness(self):
-        command = self.command('--author-vendor', 'claude')
-        env = os.environ.copy(); env.pop('FAKE_CODEX_TEST_ROOT', None)
-        refused = subprocess.run(command, cwd=self.root, env=env, text=True,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(refused.returncode, 2)
-        self.assertIn('Claude author is limited to the fake test harness', refused.stdout)
-        self.assertFalse((self.run_dir / 'state.json').exists())
-
-    def test_saved_claude_author_run_is_refused_outside_fake_harness(self):
-        self.coordinator('--author-vendor', 'claude')
-        before = json.loads((self.run_dir / 'state.json').read_text())['status']
-        command = self.command('--text', 'Recheck this detail.')
-        command[2] = 'reject'
-        env = os.environ.copy(); env.pop('FAKE_CODEX_TEST_ROOT', None)
-        refused = subprocess.run(command, cwd=self.root, env=env, text=True,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(refused.returncode, 2)
-        self.assertIn('Claude author is limited to the fake test harness', refused.stdout)
-        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], before)
-
-    def test_resume_refuses_when_permission_probe_is_missing_or_stale(self):
-        for mode in ('missing', 'stale'):
-            with self.subTest(mode=mode):
-                self.run_dir = self.root / ('resume-probe-' + mode)
-                result = self.run_coordinator('--stop-after-plan')
-                self.assertIn('HOLD', result.stdout)
-                if mode == 'stale':
-                    probe_command = self.command()
-                    probe_command[2] = 'permission-probe'
-                    probe = subprocess.run(probe_command, cwd=self.root, text=True,
-                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
-                    report_path = self.run_dir / 'permission-probe.json'
-                    report = json.loads(report_path.read_text())
-                    report['author_flags_digest'] = '0' * 64
-                    rc.atomic_json(report_path, report)
-                command = self.command()
-                command[2] = 'resume'
-                resumed = subprocess.run(command, cwd=self.root, text=True,
-                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(resumed.returncode, 2)
-                expected = ('permission probe author flags do not match' if mode == 'stale'
-                            else 'permission-probe.json is missing')
-                self.assertIn('REFUSED: ' + expected, resumed.stdout)
-                state = json.loads((self.run_dir / 'state.json').read_text())
-                self.assertEqual(state['exec_rounds'], 0)
 
     def test_resume_config_mismatch_is_refused_without_traceback(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -5662,69 +4726,24 @@ sys.exit(result.returncode)
         self.assertIn('process existence cannot be verified', co.state['hold_reason'])
         self.assertIn('operator/manual resolution', co.state['hold_reason'])
 
-    def test_permission_probe_preserves_active_receipt_instead_of_overwriting_it(self):
-        use_lifecycle_on(self, self)
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
-        co = rc.Coordinator(args)
-        active = {'pid': os.getpid(), 'role': 'reviewer', 'phase': 'EXEC', 'sequence': 3}
-        co.state['active'] = active
-        co.save()
-        with patch.object(co, 'invoke') as invoke:
-            self.assertFalse(co.permission_probe())
-        invoke.assert_not_called()
-        self.assertEqual(co.state['uncertain_active'], active)
-        self.assertIsNone(co.state['active'])
-
-    def test_stopped_permission_probe_requires_explicit_retry_before_new_probe(self):
-        use_lifecycle_on(self, self)
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli()), '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30 (a codex gate adds a gate-probe turn)
-        co = rc.Coordinator(args)
-        active = {'pid': 987654321, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
-                  'sequence': 2}
-        co.state['active'] = active
-        co.save()
-        snapshot = rc.git_snapshot(self.workspace)[0]
-        result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
-                  'snapshot': snapshot, 'sequence': 1, 'role': 'probe'}
-        with patch('os.killpg', side_effect=ProcessLookupError):
-            with patch.object(co, 'invoke', return_value=result) as invoke:
-                with patch.object(co, '_author_permission_probe', return_value={'status': 'PASS'}):
-                    self.assertFalse(co.permission_probe())
-                    self.assertEqual(co.state['uncertain_active'], active)
-                    invoke.assert_not_called()
-                    self.assertFalse(co.permission_probe(retry_uncertain=True))
-        invoke.assert_called_once()
-        self.assertIsNone(co.state['uncertain_active'])
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertIn('permission probe failed', co.state['hold_reason'])
-        saved = json.loads(co.state_path.read_text())
-        self.assertEqual(len(saved['abandoned_turns']), 1)
-        self.assertTrue(saved['abandoned_turns'][0]['group_gone'])
-        self.assertEqual(saved['abandoned_turns'][0]['provider_usage'], 'unknown')
-        reloaded = rc.Coordinator(args)
-        self.assertEqual(len(reloaded.state['abandoned_turns']), 1)
-
     def test_uncertain_codex_turn_refuses_global_config_change_before_replay(self):
         use_lifecycle_on(self, self)
         config = self.test_home / '.codex/config.toml'
         original = config.read_bytes()
-        for action in ('resume', 'permission-probe'):
+        for action in ('resume',):
             with self.subTest(action=action):
                 config.write_bytes(original)
                 self.run_dir = self.root / ('uncertain-global-' + action)
                 co = self.coordinator()
                 receipt = {'sequence': 1, 'pid': 43212, 'role': 'author', 'vendor': 'codex',
-                           'phase': 'AUTHOR_PERMISSION_PROBE' if action == 'permission-probe' else 'EXEC',
+                           'phase': 'EXEC',
                            'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}}
                 co.state['uncertain_active'] = receipt
                 co.save()
                 config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
                 with patch('os.killpg', side_effect=ProcessLookupError):
                     with self.assertRaisesRegex(RuntimeError, 'global Codex config changed during uncertain turn'):
-                        (co.permission_probe if action == 'permission-probe' else co.resume)(retry_uncertain=True)
+                        co.resume(retry_uncertain=True)
                 self.assertEqual(co.state['status'], 'HOLD')
                 self.assertEqual(co.state['uncertain_active'], receipt)
                 self.assertEqual(co.state.get('abandoned_turns', []), [])
@@ -5797,10 +4816,6 @@ sys.exit(result.returncode)
     def test_uncertain_global_config_resume_cli_holds_without_traceback(self):
         config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
         args = rc.parser().parse_args(self.command()[2:]); co = rc.Coordinator(args)
-        probe_command = self.command(); probe_command[2] = 'permission-probe'
-        probe_result = subprocess.run(probe_command, cwd=self.root, text=True, capture_output=True)
-        self.assertEqual(probe_result.returncode, 0, probe_result.stdout + probe_result.stderr)
-        co = rc.Coordinator(args)
         co.state['uncertain_active'] = {'sequence': 1, 'pid': 987654321, 'role': 'author',
             'vendor': 'codex', 'phase': 'EXEC', 'workspace': str(self.workspace),
             'global_codex_home': str(co.global_codex_home), 'global_config_home': str(co.global_config_home),
@@ -5814,192 +4829,22 @@ sys.exit(result.returncode)
         self.assertNotIn('Traceback', result.stderr)
         config.write_bytes(original)
 
-    def test_retry_uncertain_checks_probe_before_global_config_recovery(self):
-        config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
-        args = rc.parser().parse_args(self.command()[2:]); co = rc.Coordinator(args)
-        co.state.update(status='HOLD', uncertain_active={'sequence': 1, 'pid': 987654321,
-            'role': 'author', 'vendor': 'codex', 'phase': 'EXEC', 'workspace': str(self.workspace),
-            'global_codex_home': str(co.global_codex_home), 'global_config_home': str(co.global_config_home),
-            'global_codex_before': {'codex_config': hashlib.sha256(original).hexdigest()}})
-        co.save()
-        rc.atomic_json(self.run_dir / 'permission-probe.json', {'status': 'PASS',
-            'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': 'stale',
-            'author_permission_probe': {'status': 'PASS'}, 'global_config_changes': {'status': 'PASS'}})
-        config.write_bytes(original + b'\n[unexpected]\nflag = true\n')
-        command = self.command(); command[2] = 'resume'; command.append('--retry-uncertain')
-        probed = []; driven = []
-        original_probe = rc.Coordinator.probe_passed
-        def record_probe(coordinator):
-            probed.append(True)
-            return False, 'synthetic stale probe'
-        original_archive = rc.Coordinator.archive_abandoned_turn
-        def revert_then_archive(coordinator, receipt):
-            config.write_bytes(original)
-            original_archive(coordinator, receipt)
-        def drive(coordinator):
-            driven.append(True)
-            return 'DONE'
-        output = io.StringIO()
-        with patch.object(rc.Coordinator, 'probe_passed', record_probe), \
-                patch.object(rc.Coordinator, 'archive_abandoned_turn', revert_then_archive), \
-                patch.object(rc.Coordinator, 'drive', drive), patch('sys.stdout', output):
-            result = rc.main(command[2:])
-        self.assertTrue(probed)
-        self.assertEqual(result, 2)
-        self.assertIn('permission probe stale after uncertain turn', output.getvalue())
-        saved = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertIsNone(saved['uncertain_active'])
-        self.assertEqual(len(saved['abandoned_turns']), 1)
-        self.assertFalse(driven)
-        config.write_bytes(original)
-
-    def test_trust_ack_probe_expiry_clears_archived_uncertain_turn(self):
-        config = self.test_home / '.codex/config.toml'; original = config.read_bytes()
-        co = self.coordinator(); before = hashlib.sha256(config.read_bytes()).hexdigest()
-        receipt = {'sequence': 1, 'pid': 987654321, 'role': 'author', 'vendor': 'codex',
-                   'phase': 'EXEC', 'workspace': str(self.workspace),
-                   'global_codex_home': str(co.global_codex_home),
-                   'global_config_home': str(co.global_config_home),
-                   'global_codex_before': {'codex_config': before}}
-        co.state.update(status='HOLD', hold_reason='global Codex config changed during uncertain turn',
-                        uncertain_active=receipt)
-        co.save(); co.args.action = 'resume'; co.args.acknowledge_codex_trust = self.run_dir.name
-        co.args.retry_uncertain = True; co._probe_gate_required = True
-        entry = ('\n[projects.' + json.dumps(str(self.workspace)) +
-                 ']\ntrust_level = "trusted"\n').encode()
-        config.write_bytes(original + entry)
-        probe_file = self.run_dir / 'permission-probe.json'
-        probe_file.write_text('{"status":"PASS"}\n')
-        original_archive = co.archive_abandoned_turn
-        def archive_and_delete_probe(turn):
-            original_archive(turn)
-            probe_file.unlink()
-        with patch('os.killpg', side_effect=ProcessLookupError), \
-                patch.object(co, 'archive_abandoned_turn', archive_and_delete_probe), \
-                patch.object(co, 'drive') as drive:
-            self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
-        drive.assert_not_called()
-        self.assertIsNone(co.state['uncertain_active'])
-        self.assertEqual(len(co.state['abandoned_turns']), 1)
-        self.assertIn('permission probe stale after uncertain turn', co.state['hold_reason'])
-        config.write_bytes(original)
-
     def test_codex_turn_records_concurrent_claude_change_without_holding(self):
         co = self.coordinator()
         with patch.dict(os.environ, {'FAKE_CODEX_TOUCH_CLAUDE_SETTINGS': '1'}):
-            report = co._author_permission_probe()
-        self.assertEqual(report['status'], 'PASS', report)
+            co._invoke_once('author', 'PLAN', 'Role: persistent codex implementer. Phase: PLAN.\n', rc.author_schema())
         turn = next(row for row in co.state['turns'] if row['vendor'] == 'codex')
         self.assertEqual(turn['global_config_changes']['status'], 'PASS')
         self.assertIn('claude_settings', turn['global_config_changes']['other_vendor_changes'])
 
     def test_claude_turn_records_concurrent_codex_change_without_holding(self):
         co = self.coordinator()
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
         with patch.dict(os.environ, {'FAKE_CLAUDE_TOUCH_CODEX_CONFIG': '1'}):
-            self.assertFalse(co.permission_probe())
+            co._invoke_once('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
         turn = next(row for row in co.state['turns'] if row['vendor'] == 'claude')
         self.assertEqual(turn['global_config_changes']['status'], 'PASS')
         self.assertIn('codex_config', turn['global_config_changes']['other_vendor_changes'])
-        self.assertEqual(json.loads((self.run_dir / 'permission-probe.json').read_text())['global_config_changes']['status'], 'FAIL')
-
-    def test_permission_probe_clears_unverifiable_hold_after_later_group_check(self):
-        use_lifecycle_on(self, self)
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli())])
-        co = rc.Coordinator(args)
-        uncertain = {'pid': 987654322, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
-                     'sequence': 2}
-        co.state['uncertain_active'] = uncertain
-        co.state['status'] = 'HOLD'
-        co.save()
-        with patch('os.killpg', side_effect=PermissionError(errno.EPERM, 'denied')):
-            self.assertFalse(co.permission_probe(retry_uncertain=True))
-        self.assertIn('cannot verify uncertain permission-probe', co.state['hold_reason'])
-        snapshot = rc.git_snapshot(self.workspace)[0]
-        result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
-                  'snapshot': snapshot, 'sequence': 3, 'role': 'probe'}
-        with patch('os.killpg', side_effect=ProcessLookupError):
-            with patch.object(co, 'invoke', return_value=result):
-                with patch.object(co, '_author_permission_probe', return_value={'status': 'PASS'}):
-                    self.assertFalse(co.permission_probe(retry_uncertain=True))
-        self.assertIsNone(co.state['uncertain_active'])
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertIn('permission probe failed', co.state['hold_reason'])
-        self.assertNotIn('cannot verify', co.state['hold_reason'])
-        self.assertEqual(len(co.state['abandoned_turns']), 1)
-
-    def test_permission_probe_eperm_then_esrch_clears_uncertain_probe_before_reprobe(self):
-        use_lifecycle_on(self, self)
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli())])
-        co = rc.Coordinator(args)
-        active = {'pid': 43225, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE', 'sequence': 2}
-        co.state['active'] = active
-        co.save()
-        def stop_before_provider(*_args, **_kwargs):
-            self.assertIsNone(co.state['active'])
-            self.assertIsNone(co.state['uncertain_active'])
-            raise RuntimeError('stop offline before provider invocation')
-        with patch('os.killpg', side_effect=[PermissionError(errno.EPERM, 'race'),
-                                             ProcessLookupError(errno.ESRCH, 'gone')]) as killpg:
-            with patch.object(co, 'invoke', side_effect=stop_before_provider) as invoke:
-                self.assertFalse(co.permission_probe(retry_uncertain=True))
-        self.assertEqual(killpg.call_count, 2)
-        invoke.assert_called_once()
-        self.assertIsNone(co.state['uncertain_active'])
-
-    def test_uncertain_permission_probe_refuses_live_or_unverifiable_process_group(self):
-        use_lifecycle_on(self, self)
-        for side_effect in (None, PermissionError(errno.EPERM, 'denied'),
-                            OSError('operation unavailable')):
-            with self.subTest(side_effect=side_effect):
-                label = ('alive' if side_effect is None else
-                         'denied' if isinstance(side_effect, PermissionError) else 'unavailable')
-                self.run_dir = self.root / ('probe-group-' + label)
-                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
-                co = rc.Coordinator(args)
-                active = {'pid': 12345, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
-                          'sequence': 2}
-                co.state['active'] = active
-                co.save()
-                with patch('os.killpg', side_effect=side_effect) as kill_group:
-                    with patch.object(co, 'invoke') as invoke:
-                        with patch.object(co, '_author_permission_probe') as probe:
-                            self.assertFalse(co.permission_probe(retry_uncertain=True))
-                if isinstance(side_effect, PermissionError):
-                    self.assertGreater(kill_group.call_count, 1)
-                else:
-                    kill_group.assert_called_once_with(12345, 0)
-                invoke.assert_not_called()
-                probe.assert_not_called()
-                self.assertEqual(co.state['uncertain_active'], active)
-                self.assertIsNone(co.state['active'])
-
-    def test_uncertain_permission_probe_without_valid_group_id_fails_closed(self):
-        use_lifecycle_on(self, self)
-        for pid in (None, 0, True, '12345', 2**31, -1):
-            with self.subTest(pid=pid):
-                self.run_dir = self.root / ('probe-group-invalid-' + str(pid))
-                args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-                    '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
-                co = rc.Coordinator(args)
-                uncertain = {'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
-                             'sequence': 2}
-                if pid is not None:
-                    uncertain['pid'] = pid
-                co.state['uncertain_active'] = uncertain
-                co.save()
-                with patch('os.killpg') as kill_group:
-                    with patch.object(co, 'invoke') as invoke:
-                        with patch.object(co, '_author_permission_probe') as probe:
-                            self.assertFalse(co.permission_probe(retry_uncertain=True))
-                kill_group.assert_not_called()
-                invoke.assert_not_called()
-                probe.assert_not_called()
-                self.assertEqual(co.state['uncertain_active'], uncertain)
 
     def test_popen_failure_clears_known_unstarted_receipt_and_budget(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -6184,88 +5029,6 @@ sys.exit(result.returncode)
                     self.assertEqual(reloaded.drive(), 'HOLD')
                 author_turn.assert_not_called()
 
-    def test_probe_retries_after_real_group_leader_exits_but_descendant_lives(self):
-        use_lifecycle_on(self, self)
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--codex-bin', str(self.fake_codex_cli()), '--gate-vendor', 'claude'])   # explicit: default moved by owner decision 2026-09-30 (a codex gate adds a gate-probe turn)
-        co = rc.Coordinator(args)
-        parent_signal, descendant_signal = socket.socketpair()
-        descendant_signal.set_inheritable(True)
-        child = subprocess.Popen([sys.executable, '-c',
-            'import socket,subprocess,sys; '
-            'fd=int(sys.argv[1]); '
-            'subprocess.Popen([sys.executable,"-c",'
-            '"import socket,sys,time; s=socket.socket(fileno=int(sys.argv[1])); '
-            's.sendall(b\\\"R\\\"); time.sleep(600)",str(fd)], pass_fds=(fd,))',
-            str(descendant_signal.fileno())], start_new_session=True,
-            pass_fds=(descendant_signal.fileno(),))
-        descendant_signal.close()
-        try:
-            child.wait(timeout=tsc.scaled(5))
-            parent_signal.settimeout(tsc.scaled(5))
-            self.assertEqual(parent_signal.recv(1), b'R')
-            active = {'pid': child.pid, 'role': 'author', 'phase': 'AUTHOR_PERMISSION_PROBE',
-                      'sequence': 2}
-            co.state['active'] = active
-            co.state['hold_reason'] = 'uncertain permission-probe turn; stale'
-            co.save()
-            with patch.object(co, 'invoke') as invoke:
-                self.assertFalse(co.permission_probe(retry_uncertain=True))
-            invoke.assert_not_called()
-            self.assertEqual(co.state['uncertain_active'], active)
-            # The descendant's ready byte proves the original group is still
-            # owned and alive. Kill it before waiting for EOF; never poll its
-            # numeric PGID after it may have disappeared or been reused.
-            parent_signal.setblocking(False)
-            try:
-                self.assertEqual(parent_signal.recv(1), b'')
-                owns_socket = False
-            except BlockingIOError:
-                owns_socket = True
-            self.assertTrue(owns_socket, 'descendant must still own the sentinel socket before kill')
-            if owns_socket:
-                os.killpg(child.pid, signal.SIGKILL)
-                parent_signal.settimeout(tsc.scaled(5))
-                self.assertEqual(parent_signal.recv(1), b'')
-        finally:
-            try:
-                # This fallback is safe only while the inherited sentinel has
-                # not reached EOF, which means the descendant still owns the
-                # original process group.
-                if parent_signal.fileno() >= 0:
-                    parent_signal.settimeout(0)
-                    try:
-                        descendant_gone = parent_signal.recv(1) == b''
-                    except BlockingIOError:
-                        descendant_gone = False
-                    if not descendant_gone:
-                        os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            finally:
-                parent_signal.close()
-                child.wait(timeout=tsc.scaled(5))
-        snapshot = rc.git_snapshot(self.workspace)[0]
-        result = {'answer': {'observed_commands': [], 'self_run_evidence': []},
-                  'snapshot': snapshot, 'sequence': 3, 'role': 'probe'}
-        def check_cleared(*unused, **kwargs):
-            self.assertIsNone(co.state['active'])
-            self.assertIsNone(co.state['uncertain_active'])
-            self.assertIn('permission probe is pending', co.state['hold_reason'])
-            saved = json.loads(co.state_path.read_text())
-            self.assertIsNone(saved['active'])
-            self.assertIsNone(saved['uncertain_active'])
-            self.assertIn('permission probe is pending', saved['hold_reason'])
-            return result
-        with patch('os.killpg', side_effect=ProcessLookupError) as kill_group:
-            with patch.object(co, 'invoke', side_effect=check_cleared) as invoke:
-                with patch.object(co, '_author_permission_probe', return_value={'status': 'PASS'}):
-                    self.assertFalse(co.permission_probe(retry_uncertain=True))
-        kill_group.assert_called_once_with(child.pid, 0)
-        invoke.assert_called_once()
-        self.assertIn('permission probe failed', co.state['hold_reason'])
-
     def test_uncertain_turn_requires_explicit_retry_after_abort_hold(self):
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
             '--workitem', str(self.workitem), '--run-dir', str(self.run_dir)])
@@ -6277,34 +5040,6 @@ sys.exit(result.returncode)
         with patch.object(co, 'drive') as drive:
             self.assertEqual(co.resume(), 'HOLD')
         drive.assert_not_called()
-
-    def test_run_refuses_without_matching_pass_probe_unless_explicitly_skipped(self):
-        result = self.run_coordinator(skip_probe=False)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('REFUSED: permission-probe.json is missing', result.stdout)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['turns'], [])
-        bypass = self.run_coordinator()
-        self.assertEqual(bypass.returncode, 0, bypass.stderr + bypass.stdout)
-
-    def test_probe_reports_not_attempted_as_distinct_failure(self):
-        command = self.command()
-        command[2] = 'permission-probe'
-        env = os.environ.copy()
-        env['FAKE_MISSING_OBSERVED'] = '1'
-        result = subprocess.run(command, cwd=self.root, env=env, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(result.returncode, 2)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertEqual(set(report['write_attempt_outcomes'].values()), {'not-attempted'})
-        self.assertEqual(len([x for x in report['failure_reasons'] if x.startswith('not-attempted:')]), 11)
-        before = len(json.loads((self.run_dir / 'state.json').read_text())['turns'])
-        run = self.run_coordinator(skip_probe=False)
-        self.assertEqual(run.returncode, 2)
-        self.assertIn('permission probe status is not PASS', run.stdout)
-        after = len(json.loads((self.run_dir / 'state.json').read_text())['turns'])
-        self.assertEqual(before, after)
 
     def test_exec_approve_rejects_claimed_but_unobserved_test(self):
         result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
@@ -6339,13 +5074,14 @@ sys.exit(result.returncode)
                 self.assertTrue(all(len(t['answer']['reviewed_snapshot']) == 64 for t in reviews))
                 self.assertTrue(all(t['answer']['reviewed_snapshot'] == t['snapshot_before'] for t in reviews))
 
-    def test_persistent_reviewer_sensitive_path_access_holds(self):
+    def test_persistent_reviewer_sensitive_path_access_is_logged(self):   # v3.7.0: the evidence guard only logs
         secret = str(self.run_dir / 'evidence' / 'secret.json')
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                       env={'FAKE_SENSITIVE_READ': secret})
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertIn('accessed isolated evidence directory', state['hold_reason'])
+        self.assertTrue(any('accessed isolated evidence directory' in t.get('evidence_guard', {}).get('would_hold', '')
+                            for t in state['turns']))
 
 
     def test_lifecycle_gate_blocker_starts_new_gate_convergence(self):

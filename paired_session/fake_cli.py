@@ -11,28 +11,6 @@ from datetime import datetime, timezone
 import uuid
 
 
-def readonly_profile(args):
-    """b295-f1: the filesystem table of the profile that `default_permissions` selects in a Codex argv ({} when absent; the last
-    --config wins, as in Codex)."""
-    selected = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('-c', '--config') and args[i + 1].startswith('default_permissions=')]
-    if not selected:
-        return {}
-    key = 'permissions.' + selected[-1].split('=', 1)[1].strip('"') + '.filesystem='
-    raw = next((arg[len(key):] for arg in args if arg.startswith(key)), '')
-    try: return json.loads(raw.replace('"=', '":'))
-    except ValueError: return {}
-
-
-def codex_sandbox(args):
-    """v3.6.0: what a Codex argv's sandbox lets a turn write: the workspace (sandbox_mode="workspace-write") and $TMPDIR (workspace-write
-    without exclude_tmpdir_env_var, or a permission profile whose :tmpdir is write)."""
-    configs = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ('-c', '--config')]
-    workspace = 'sandbox_mode="workspace-write"' in configs
-    return {'workspace_write': workspace,
-            'tmpdir_write': (workspace and 'sandbox_workspace_write.exclude_tmpdir_env_var=true' not in configs)
-                            or readonly_profile(args).get(':tmpdir') == 'write'}
-
-
 def long_command(events, command):
     """FIELD-20: FAKE_CODEX_LONG=yield|started-only|killed makes `command` outlive exec_command's first yield; it then completes
     with exit 0 (the model polled), never completes (killed at the turn end), or completes with -1 (killed)."""
@@ -270,8 +248,7 @@ def main():
             (Path.home() / '.claude' / 'plugins' / 'installed_plugins.json').write_text(json.dumps(documents.pop(0), indent=2))
             queue.write_text(json.dumps(documents))
     foreign = os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG')   # P0: another process rewrites the DEFAULT ~/.codex/config.toml
-    marker = {'author': 'implementer. Phase: EXEC.', 'probe': 'Role: permission-system probe'}[
-        os.environ.get('FAKE_FOREIGN_DEFAULT_CONFIG_ON', 'author')]
+    marker = 'implementer. Phase: EXEC.'
     if foreign and marker in prompt and not Path(foreign + '.done').exists():   # once, during that turn
         (Path(os.environ['HOME']) / '.codex' / 'config.toml').write_text(Path(foreign).read_text())
         Path(foreign + '.done').write_text('done')
@@ -515,44 +492,6 @@ def main():
                   'findings': findings,
                   'self_run_evidence': [{'command': configured_test}]}
         command_events = [{'command': configured_test, 'exit_code': 0, 'output': 'OK'}] if vendor == 'codex' else None   # G-b: a Codex gate observes the configured test like the Claude fake
-    elif 'Role: permission-system probe' in prompt:
-        if os.environ.get('FAKE_PROBE_MUTATE') and os.environ.get('FAKE_PROBE_MUTATE_VENDOR', vendor) == vendor:   # G-a: the vendor filter lets a test mutate in one probe turn only
-            (Path.cwd() / 'probe-mutation.txt').write_text('mutation\n')
-        allowed = (prompt.split('Allowed exact command:\n', 1)[1].splitlines()[0]
-                   if 'Allowed exact command:\n' in prompt else None)   # LG2-b2: a no-test probe has none
-        attacks = prompt.split('Write commands expected to be denied:\n', 1)[1].split(
-            '\nReturn APPROVE', 1)[0].splitlines()
-        answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
-                  'self_run_evidence': [{'command': command} for command in [allowed, *attacks] if command]}
-        if vendor == 'codex':   # G-a: a Codex probe turn observes the allowed command (exit 0) and denies every write attempt
-            command_events = [{'command': command, 'exit_code': 0 if command == allowed else 1,   # b296-f1b: an explicit OS denial
-                               'output': 'fake permission result' if command == allowed else 'fake: Operation not permitted'}
-                              for command in [allowed, *attacks] if command]
-            for marker, code, text in (('FAKE_CODEX_PROBE_NOT_FOUND', 127, 'zsh: command not found: ln'), ('FAKE_CODEX_PROBE_OTHER_ERROR', 1, 'ln: invalid option')):
-                if os.environ.get(marker):   # b296-f1b: an error that is not a sandbox denial, for the command containing that substring
-                    command_events = [{**row, 'exit_code': code, 'output': text} if os.environ[marker] in row['command'] else row for row in command_events]
-            command_events = long_command(command_events, allowed)
-            sandbox = codex_sandbox(args)   # the sandbox in this argv decides the scratch and workspace writes
-            if 'Scratch write expected to succeed:\n' in prompt:
-                scratch = prompt.split('Scratch write expected to succeed:\n', 1)[1].splitlines()[0]
-                writable = sandbox['tmpdir_write'] and os.environ.get('TMPDIR')
-                if writable and not os.environ.get('FAKE_CODEX_SKIP_SCRATCH'):
-                    (Path(os.environ['TMPDIR']) / 'paired-session-scratch-probe').write_text('probe')
-                command_events.append({'command': scratch, 'exit_code': 0 if writable else 1,
-                                       'output': '' if writable else 'fake: Operation not permitted'})
-            if 'Workspace write expected to succeed:\n' in prompt:   # v3.6.0
-                command = prompt.split('Workspace write expected to succeed:\n', 1)[1].splitlines()[0]
-                writable = sandbox['workspace_write'] and not os.environ.get('FAKE_CODEX_WORKSPACE_READONLY')
-                if writable: Path(shlex.split(command)[-1]).write_text('probe')
-                command_events.append({'command': command, 'exit_code': 0 if writable else 1,
-                                       'output': '' if writable else 'fake: Operation not permitted'})
-            for command in attacks:   # b296-f1 R1: a profile that lets the escape writes or the hard link land (selected by substring)
-                if not os.environ.get('FAKE_CODEX_PROBE_ESCAPE') or os.environ['FAKE_CODEX_PROBE_ESCAPE'] not in command:
-                    continue
-                words = shlex.split(command.replace('$TMPDIR', os.environ.get('TMPDIR', '')))
-                if words[0] == 'ln': os.link(words[1], words[2])
-                elif command.startswith('printf probe > '): Path(words[-1]).write_text('probe')
-                command_events = [{**row, 'exit_code': 0, 'output': ''} if row['command'] == command else row for row in command_events]
     else:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')
@@ -729,55 +668,12 @@ def main():
         if (command_events is None and vendor == 'codex' and role == 'reviewer' and phase == 'EXEC' and configured_test
                 and os.environ.get('FAKE_CODEX_LONG')):   # FIELD-20: the configured test outlives the first yield
             command_events = long_command([{'command': configured_test, 'exit_code': 0, 'output': 'OK'}], configured_test)
-    if prompt.startswith('Role: author workspace-write permission probe'):
-        encoded = prompt.split('PROBE_COMMANDS_JSON: ', 1)[1].splitlines()[0]
-        commands = json.loads(encoded)
-        events = []
-        output_commands = []
-        for index, command in enumerate(commands):
-            exit_code = 0 if index < 2 else 126
-            label = next((name for name in ('external_tmpdir', 'slash_tmp', 'private_tmp', 'home', 'workspace_parent')
-                          if 'paired-session-escape-' + name + '-' in command), None)
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_SKIP') in (label, 'all'):
-                continue
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_MALFORMED') == label:
-                exit_code = None
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE') == label:
-                Path(shlex.split(command)[-1]).write_text('fake escaped\n')
-                exit_code = 0
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE_THEN_DELETE') == label:
-                target = Path(shlex.split(command)[-1]); target.write_text('fake escaped\n'); target.unlink()
-                exit_code = 0
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_WRITE_DELETE_DENIED') == label:
-                target = Path(shlex.split(command)[-1]); target.write_text('fake escaped\n'); target.unlink()
-            if label and os.environ.get('FAKE_AUTHOR_ESCAPE_FOREIGN') == label:
-                (Path(shlex.split(command)[-1]).parent / 'foreign-file').write_text('not a coordinator sentinel\n')
-            if index < 2 and os.environ.get('FAKE_AUTHOR_POSITIVE_FAIL') == ('workspace' if index == 0 else 'tmpdir'):
-                exit_code = 1
-            if index < 2 and exit_code == 0:
-                parts = shlex.split(command)
-                target_arg = parts[parts.index('>') + 1]
-                target = (Path(os.environ['TMPDIR']) / target_arg[len('$TMPDIR/'):]
-                          if target_arg.startswith('$TMPDIR/') else Path(target_arg))
-                target.write_text('probe\n')
-            events.append({'command': command, 'exit_code': exit_code,
-                           'output': ('generic failure' if label and label == os.environ.get('FAKE_AUTHOR_ESCAPE_NO_OS') else
-                                      'zsh: operation not permitted: ' + shlex.split(command)[-1]
-                                      if label and exit_code == 126 else 'fake permission result')})
-            if label and label == os.environ.get('FAKE_AUTHOR_ESCAPE_DUPLICATE'):
-                events.append(dict(events[-1]))
-            output_commands.append({'command': command})
-        answer = {'status': 'APPROVE', 'prior_findings': [], 'full_review': [],
-                  'self_run_evidence': output_commands}
-        emit_codex(answer, session, events)
-        return 0
-
     if (os.environ.get('FAKE_REVIEW_HOLD') and 'Role: reviewer,' in prompt and
             'Phase: PLAN' in prompt):
         answer = {'status': 'HOLD', 'prior_findings': [], 'full_review': [],   # W10: the reviewer's words, as in the field
                   'self_run_evidence': ([{'command': os.environ['FAKE_REVIEW_HOLD_EVIDENCE']}]
                                         if os.environ.get('FAKE_REVIEW_HOLD_EVIDENCE') else [])}
-    if 'Role: persistent' not in prompt and 'Role: permission-system probe' not in prompt:
+    if 'Role: persistent' not in prompt:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
                 'shadow' if 'Role: shadow,' in prompt else 'reviewer')
         answer['verified_claims'] = [{'claim': 'Checked existing source contract', 'file': 'tracked.txt', 'line': 1}]

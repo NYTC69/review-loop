@@ -4,9 +4,7 @@ import json
 import os
 import subprocess
 import unittest
-from unittest.mock import patch
 
-from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -19,7 +17,7 @@ class FieldCliTests(unittest.TestCase):
 
     def test_a_missing_codex_home_is_refused_up_front_when_a_role_is_codex(self):        # FIELD-7
         missing = self.root / 'lane-b-codex-home'
-        for action in ('permission-probe', 'run'):
+        for action in ('run',):
             with self.subTest(action=action):
                 self.run_dir = self.root / ('missing-' + action)
                 done = self.run_operator_action(action, env={'CODEX_HOME': str(missing)})
@@ -55,65 +53,6 @@ class FieldCliTests(unittest.TestCase):
         self.assertNotIn('WARNING', self.run_coordinator('--gate-vendor', 'claude').stdout)
 
 
-class FieldProbeListingTests(unittest.TestCase):                                            # FIELD-8 / N4-a
-    locals().update({name: getattr(tor.ClaudeAuthorProbeTests, name) for name in ('setUp', 'co', 'probe', 'fail_reason')})
-
-    def test_a_file_changed_beside_the_run_dir_is_classified_for_the_operator(self):
-        log = self.h.run_dir.parent / 'WI-81.probe.log'
-        try: _, out = self.fail_reason({'silent_write': [str(log)]})
-        finally: log.unlink(missing_ok=True)
-        self.assertEqual(out['changed_beside_run_dir'], [str(log)])
-        self.assertIn(str(log), out['model_escape_failed_targets'])
-        _, out = self.fail_reason({'silent_write': ['{base}/outside/extra.txt']})            # a write in the probe tree is not "beside the run dir"
-        self.assertEqual(out['changed_beside_run_dir'], [])
-
-
-    def test_run_parent_and_scratch_are_both_watched_in_new_and_legacy_layouts(self):
-        original = self.h.run_dir
-        for layout in ('external', 'in-repo', 'legacy'):
-            with self.subTest(layout=layout):
-                self.h.run_dir = (self.h.workspace / '.review-loop' / 'runs' / 'probe-listing'
-                                  if layout == 'in-repo' else original.parent / ('listing-' + layout))
-                if layout == 'legacy':
-                    with patch.object(rc, 'new_scratch_root', side_effect=lambda run: run):
-                        co = self.co()
-                else:
-                    co = self.co()
-                    self.assertNotEqual(co.scratch_parent, co.run_dir.parent)
-                for parent in dict.fromkeys((co.run_dir.parent, co.scratch_parent)):
-                    with self.subTest(parent=str(parent)):
-                        target = parent / 'operator.log'
-                        target.write_text('before')
-                        try:
-                            _, out = self.probe({'silent_write': [str(target)]}, co=co)
-                            self.assertEqual(out['status'], 'FAIL', out)
-                            self.assertIn(str(target), out['model_escape_failed_targets'])
-                            self.assertEqual(out['changed_beside_run_dir'],
-                                             [str(target)] if parent == co.run_dir.parent else [])
-                        finally:
-                            target.unlink(missing_ok=True)
-
-
-class FieldProbeHoldTests(unittest.TestCase):                                               # FIELD-8 / N4-a
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
-
-    def test_the_hold_names_an_operator_file_outside_the_run_dir(self):
-        log = str(self.h.run_dir.parent / 'WI-81.probe.log')
-        escape = str(self.h.run_dir.parent / 'paired-session-author-probe-x' / 'outside' / 'w.txt')
-        for failed, beside, unexpected, wording, hinted in (([log], [log], [], 'operator-created file outside the run dir?', True),
-                                                            ([escape, log], [log], [], 'escape write observed at ' + escape, True),
-                                                            ([escape], [], [], 'escape write observed at ' + escape, False),
-                                                            ([log], [log], ['Bash: printf x > log'], 'escape write observed at ' + log, False)):   # field-a L1
-            with self.subTest(failed=failed, unexpected=unexpected):
-                co = self.co()
-                author = {'status': 'FAIL', 'model_escape_failed_targets': failed, 'changed_beside_run_dir': beside, 'unexpected_tool_uses': unexpected}
-                self.assertEqual(self.probe(co, author)['status'], 'FAIL')
-                reason = json.loads((co.run_dir / 'state.json').read_text())['hold_reason']
-                self.assertTrue(reason.startswith('1C FAIL: ' + wording), reason)
-                self.assertEqual("write launcher logs outside the run dir's parent" in reason, hinted, reason)
-                (co.run_dir / 'state.json').unlink()
-
-
 class FieldOperatorCliTests(unittest.TestCase):                                             # b295-field-b
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
 
@@ -139,7 +78,7 @@ class FieldOperatorCliTests(unittest.TestCase):                                 
         done = self.cli('accept', '--reason', 'owner accepts', '--expect', json.loads(intent.stdout)['digest'])
         self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, 'ACCEPTED'), done.stdout + done.stderr)
         self.assertEqual(json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())['reason'], 'owner accepts')
-        self.assertIn('needs --reason', self.cli('resume', '--reason', 'why').stdout)       # without an --accept-* flag run/resume/reject still refuse it
+        self.assertIn('--reason is only for accept and withdraw-findings', self.cli('resume', '--reason', 'why').stdout)   # v3.7.0: no --accept-* flag takes it
 
     def test_operator_evidence_attached_at_done_is_listed_by_accept_while_current(self):    # N4-e
         co = self.coordinator()

@@ -23,7 +23,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
     - An operator route to send a held EXEC run back to the author with a note (`resume --to-author`, or `reject` on a HOLD), and dispatch the author first after `note` + `resume` (gg-pipeline WI-266b, 2026-10-21; deferred).
     - A requirement change after plan approval that reaches the EXEC reviewer without a full scope-change successor (a superseding operator note shown to the reviewer, or a short re-plan inside the run). Today: `note --scope-change` (gg-pipeline WI-266e, 2026-10-22; deferred).
     - An option for an open MEDIUM+ finding to block DONE, or a dedicated route to fix open findings on a DONE run. Existing route: `reject --text "..."` on the DONE run reopens EXEC on the same run.
-    - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Workaround: the default efficient mode does not require the explicit permission-probe.
+    - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Obsolete: `permission-probe` was removed in v3.7.0.
     - When the base moved under a parked run, have the author re-run the configured command and refresh the recorded verification before the gate.
     - Warn at `note` time when the operator text contains a phrase the independence check rejects later (the author may quote the note into the change); and at the last EXEC round, give the author one reword turn instead of the gate HOLD (gg-pipeline WI-263m, 2026-10-21; v3.2.3 only adds the path:line places to the HOLD).
     - A run/resume pre-flight check that each vendor CLI is logged in under the run's CODEX_HOME / Claude config, refusing early with a refresh hint instead of a mid-run HOLD (gg-pipeline WI-282a, 2026-10-24; deferred).
@@ -108,9 +108,9 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 - **DOCS writer can write unverified claims into CHANGELOG.** — Done: v3.0.2 restricts DOCS claims to supported facts and makes false or unsupported claims blocking MAJOR findings. Narrowed in v3.0.4 to statements the DOCS stage wrote and to claimed tests/checks/results that do not exist.
 
-- [new] Reuse a stable author permission-probe workspace per product worktree. — Accepted residual: Fresh strict-probe workspaces remain; stable reuse is deferred indefinitely under the efficient-default threat model. Reopen on normal-use harm.
+- [new] Reuse a stable author permission-probe workspace per product worktree. — Obsolete: `permission-probe` was removed in v3.7.0.
 
-- [new] Give interrupted permission-probe turns an inspected trust-only recovery. — Accepted residual: Interrupted strict-probe trust recovery remains limited; inspect evidence and restart the probe/run. Reopen on normal-use harm.
+- [new] Give interrupted permission-probe turns an inspected trust-only recovery. — Obsolete: `permission-probe` was removed in v3.7.0; a saved uncertain probe turn is settled with `resume --retry-uncertain`.
 
 - [new] General `--timeout` has no upper bound. — Done: v2.11.1 caps general timeout at 86,400 seconds and validates it before dispatch.
 

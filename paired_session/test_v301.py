@@ -148,7 +148,7 @@ class InvocationCapTests(unittest.TestCase):
     def test_non_resume_actions_keep_frozen_cap(self):
         use_lifecycle_on(self, self)
         self.coordinator('--max-invocations', '3')
-        for action in ('run', 'permission-probe', 'accept', 'reject', 'note', 'attach-verification'):
+        for action in ('run', 'accept', 'reject', 'note', 'attach-verification'):
             with self.subTest(action=action), self.assertRaisesRegex(
                     ValueError, 'resume configuration differs: max_invocations'):
                 self.restored(action, '--max-invocations', '4')

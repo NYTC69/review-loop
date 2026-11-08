@@ -46,16 +46,15 @@ This file adds only the Codex host rules:
   with the host's full filesystem/network permission, outside the current
   Codex sandbox, and never inside the sandbox.
 - Long-command form: every invocation that can dispatch model turns
-  (`permission-probe`, `run`, `resume`, `reject --expect`) starts with a short
+  (`run`, `resume`, `reject --expect`) starts with a short
   nonblocking yield (about 1 second); then poll its returned command-session id
   until it completes. Do not cancel it or launch a duplicate while it is
   active, except for the lifecycle-mode backstop, which ends the polled command
   session.
 - Detached commands: with `--detach`, wait until the printed pid has exited
   (the printed record path then reads "exited" with the exit code), then read
-  the last line of its log and `status --brief`. A successful permission probe
-  stays ACTIVE; a report run ends in REPORTED. A probe's result is
-  `RUN_DIR/permission-probe.json`; end the detached command only with `stop`
+  the last line of its log and `status --brief`. A report run ends in
+  REPORTED; end the detached command only with `stop`
   (`paired_session/docs/detach.md`).
 
 ## Run directory
@@ -75,14 +74,12 @@ This file adds only the Codex host rules:
   Read a launcher log's last lines only when a polled command ends without its
   final coordinator line (the shared contract's Work item section).
 
-## Run invocations (efficient and strict)
+## Run invocation
 
-- Default (efficient): no permission probe; the first invocation below starts
-  the run. Strict: replace `run` in the first invocation with
-  `permission-probe` (same arguments, without `--stop-after-plan`), then start
-  the run with the second invocation.
+There is no probe step: `permission-probe` and strict mode were removed in v3.7.0 (`--strict` only prints a NOTE).
+The invocation below sets up and starts the run.
 
-First invocation (setup, then `run`; strict: `permission-probe`):
+Invocation (setup, then `run`):
 
 ```sh
 set -eu
@@ -118,36 +115,15 @@ though `RUN_DIR/state.json` does not exist. Any
 other non-zero exit from the coordinator is a refusal or HOLD: report its
 output verbatim (no fallback).
 
-Second invocation (strict only: run), with the `RUN_DIR` printed by the first and the same
-resolved values:
-
-```sh
-set -eu
-export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-VERSION="$(codex plugin list --json --marketplace review-loop-marketplace | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=[p for p in d.get("installed",[]) if p.get("pluginId")=="review-loop@review-loop-marketplace" and p.get("enabled")]; assert len(rows)==1, "review-loop plugin must be installed and enabled exactly once"; print(rows[0]["version"])')" || { echo "review-loop plugin cannot be resolved after the probe; not starting the run"; exit 4; }
-EXPECTED_VERSION='[the VERSION printed by the first invocation]'
-test "$VERSION" = "$EXPECTED_VERSION" || { echo "plugin version changed ($EXPECTED_VERSION -> $VERSION) after the probe; not starting the run"; exit 4; }
-PLUGIN_ROOT="$CODEX_HOME/plugins/cache/review-loop-marketplace/review-loop/$VERSION"
-WORKSPACE='/the/resolved/worktree/from/the/first/invocation'
-RUN_DIR='/the/RUN_DIR/printed/by/the/first/invocation'
-WORKITEM="$RUN_DIR/WORKITEM.md"
-TEST_COMMAND='[the same test command]'
-"$PLUGIN_ROOT/bin/paired-session" run \
-  --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
-  --test-command "$TEST_COMMAND" --lifecycle-mode on
-```
-
 Replace the placeholders before running. Keep the heredoc delimiter unique and
-quoted. Exit 4 from the second invocation means the installed plugin changed
-or became unresolvable after the probe: report it as a HOLD (no fallback); the
-run was not started.
+quoted.
 
 ## Native Windows
 
-Native Windows (PowerShell; best effort, the Claude Code entry is the tested Windows path): efficient only, so
-there is no second invocation; the coordinator refuses `--strict`, `permission-probe` and `--detach`. Git for
+Native Windows (PowerShell; best effort, the Claude Code entry is the tested Windows path): the coordinator
+refuses `--detach`. Git for
 Windows (Git Bash) must be installed, and the run root and the workspace stay out of OneDrive-synced folders. The
-first invocation becomes (same placeholders, same exit 3 rule; run the coordinator and every script through
+invocation becomes (same placeholders, same exit 3 rule; run the coordinator and every script through
 `python`, never by shebang):
 
 ```powershell
@@ -194,7 +170,7 @@ argument intact to `python`: keep `"` out of the test command and the option val
 
 A review-only request (the user asks to review an existing change, or the review-loop handoff of
 a code target) follows the shared contract's review-only entry: add `--review-only` (and
-`--base "$BASE"` only when the user named a base) to both invocations.
+`--base "$BASE"` only when the user named a base) to the invocation.
 The workspace is the worktree that holds the change (normally the current checkout). Do not
 create or switch to a dedicated worktree, and skip the Stage A dedicated-worktree question.
 Add `--auto-commit false` too when the review-loop entry handed it over.
@@ -204,14 +180,14 @@ ref) follows the shared contract's Review-PR entry.
 Resolve the run root from the operator project before switching `WORKSPACE` to the clone.
 Host rules: the run root is the resolved `<repo>/.review-loop/` (or the reported state-root fallback) (the materializer's `--root`); the
 materializer reads through `gh` and the network, so run it as its own invocation outside the sandbox,
-with `PLUGIN_ROOT` resolved as in the first invocation, before the first invocation. In both
-invocations set `WORKSPACE` to the clone it printed (no input: the current worktree). In the first
-invocation replace the `RUN_ROOT` resolver (PowerShell: `$RunRoot`) with the absolute operator-project
+with `PLUGIN_ROOT` resolved as in the invocation, before the invocation. In the
+invocation set `WORKSPACE` to the clone it printed (no input: the current worktree) and
+replace the `RUN_ROOT` resolver (PowerShell: `$RunRoot`) with the absolute operator-project
 root resolved before materialization, so runs stay beside `pr/` rather than inside the clone. Skip the
 dedicated-worktree question, replace `--test-command "$TEST_COMMAND"` with `--no-test-command` unless
 the user confirmed a test command, and add `--review-only --review-report --auto-commit false`,
 `--base "$BASE"` (the printed `merge_base`; no input: only a base the user named),
-`--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized input (the first invocation writes the
+`--review-pr-pins "$RUN_DIR/pr-pins.json"` for a materialized input (the invocation writes the
 printed JSON there with a second quoted heredoc, like the work item) and `--aspects "$ASPECTS"` when
 aspects were given. `simplify` pointer: `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)` (Claude Code).
 
@@ -237,4 +213,4 @@ evidence, next-step hint and status; withdrawal dispatches no model turn.
 
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 
-For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value. For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile. When the user chooses off for those entries, pass `--lifecycle-mode off` in both commands. Compare the saved lifecycle mode with that selected mode for the backstop; saved off runs continue with off.
+For review-pr report mode, always pass `--lifecycle-mode on` to `run`. This overrides a profile's off value. For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value). The CLI value overrides the profile. When the user chooses off for those entries, pass `--lifecycle-mode off`. Compare the saved lifecycle mode with that selected mode for the backstop; saved off runs continue with off.

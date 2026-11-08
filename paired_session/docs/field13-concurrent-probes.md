@@ -1,5 +1,9 @@
 # FIELD-13: concurrent Claude author probes
 
+> Removed in v3.7.0: the permission probe, the Claude author probe and the probe
+> lock described here no longer exist. This document is kept as a record of the
+> design; it does not describe current behaviour.
+
 Status: implemented in v2.9.7 (v297-f13) as E plus D. §9 lists where the
 implementation differs from this design. Owner decisions are in §8. The operator
 view is

@@ -9,8 +9,9 @@ from paired_session import test_worktree_lifecycle as twl
 rc = twl.rc
 ON = ('--lifecycle-mode', 'on', '--max-invocations', '80')
 OFF = ('--lifecycle-mode', 'off', '--shadow', 'off')
-RESTORE = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
-           '(then run permission-probe again if it was already run) and resume, or abort and start a new run')
+RESTORE = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item and resume, '
+           'or abort and start a new run')
+RECORDED = "NOTE: the work item's reviewer commands changed; the run uses the new block"
 
 
 class OperatorRecoveryTests(unittest.TestCase):
@@ -127,13 +128,14 @@ class OperatorRecoveryTests(unittest.TestCase):
                         self.assertNotIn(hint, text)
                 self.git('config', key, 'true') if key == 'core.fileMode' else self.git('config', '--unset', key)
 
-    def test_allowlist_restore_before_and_after_probe(self):
+    def test_allowlist_restore_on_the_lifecycle_route(self):   # lifecycle on keeps its rule; the text no longer names a probe
         original = self.workitem.read_text()
         started = self.run_coordinator(*ON, '--stop-after-plan')
         self.assertIn('HOLD', started.stdout, started.stdout + started.stderr)
         self.workitem.write_text(original + '\n```reviewer-commands\npython3 -m unittest\n```\n')
         held = self.run_operator_action('resume', *ON)
         self.assertIn(RESTORE, held.stdout)
+        self.assertNotIn('permission-probe', held.stdout)
         # The invocation-time check carries the same recovery text, without widening the frozen list.
         command = self.command(*ON); command[2] = 'accept'
         co = rc.Coordinator(rc.parser().parse_args(command[2:]))
@@ -142,26 +144,12 @@ class OperatorRecoveryTests(unittest.TestCase):
         self.workitem.write_text(original)
         resumed = self.run_operator_action('resume', *ON)
         self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
-        self.run_dir = self.root / 'probe-before-restore'
-        started = self.run_coordinator(*ON, '--stop-after-plan')
-        self.assertIn('HOLD', started.stdout, started.stdout + started.stderr)
-        self.workitem.write_text(original + '\n```reviewer-commands\npython3 -m unittest\n```\n')
-        probe = self.run_operator_action('permission-probe', *ON)
-        self.assertNotEqual(probe.returncode, 0, probe.stdout + probe.stderr)
-        resumed = self.run_operator_action('resume', *ON)
-        self.assertIn('frozen role dispatch changed; abort or start a new run', resumed.stdout)
-        self.workitem.write_text(original)
-        probe = self.run_operator_action('permission-probe', *ON)
-        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
-        resumed = self.run_operator_action('resume', *ON)
-        self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
 
     def test_all_codex_roles_still_require_claude_binding(self):
         for mode in (ON, OFF):
             with self.subTest(mode=mode):
                 self.run_dir = self.root / ('binding-' + mode[1])
-                command = [arg for arg in self.command(*mode, '--reviewer-vendor', 'codex',
-                           '--claude-bin', str(self.root / 'missing-claude')) if arg != '--strict']
+                command = self.command(*mode, '--reviewer-vendor', 'codex', '--claude-bin', str(self.root / 'missing-claude'))
                 held = rc.subprocess.run(command, cwd=self.root, text=True,
                                          stdout=rc.subprocess.PIPE, stderr=rc.subprocess.PIPE)
                 self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
@@ -204,11 +192,21 @@ class OperatorRecoveryTests(unittest.TestCase):
                 if path.is_file() and path.suffix in ('.json', '.jsonl', '.md'):
                     self.assertNotIn(value, path.read_text(), str(path))
 
-    def test_off_allowlist_hint_stays(self):
-        self.done(*OFF)
-        self.workitem.write_text(self.workitem.read_text() + '\n```reviewer-commands\npython3 -m unittest\n```\n')
-        held = self.run_operator_action('resume', *OFF)
-        self.assertIn('work-item reviewer allowlist changed; run permission-probe before continuing', held.stdout)
+    def test_off_allowlist_change_is_recorded_with_a_note(self):   # v3.7.0: no probe to ask for; the new block is recorded
+        started = self.run_coordinator(*OFF, '--stop-after-plan')
+        self.assertIn('HOLD', started.stdout, started.stdout + started.stderr)
+        before = self.state()['config']
+        self.workitem.write_text(self.workitem.read_text() + '\n```reviewer-commands\npython3 --version\n```\n')
+        resumed = self.run_operator_action('resume', *OFF)
+        self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+        self.assertEqual(resumed.stdout.count(RECORDED), 1, resumed.stdout)
+        self.assertNotIn('permission-probe', resumed.stdout)
+        state = self.state()
+        self.assertEqual(state['config']['workitem_reviewer_commands'], ['python3 --version'])
+        [row] = state['reviewer_command_refreezes']
+        self.assertEqual((row['from'], row['to']), (before['workitem_reviewer_commands'], ['python3 --version']))
+        self.assertEqual({k: v for k, v in state['config'].items() if k != 'workitem_reviewer_commands'},
+                         {k: v for k, v in before.items() if k != 'workitem_reviewer_commands'})
 
     def test_rejection_limit_accept_refused_and_scope_change_works_on_both_routes(self):
         for mode in (ON, OFF):

@@ -22,7 +22,7 @@ Resolve `entry` (exact values `legacy` and `paired-session` only) from
   `--base <ref>` only when the user names a base, and `--auto-commit false` when `.review-loop/config.md` sets
   `auto_commit: false` (absent or `true`: the review-only default with lifecycle on, normally one local commit at `accept`; lifecycle off stops after the gate and acceptance returns the uncommitted tree); for an existing plan, first print
   `review-loop: an existing plan is used as the work item; paired-session drafts and reviews the plan again` and pass the plan text as the work item), and end this workflow (no session file, lock or stage of its own).
-  A paired-session probe/run HOLD is reported and never falls back to legacy.
+  A paired-session run HOLD is reported and never falls back to legacy.
   An explicit resume of a legacy session is refused: print
   `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item` and end.
 
@@ -31,7 +31,7 @@ absent; nothing falls back (there is no legacy route). A failed check refuses: p
 `review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
 - Host: neither macOS (`uname -s` is `Darwin`) nor native Windows (PowerShell: `$env:OS -eq 'Windows_NT'`; Git Bash:
   `uname -s` starts with `MINGW64_NT-` or `MSYS_NT-`) → `review-loop: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported` (no reason wrapper).
-  On Windows only the default efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git for
+  On Windows `--detach` is refused, Git for
   Windows is required, and run directories and workspaces stay out of OneDrive-synced folders. The Codex entry on
   Windows is best effort; the Claude Code entry is the tested Windows path.
 - CLIs: both `codex` and `claude` must be on PATH (`command -v`; PowerShell: `Get-Command`), whatever vendors the

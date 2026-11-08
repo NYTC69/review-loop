@@ -148,7 +148,7 @@ and resumes, or aborts.
 - **Categories A and B are unchanged in both modes.** That covers read-only void/restore (modes included), the author
   and writer git guards, the gitignored run dir under `<repo>/.review-loop/runs/`, the observed test, global-config monitoring, the env deny
   list, and CODEX_PLUGINS_OFF with its argv check.
-- **Strict vs efficient.** As today: strict needs the permission probe. OPV records stay bound to trees.
+- **Strict vs efficient.** As at the time: strict needed the permission probe (strict mode and the probe were removed in v3.7.0). OPV records stay bound to trees.
 - **Resume / HOLD.** As today, plus the frozen-value check and the tree-changed HOLD of §2.
 - **Reject after DONE.** Reopens EXEC with the operator text, as today.
 - **Scope-change successor.** The successor is started from `successor-config.json`, which is filtered by

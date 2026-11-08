@@ -35,12 +35,11 @@ amendment, ADR-20); `claude` and
 `codex` on PATH (codex-cli 0.159.2 or later); a dedicated git worktree for the task and a test command; an
 interactive session (a headless session needs `--detach`, macOS only); one absolute `CODEX_HOME` per run.
 
-**Native Windows (v3.3.0, ADR-20).** Supported in the default efficient mode, with Claude Code on Windows as the
+**Native Windows (v3.3.0, ADR-20).** Supported, with Claude Code on Windows as the
 tested entry (the Codex skills' PowerShell commands are best effort). Prerequisites: Git for Windows (the coordinator
 runs the local test command with its Git Bash; set `CLAUDE_CODE_GIT_BASH_PATH` if it is not found), Python 3 as
 `python` or `py -3`, and Node.js when `claude` or `codex` is installed through npm. The skills run the coordinator as
-`python -X utf8 <plugin>/bin/paired-session`. Refused on Windows: `--strict` (and `"safety_mode": "strict"` in the operator
-profile), `permission-probe` and `--detach`. Claude Code has no Bash sandbox on native Windows, so the Claude roles
+`python -X utf8 <plugin>/bin/paired-session`. Refused on Windows: `--detach`. Claude Code has no Bash sandbox on native Windows, so the Claude roles
 run without it: read-only roles keep their exact command allowlist, Edit/Write denies and the post-turn workspace
 check, and Read deny rules cover the usual credential files (their Bash can still read them). Keep run directories
 and workspaces out of OneDrive-synced folders. Windows setup notes:
@@ -66,25 +65,19 @@ The legacy workflow was removed in v2.13.0 (routing) and v2.13.1 (`/review-loop:
 Workspace `.review-loop/paired-session.json` may contain non-program limits only.
 Keep role, vendor, program and test-command settings in an operator-owned profile
 outside the product workspace and run directory, then pass its absolute path with
-`--config` to every command (probe and run in strict mode); the paired-session skill uses
+`--config` to every command; the paired-session skill uses
 `~/.config/review-loop/paired-session.json` when it exists and you name no other
 profile, and that profile replaces the workspace file. The plugin
 ships `paired_session/paired-session-config.example.json` for that profile.
 
-**Safety modes (D-EFF).** Every role runs with the same OS sandboxes in both
-modes (on native Windows the Claude roles have no Claude Code Bash sandbox, and only efficient runs). `efficient`, the default, does not require a permission-probe PASS before
-dispatch, and its evidence guard only records what it would have held. `strict`
-(`--strict`, or `"safety_mode": "strict"` in the operator profile; the
-workspace file cannot set it) also requires the probe PASS and lets the evidence
-guard hold. The first command that creates the run (`run` by default,
-`permission-probe` in strict mode) fixes its mode, so pass `--strict` from that
-first command on; a `--strict` that
-arrives after only the probe has run still upgrades the run, later it is
-refused. Runs made before this change resume strict. In both modes a reviewer
-turn that changes the workspace is voided, restored and re-dispatched once (a
-second change or a failed restore is a HOLD), and an author turn that changes
-HEAD or the branch is a HOLD. See
-[`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
+**One safety mode (D-EFF, v3.7.0).** Every role runs with the OS sandboxes (on native Windows the Claude roles have
+no Claude Code Bash sandbox). No permission probe is needed before dispatch, and the evidence guard only records
+what it would have held. `permission-probe` and strict mode were removed in v3.7.0: `permission-probe` is refused,
+and `--strict` or `"safety_mode": "strict"` in a profile only prints a NOTE (a run saved strict resumes in the
+default mode). A reviewer turn that changes the workspace is voided, restored and re-dispatched once (a second
+change or a failed restore is a HOLD), and an author turn that changes HEAD or the branch is a HOLD. When an
+operator program or PATH changed since the run started, the run records the new state with a NOTE and continues.
+See [`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
 **Optional** — copy the config template and uncomment only the keys you change (every key is commented out at its default):
 
@@ -97,9 +90,8 @@ cp ~/.claude/plugins/cache/review-loop-marketplace/review-loop/<version>/review-
 > start. After `/plugin update`, exit with Ctrl-C twice and `claude --resume`
 > to reload plugins while keeping your conversation context. This is a
 > Claude Code caching behavior, not a review-loop limitation.
-> A paired-session run started by an older version is finished with that version when the bundled gate prompt
-> changed (v3.1.7 changes it): the newer version still accepts, aborts or scope-changes such a run and refuses to
-> continue it (`resume`, `permission-probe`, a plain `reject`), naming these exits.
+> A paired-session run started by an older version whose bundled gate prompt differs continues with this
+> version's gate prompt after one NOTE (v3.7.0; earlier versions refused to continue such a run).
 
 ## Codex
 
@@ -247,9 +239,7 @@ flowchart TD
   E -->|"new work / existing plan"| SA
   E -->|"code already written: review-only"| SA
   E -->|"review-pr: report only"| SA
-  SA["Stage A: macOS or Windows, CLIs, worktree, test command, WORKITEM.md"] --> M{"safety mode"}
-  M -->|"efficient (default)"| RUN["coordinator run"]
-  M -->|"--strict"| PB["permission-probe"] --> RUN
+  SA["Stage A: macOS or Windows, CLIs, worktree, test command, WORKITEM.md"] --> RUN["coordinator run"]
   RUN -->|"main pipeline"| PLAN["PLAN: author drafts, reviewer reviews; revise until approved"]
   RUN -->|"review-only / review-pr (see below)"| REV
   PLAN -.->|"--plan-only"| HP["HOLD: plan for you to read"]
@@ -381,7 +371,7 @@ Show the usage guide — how it works, commands, configuration, and key features
 
 Project review settings live in `.review-loop/config.md` (every field optional; the table below). Operator
 settings live in the operator profile (the one you name, else `~/.config/review-loop/paired-session.json`):
-roles, vendors, models and efforts, the test command, `safety_mode`, `auto_commit` for the main pipeline,
+roles, vendors, models and efforts, the test command, `auto_commit` for the main pipeline,
 `quality_writers`, `advisory_fix_round`, `max_invocations` and timeouts.
 The CLI option `--lifecycle-mode on|off` defaults to `on`; the JSON profile key
 `lifecycle_mode` may select `off` in an operator or workspace profile. With off,
@@ -418,9 +408,7 @@ only where the operator profile or the CLI flags name it:
 
 - Roles: `reviewer_vendor: gemini` (the shadow and the reviewer's stage reviews follow it) and
   `gate_vendor: gemini`, or `--reviewer-vendor gemini` / `--gate-vendor gemini` with `--reviewer-model` /
-  `--gate-model`. `author_vendor: gemini` is refused, a gemini role with `--strict` or
-  `"safety_mode": "strict"` is refused, and `permission-probe` with a gemini reviewer or gate is refused (efficient
-  mode needs no probe).
+  `--gate-model`. `author_vendor: gemini` is refused.
 - Models: gemini has no default model, so `reviewer_model` / `gate_model` is required, for example
   `gemini-3.8-flash` (with `reviewer_effort` / `gate_effort`, default `medium`) or any id `agy models` lists. agy also serves `claude-*` and `gpt-oss` ids; the vendor
   is the CLI that runs the role, and the run records vendor and model. `allowed_models` accepts the key `gemini`.

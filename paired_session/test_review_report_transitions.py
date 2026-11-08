@@ -88,8 +88,7 @@ class ReviewReportTransitionTests(unittest.TestCase):
                     self.run_dir = self.root / f'void-{strict}-{once}'
                     self.change()
                     before = rc.git_snapshot(self.workspace)[0]
-                    command = self.command(*FLAGS, '--skip-probe')
-                    if not strict: command.remove('--strict')
+                    command = self.command(*FLAGS, '--skip-probe', *(['--strict'] if strict else []))   # v3.7.0: --strict is only a NOTE
                     env = {**os.environ, 'FAKE_MUTATION': 'echo'}
                     if once: env['FAKE_MUTATION_ONCE'] = str(self.root / f'marker-{strict}')
                     result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
@@ -105,29 +104,6 @@ class ReviewReportTransitionTests(unittest.TestCase):
                     else:
                         self.assertIn('mutated workspace again after one re-dispatch', state['hold_reason'])
                         self.assertFalse(any(t['role'] == 'gate' for t in state['turns']))
-
-    def test_permission_probe_skips_author_but_proves_reviewer_and_gate_surfaces(self):
-        for author, gate in (('codex', 'codex'), ('claude', 'claude')):
-            with self.subTest(author=author, gate=gate):
-                self.run_dir = self.root / f'probe-{author}'
-                self.change()
-                args = self.args('--author-vendor', author, '--gate-vendor', gate, action='permission-probe')
-                co = rc.Coordinator(args)
-                with mock.patch.object(co, '_author_permission_probe', side_effect=AssertionError('author probe dispatched')):
-                    self.assertTrue(co.permission_probe())
-                report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-                self.assertEqual(report['author_permission_probe']['status'], 'NOT-APPLICABLE')
-                self.assertTrue(report['allowed_command_ran'])
-                self.assertTrue(report['write_attempts_denied'])
-                roles = [t['role'] for t in co.state['turns']]
-                self.assertEqual(roles, ['probe', 'gate-probe'] if gate == 'codex' else ['probe'])
-                self.assertEqual(report['gate_permission_probe']['status'], 'PASS' if gate == 'codex' else 'NOT_NEEDED')
-                self.assertEqual(co.probe_passed(), (True, ''))
-                with mock.patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
-                        mock.patch.object(co, 'codex_contract_verified', side_effect=AssertionError('unused author check')), \
-                        mock.patch.object(co, 'claude_author_verified', side_effect=AssertionError('unused author check')), \
-                        mock.patch.object(co, '_drive_loop', return_value='HOLD'):
-                    self.assertEqual(co.drive(), 'HOLD')
 
     def test_the_gate_cannot_be_turned_off_in_report_mode(self):
         self.change()
@@ -181,46 +157,23 @@ class ReviewReportTransitionTests(unittest.TestCase):
                 self.assertIn('or abort', resumed.state['hold_reason'])
                 (self.workspace / 'debug-output.txt').unlink()
 
-    def test_strict_author_guards_skip_report_runs_only(self):
+    def test_a_never_dispatched_codex_author_needs_no_codex_home_in_report_mode(self):
         import contextlib, io
 
         def main(*flags, env=None):
             out = io.StringIO()
             with mock.patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
-                    mock.patch.object(rc.Coordinator, 'claude_author_verified', return_value=(False, 'CLAUDE-AUTHOR-CHECK')), \
-                    mock.patch.object(rc.Coordinator, 'codex_contract_verified', return_value=(False, 'CODEX-CONTRACT-CHECK')), \
-                    mock.patch.object(rc.Coordinator, 'probe_gate', return_value=(True, '')), \
                     mock.patch.object(rc.Coordinator, '_drive_loop', return_value='HOLD'), \
                     mock.patch.dict(os.environ, env or {}), contextlib.redirect_stdout(out):
                 rc.main(self.command(*flags)[2:])
             return out.getvalue()
-        author_refusals = ('CLAUDE-AUTHOR-CHECK', 'CODEX-CONTRACT-CHECK', 'a Claude author is limited')
-        for vendor in ('claude', 'codex'):
-            with self.subTest(author=vendor):
-                self.change()
-                self.run_dir = self.root / f'strict-report-{vendor}'
-                out = main(*FLAGS, '--author-vendor', vendor)
-                self.assertFalse(any(text in out for text in author_refusals), out)
-                self.run_dir = self.root / f'strict-ordinary-{vendor}'   # control: the guard still applies without report mode
-                out = main('--lifecycle-mode', 'on', '--author-vendor', vendor)
-                self.assertTrue(any(text in out for text in author_refusals), out)
-        missing = {'CODEX_HOME': str(self.root / 'no-codex-home')}   # finding 4: a never-dispatched Codex author needs no Codex home
+        self.change()
+        missing = {'CODEX_HOME': str(self.root / 'no-codex-home')}
         claude_roles = ('--author-vendor', 'codex', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude')
         self.run_dir = self.root / 'report-codex-author-claude-roles'
         self.assertNotIn('is not an existing directory', main(*FLAGS, *claude_roles, env=missing))
         self.run_dir = self.root / 'ordinary-codex-author-claude-roles'
         self.assertIn('is not an existing directory', main('--lifecycle-mode', 'on', *claude_roles, env=missing))
-
-    def test_probe_cache_keys_differ_between_report_and_ordinary_runs(self):
-        self.change()
-        report = rc.Coordinator(self.args())
-        self.run_dir = self.root / 'ordinary'
-        ordinary = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on')[2:]))
-        keys = (report._probe_cache_key(), ordinary._probe_cache_key())
-        self.assertTrue(all(keys), keys)
-        self.assertNotEqual(keys[0][0], keys[1][0])
-        self.assertTrue(keys[0][1]['review_report'])
-        self.assertNotIn('review_report', keys[1][1])
 
     def test_writer_routes_and_direct_author_dispatch_are_refused(self):
         self.change()

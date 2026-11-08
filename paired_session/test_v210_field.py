@@ -1,8 +1,7 @@
 """Unit v210-field (v2.10.0): operator friction from poker-tools field runs (ACCEPT-ACTIVE, HELP-GROUP, FIELD-10)."""
-import contextlib
-import io
 import json
 import re
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -21,7 +20,7 @@ class V210FieldTests(unittest.TestCase):
         self.coordinator().done()
         for key, phase, fix in (('active', 'EXEC', 'resume --retry-uncertain'),
                                 ('uncertain_active', 'EXEC', 'resume --retry-uncertain'),
-                                ('uncertain_active', 'PROBE', 'permission-probe --retry-uncertain')):   # a probe re-run on DONE that crashed
+                                ('uncertain_active', 'PROBE', 'resume --retry-uncertain')):   # a probe turn saved by v3.6.0: resume settles it
             with self.subTest(key=key, phase=phase):
                 co = self.coordinator()
                 co.state[key] = {'sequence': 7, 'role': 'author', 'phase': phase, 'pid': 4242}
@@ -40,6 +39,39 @@ class V210FieldTests(unittest.TestCase):
         accepted = self.run_operator_action('accept')                               # settled: accept works again
         self.assertEqual(accepted.stdout.splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
 
+    def test_a_saved_probe_turn_on_a_done_run_is_settled_by_resume_and_the_run_stays_done(self):   # v3.7.0
+        flags = ('--shadow', 'off', '--adversarial-gate', 'off')
+        done = self.run_coordinator(*flags)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        live = subprocess.Popen(['sleep', '60'], start_new_session=True)
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        gone = subprocess.Popen(['true'], start_new_session=True)
+        gone.wait()
+        path = self.run_dir / 'state.json'
+        for key in ('active', 'uncertain_active'):
+            with self.subTest(key=key):
+                state = json.loads(path.read_text())
+                state[key] = {'sequence': 7, 'role': 'probe', 'phase': 'PROBE', 'vendor': 'claude', 'pid': live.pid}
+                path.write_text(json.dumps(state))
+                before = path.read_bytes()
+                for extra, text in (((), 'settle it with resume --retry-uncertain'), (('--retry-uncertain',), 'is still alive')):
+                    refused = self.run_operator_action('resume', *flags, *extra)
+                    self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+                    self.assertIn(text, refused.stdout)
+                    self.assertEqual(path.read_bytes(), before)                       # refused: nothing recorded, still DONE
+                state[key]['pid'] = gone.pid
+                path.write_text(json.dumps(state))
+                settled = self.run_operator_action('resume', *flags, '--retry-uncertain')
+                self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
+                self.assertIn('NOTE: the probe turn 7 saved by an earlier release was archived; the run stays DONE', settled.stdout)
+                self.assertEqual(settled.stdout.splitlines()[-1], 'DONE (acceptance pending)')
+                state = json.loads(path.read_text())
+                self.assertEqual((state['status'], state.get('active'), state.get('uncertain_active')), ('DONE', None, None))
+                self.assertEqual(state['abandoned_turns'][-1]['sequence'], 7)
+        accepted = self.run_operator_action('accept', *flags)                       # settled: accept works
+        self.assertEqual(accepted.stdout.splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+
     def test_help_groups_every_attach_verification_flag_in_one_section(self):     # HELP-GROUP
         text = rc.parser().format_help()
         header = text.index('\nattach-verification:\n')
@@ -50,27 +82,6 @@ class V210FieldTests(unittest.TestCase):
                 self.assertEqual(len(listed), 1)                                     # described once, inside the group
                 self.assertGreater(listed[0], header)
                 self.assertIn('\n  ' + flag, section)
-
-    def test_a_reject_intent_on_done_never_runs_the_author_dispatch_precondition(self):   # FIELD-10
-        self.coordinator('--author-vendor', 'claude').done()
-        argv = self.command('--author-vendor', 'claude')[2:]
-        argv[0] = 'reject'
-        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False), \
-                patch.object(rc.Coordinator, 'claude_author_verified', autospec=True,
-                             return_value=(False, 'probe reason named')) as verified:
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                code = rc.main([*argv, '--text', 'redo it', '--intent-only'])
-            self.assertEqual(code, 0, out.getvalue())
-            digest = json.loads(out.getvalue())['digest']
-            verified.assert_not_called()                                            # the intent preview dispatches nothing
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                code = rc.main([*argv, '--text', 'redo it', '--expect', digest])
-        self.assertEqual(code, 2, out.getvalue())
-        self.assertIn('probe reason named', out.getvalue())                        # the dispatching reject keeps the gate
-        self.assertEqual(verified.call_count, 1)
-
 
 if __name__ == '__main__':
     unittest.main()

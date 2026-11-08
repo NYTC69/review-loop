@@ -207,7 +207,7 @@ pattern of `review_only`):
     LG2-c records this residual in the PSE section; narrowing it is a follow-up that needs a verified profile. An
     operator who wants the credential deny on every role can run report mode with Claude read-only roles (operator
     profile).
-- **Category C:** unchanged (efficient default, strict opt-in).
+- **Category C:** unchanged (efficient default, strict opt-in; strict mode was removed in v3.7.0).
 
 ### 2.4 Specialists (L4, L5)
 
@@ -254,7 +254,7 @@ pattern of `review_only`):
       `configured_command_issue` (C:8949);
     - the evidence guard's configured-command list (C:5430) and the EXEC approval evidence gate (C:5451-5463);
     - the specialist and reviewer prompts (WL:190);
-    - the strict permission probe. It takes the test command as its allowed command (C:7176, C:7258-7263) and records
+    - the strict permission probe (removed in v3.7.0). It takes the test command as its allowed command (C:7176, C:7258-7263) and records
       `not-attempted` when it was not run (C:7087-7088). With null, the allowed-command part of the probe prompt and
       that check are skipped; the sandbox-denial attempts stay. So a strict no-test report run can pass the probe,
       while an ordinary strict probe keeps requiring the attempt.

@@ -15,9 +15,9 @@ provenance, delivery is a local commit only, and external delivery stays behind 
 ## Scope
 
 The real lifecycle runs under the safety bar of real EXEC: in strict mode a permission probe PASS bound
-to the author, reviewer and gate flags (the efficient default since v2.10.0 needs none), the sandboxed author in the dedicated live
+to the author, reviewer and gate flags (the efficient default since v2.10.0 needs none; strict mode and the probe were removed in v3.7.0), the sandboxed author in the dedicated live
 worktree, fresh read-only reviewers, and the Step 3.4 gate on. FINISH, POLISH-Q, DOCS and SECURITY run
-as further turns of the real drive loop **in the same worktree** with the same roles, flags and probe.
+as further turns of the real drive loop **in the same worktree** with the same roles, flags and probe (removed in v3.7.0).
 They do not use the candidate-tree route of docs 2a–4. That route, with Q, sealed publication and
 Compass CLOSE, stays fake-only as post-v2.10.0 hardening (see `e2e-5-real-activation.md`).
 
@@ -172,7 +172,7 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   value was stopped only by the blanket refusal; W1a added an explicit check that keeps the "lifecycle
   remains disabled" message substring.
 - Added in W1a; today the public surface refuses `--accept-unverified-claude-author` and
-  `--accept-probe-skip` in both modes (removed). Strict runs may use a verified probe-cache reuse.
+  `--accept-probe-skip` in both modes (removed). Strict runs may use a verified probe-cache reuse (strict mode and the probe cache were removed in v3.7.0).
 - Added in W1a, moved by W1b–W3a: a W run reaches DONE only after a READY SECURITY receipt, and until W3b
   `accept` refuses a W DONE, so a real run never silently skips a stage.
 - Added in W3a-2: after the SECURITY clean scan a fresh security reviewer (reviewer role, EXEC reviewer

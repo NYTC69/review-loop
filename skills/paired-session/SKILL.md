@@ -54,7 +54,7 @@ adds only the Claude Code host rules:
 ## Long commands and headless sessions (critical)
 
 - Long-command form: run every command that can dispatch model turns
-  (`permission-probe`, `run`, `resume`, `reject --expect`) as its own Bash call
+  (`run`, `resume`, `reject --expect`) as its own Bash call
   with `run_in_background: true`; wait for the background task completion
   notification and inspect its final result. Use a shell-output polling tool
   only if the host exposes one; do not assume a tool named `BashOutput` exists.
@@ -65,13 +65,12 @@ adds only the Claude Code host rules:
   its background tasks, so ending the turn to wait for the notification kills
   the coordinator mid-turn. Use an interactive session. When you know you run
   headless (the user or the prompt says so), prefer `--detach` on `run`,
-  `resume`, `reject --expect` and `permission-probe`: the command returns at
+  `resume` and `reject --expect`: the command returns at
   once (`DETACHED: pid …; log …`) and survives the session's exit; read
   `RUN_DIR/state.json` or `status --brief` for its progress. Wait until the
   printed pid has exited (the printed record path then reads "exited" with
   the exit code), then read the last line of its log and `status --brief`.
-  A successful permission probe stays ACTIVE; a report run ends in REPORTED.
-  A probe's result is `RUN_DIR/permission-probe.json`; end the detached command
+  A report run ends in REPORTED. End the detached command
   only with `stop` (`paired_session/docs/detach.md`). Without `--detach`, do not
   end the turn while a coordinator command runs: poll in bounded foreground calls, reading only
   `status` and `active.phase` from `RUN_DIR/state.json` (or `status --brief`),
@@ -104,7 +103,7 @@ adds only the Claude Code host rules:
 
 ## Native Windows
 
-- Native Windows (Git Bash): efficient only; the coordinator refuses `--strict`, `permission-probe` and `--detach`,
+- Native Windows (Git Bash): the coordinator refuses `--detach`,
   so a headless session is not supported there (use an interactive session). Git Bash has no `pgrep`: wait for the
   background task notification. Resolve the run root below; set `WORKSPACE` in the same Bash call that runs `project_paths.py`:
   `cygpath -m "$(python -X utf8 "${CLAUDE_PLUGIN_ROOT}/scripts/project_paths.py" "$WORKSPACE")"` (it prints a `C:/Users/...` path the Write tool and
@@ -114,22 +113,10 @@ adds only the Claude Code host rules:
   `"${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run` with `python -X utf8 "${CLAUDE_PLUGIN_ROOT}/bin/paired-session" run`, and
   run every other coordinator command and script the same way.
 
-## Run blocks (efficient and strict)
+## Run block
 
-- Default (efficient): one Bash call with the `run` block below. Strict: the
-  probe block first, then the `run` block as a second Bash call.
-
-Strict only, first Bash call (`run_in_background: true`):
-
-```sh
-WORKSPACE='/absolute/path/to/worktree'
-WORKITEM='/absolute/run/root/runs/<UUID>/WORKITEM.md'
-RUN_DIR='/absolute/run/root/runs/<UUID>'
-TEST_COMMAND='the verified project command'
-"${CLAUDE_PLUGIN_ROOT}/bin/paired-session" permission-probe \
-  --workspace "$WORKSPACE" --workitem "$WORKITEM" --run-dir "$RUN_DIR" \
-  --test-command "$TEST_COMMAND" --lifecycle-mode on
-```
+One Bash call with the `run` block below. There is no probe step: `permission-probe` and strict mode were
+removed in v3.7.0 (`--strict` only prints a NOTE).
 
 `run` (`run_in_background: true`):
 
@@ -147,7 +134,7 @@ TEST_COMMAND='the verified project command'
 
 A review-only request (`--review-only`, or the review-loop handoff of code already implemented)
 follows the shared contract's review-only entry: add `--review-only` (and `--base "$BASE"`
-only when the user named a base) to both blocks.
+only when the user named a base) to the block.
 The workspace is the worktree that holds the change (normally the current checkout). Do not
 create or switch to a dedicated worktree, and skip the Stage A dedicated-worktree question.
 Add `--auto-commit false` too when the review-loop entry handed it over.
@@ -156,7 +143,7 @@ A review-pr handoff (`--review-pr [INPUT] [ASPECTS]` from `/review-loop:review-p
 shared contract's Review-PR entry. Host rules: `<support-root>` in the shared contract is
 `${CLAUDE_PLUGIN_ROOT}` (for example `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/materialize_pr.py"`; Windows: `python -X utf8`); the run
 root above (resolved from the operator project before switching `WORKSPACE` to the clone) is the materializer's `--root`; the materializer runs as its own foreground Bash call with
-`timeout: 600000` (a clone and fetch can outlast the default), before the blocks. In both blocks set
+`timeout: 600000` (a clone and fetch can outlast the default), before the block. In the block set
 `WORKSPACE` to the clone it printed (no input: the current worktree), replace
 `--test-command "$TEST_COMMAND"` with `--no-test-command` unless the user confirmed a test command, and
 add `--review-only --review-report --auto-commit false`, `--base "$BASE"` (the printed `merge_base`;
@@ -165,7 +152,7 @@ input (write the printed JSON there with the work item) and `--aspects "$ASPECTS
 given. `simplify` pointer: `run /review-loop:code-quality-loop on the change (its POLISH-Q simplifier)`.
 
 A code-quality-loop handoff (`--code-quality-loop [OPTIONS]` from `/review-loop:code-quality-loop`) follows
-the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names
+the shared contract's Code-quality-loop entry. In the block add `--review-only` and the options it names
 (`--max-exec-rounds N` as handed over, which wins over `soft_limit_exec`; `--auto-commit false` as handed over;
 `--max-invocations 45` unless the profile sets `max_invocations`) and the explicit `--test-command`;
 also add `--advisory-fix-round true` (one fix round for the non-blocking findings);
@@ -196,4 +183,4 @@ evidence, next-step hint and status; withdrawal dispatches no model turn.
 
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
 
-For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value. For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile. When the user chooses off for those entries, pass `--lifecycle-mode off` in both commands. Compare the saved lifecycle mode with that selected mode for the backstop; saved off runs continue with off.
+For review-pr report mode, always pass `--lifecycle-mode on` to `run`. This overrides a profile's off value. For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value). The CLI value overrides the profile. When the user chooses off for those entries, pass `--lifecycle-mode off`. Compare the saved lifecycle mode with that selected mode for the backstop; saved off runs continue with off.

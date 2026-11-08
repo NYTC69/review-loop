@@ -33,9 +33,6 @@ class GeminiVendorTests(unittest.TestCase):
         self.h.setUp()
         self.addCleanup(self.h.doCleanups)
         self.addCleanup(self.h.tearDown)
-        efficient = patch.object(rc, 'DEFAULT_SAFETY_MODE', 'efficient')   # the harness pins strict; gemini runs efficient only (G4)
-        efficient.start()
-        self.addCleanup(efficient.stop)
 
     def argv(self, action, *extra):
         h = self.h
@@ -56,7 +53,7 @@ class GeminiVendorTests(unittest.TestCase):
             code = rc.main(self.argv(action, *extra))
         return types.SimpleNamespace(returncode=code, stdout=out.getvalue())
 
-    def assert_refused(self, message, *extra, actions=('run', 'resume', 'permission-probe')):
+    def assert_refused(self, message, *extra, actions=('run', 'resume')):
         for action in actions:
             with self.subTest(action=action, flags=extra):
                 refused = self.main(action, *extra)
@@ -99,25 +96,26 @@ class GeminiVendorTests(unittest.TestCase):
                 rc.validate_role_models(a)
                 self.assertEqual((a.author_vendor, a.author_model), ('codex', rc.CODEX_DEFAULT_MODEL))
                 self.assertEqual(rc.required_programs(a), ('claude_bin', 'codex_bin', 'gemini_bin'))
-                rc.refuse_gemini_probe(a)   # dispatchable outside a permission probe
+                rc.refuse_gemini_roles(a)   # dispatchable
 
     def test_a_gemini_reviewer_with_stage_reviews_creates_its_run(self):   # B2b: lifecycle on and report mode run gemini
         co = rc.Coordinator(self.args(*GEMINI_REVIEWER, '--lifecycle-mode', 'on', '--gemini-bin', str(self.h.fake_gemini_cli())))
         self.assertEqual((co.state['config']['lifecycle_mode'], co.args.reviewer_vendor), ('on', 'gemini'))
         report = self.resolved(*GEMINI_REVIEWER)
         report.review_report = True
-        rc.refuse_gemini_probe(report)
+        rc.refuse_gemini_roles(report)
 
     def test_a_gemini_author_is_refused(self):
         self.assert_refused('author_vendor gemini is not supported yet (ADR-21 G2)', '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro')
         self.assert_refused('author_vendor gemini is not supported yet (ADR-21 G2)', '--author-vendor', 'gemini', actions=('run',))   # before the model rule
 
-    # ---- G4: efficient mode only ----
-    def test_a_gemini_role_with_strict_mode_is_refused(self):
-        self.assert_refused('gemini roles run in efficient mode only (ADR-21 G4)', *GEMINI_REVIEWER, '--strict')
-        self.assert_refused('gemini roles run in efficient mode only (ADR-21 G4)', *GEMINI_GATE, '--strict', actions=('run',))
-        profile = self.operator_profile({'safety_mode': 'strict', 'gate_vendor': 'gemini', 'gate_model': 'gemini-3.8-pro'})
-        self.assert_refused('gemini roles run in efficient mode only (ADR-21 G4)', '--config', str(profile), actions=('run',))
+    # ---- G4: since v3.7.0 efficient is the only mode, so --strict no longer refuses a gemini role ----
+    def test_a_gemini_role_with_strict_is_not_refused(self):
+        for extra in ([*GEMINI_REVIEWER, '--strict'], [*GEMINI_GATE, '--strict'],
+                      ['--config', str(self.operator_profile({'safety_mode': 'strict', 'gate_vendor': 'gemini',
+                                                              'gate_model': 'gemini-3.8-pro'}))]):
+            with self.subTest(extra=extra):
+                rc.refuse_gemini_roles(self.resolved(*extra))
 
     # ---- G3, G9: models ----
     def test_a_gemini_role_needs_an_explicit_model(self):
@@ -419,29 +417,10 @@ class GeminiAdapterTests(unittest.TestCase):
 
     def test_other_role_paths_refuse_gemini_before_any_turn(self):
         co = self.coordinator()
-        for role, phase in (('probe', 'PROBE'), ('gate-probe', 'PROBE'), ('gate', 'PLAN')):
+        for role, phase in (('gate', 'PLAN'),):
             with self.subTest(role=role, phase=phase), self.assertRaisesRegex(RuntimeError, fr'{role} {phase} turns cannot run gemini \(ADR-21 G2, G4\)'):
                 co.invoke(role, phase, PLAN_REVIEW, rc.review_schema(), fresh=True)
         self.assertEqual((co.state['turns'], co.state['invocations_used'], self.calls()), ([], 0, []))
-
-    def test_a_permission_probe_with_a_gemini_reviewer_or_gate_is_refused_before_any_turn(self):   # B2a r1 (Codex review)
-        refusal = 'permission-probe cannot run with a gemini reviewer or gate'
-        agy = ['--gemini-bin', str(self.h.fake_gemini_cli()), '--lifecycle-mode', 'off']   # lifecycle on refuses a gemini reviewer first
-        for name, flags in (('gate', [*GEMINI_GATE, *agy]), ('reviewer', [*GEMINI_REVIEWER, *agy]),
-                            ('both', [*GEMINI_REVIEWER, *GEMINI_GATE, *agy])):
-            self.h.run_dir = self.h.root / ('new-' + name)
-            self.assert_refused(refusal, *flags, actions=('permission-probe',))   # a new run: before any state
-            self.h.run_dir = self.h.root / ('saved-' + name)
-            rc.Coordinator(self.args(*flags))
-            with self.subTest(run='saved', roles=name):   # a restored run: its frozen vendors, before the reviewer or author probe
-                refused = self.main('permission-probe', *flags)
-                self.assertEqual(refused.returncode, 2, refused.stdout)
-                self.assertIn('REFUSED: ' + refusal, refused.stdout)
-                state = json.loads((self.h.run_dir / 'state.json').read_text())
-                self.assertEqual((state['sequence'], state['turns'], state['invocations_used'], state.get('active')), (0, [], 0, None))
-                self.assertFalse((self.h.run_dir / 'permission-probe.json').exists())
-                self.assertEqual(list((self.h.run_dir / 'evidence').glob('*')) if (self.h.run_dir / 'evidence').exists() else [], [])
-        self.assertEqual(self.calls(), [])
 
     def test_a_frozen_gemini_bin_is_rebound_on_resume(self):
         co = self.coordinator()
@@ -453,8 +432,11 @@ class GeminiAdapterTests(unittest.TestCase):
         other.write_text(self.h.fake_gemini_cli().read_text())
         other.chmod(0o755)
         resumed.args.gemini_bin = str(other)
-        _, issue = resumed._program_state()
-        self.assertRegex(issue, r'operator program or PATH changed since run start \(changed: gemini_bin\)')
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            current, issue = resumed._program_state()   # v3.7.0: re-frozen with a NOTE
+        self.assertIsNone(issue)
+        self.assertEqual(resumed.state['operator_programs'], current)
+        self.assertIn('NOTE: operator program or PATH changed since run start (changed: gemini_bin)', out.getvalue())
 
     def test_a_saved_run_without_gemini_bin_resumes_unchanged(self):
         co = rc.Coordinator(self.args())
@@ -465,7 +447,7 @@ class GeminiAdapterTests(unittest.TestCase):
 
     def run_cli(self, *flags):
         h = self.h
-        command = [arg for arg in h.command('--exercise-revisions', *flags) if arg != '--strict']   # gemini roles run efficient (G4)
+        command = h.command('--exercise-revisions', *flags)
         return subprocess.run(command, cwd=h.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def test_a_codex_author_with_gemini_reviewer_and_gate_ends_like_codex_and_claude(self):
@@ -654,7 +636,7 @@ class GeminiStageReviewTests(unittest.TestCase):
             subprocess.run(['git', 'clean', '-qfd'], cwd=self.workspace, check=True)
             prepare()
             marker = {key: str(self.root / (name + '-' + key)) for key in markers}
-            command = [arg for arg in self.command(*flags, *extra) if arg != '--strict']
+            command = self.command(*flags, *extra)
             done = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   env={**os.environ, **(env or {}), **marker})
             state = json.loads((self.run_dir / 'state.json').read_text())

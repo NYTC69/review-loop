@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import copy
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime
 import errno
 import itertools
@@ -35,7 +35,6 @@ from typing import Optional
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
-    from paired_session import claude_author_probe as cap
     from paired_session import codex_capability_guard
     from paired_session import docs_policy
     from paired_session import evidence_guard
@@ -53,7 +52,6 @@ try:
 except ModuleNotFoundError:
     import budget_policy
     import candidate_tree
-    import claude_author_probe as cap
     import codex_capability_guard
     import docs_policy
     import evidence_guard
@@ -68,7 +66,7 @@ except ModuleNotFoundError:
     import timeout_scale
     import winplat
     from program_binding import snapshot as program_snapshot, safe_path, program_argv
-if not winplat.IS_WINDOWS:   # WI-WIN: only POSIX detach and probe scheduling use fcntl directly
+if not winplat.IS_WINDOWS:   # WI-WIN: only POSIX detach uses fcntl directly
     import fcntl
 
 HERE = Path(__file__).resolve().parent
@@ -82,7 +80,7 @@ STRUCTURAL_BLOCK_STREAK = 3
 CLASS_LABEL_GUIDANCE = ('Start the {field} of every blocking finding with a defect-class label "[class: <kebab-case-name>]" naming the '
                         'kind of defect, such as missing-input-validation or path-traversal.')   # fresh roles: no history words (independence scan)
 CLASS_LABEL_REUSE = ' Reuse the exact label of an earlier finding of the same class of defect.'
-PROBE_SURFACE_VERSION = 9
+PROBE_SURFACE_VERSION = 9   # frozen legacy value: reviewer/gate flags carry it into the role dispatch manifest of saved runs
 CLAUDE_CHILD_ENV = {'DISABLE_AUTOUPDATER': '1', 'FORCE_AUTOUPDATE_PLUGINS': None}   # RF-4: set by cli_env; bound into the Claude flags digests
 CODEX_PLUGINS_OFF = ('-c', 'features.plugins=false')   # CG-1: on every Codex dispatch (author, reviewer, gate, probe); bundles are inert (.compass/results/2026-10-01_cg-codex-plugin-evidence.md)
 # W10, Windows only, every Codex role: Yuan's acceptance run (2026-10-27, codex-cli 0.164.0) showed no [windows] table → every shell
@@ -94,36 +92,11 @@ REVIEW_ONLY_BASE_MUST_BE_ANCESTOR = True     # Q5: refuse a base that is not an 
 REVIEW_ONLY_EXISTING_CHANGE_ROUNDS = 1       # Q9: the pre-existing change is EXEC round 1 (the author's round is skipped)
 REVIEW_ONLY_LIFECYCLE_READY = True           # LG1-c: the delivery baseline is the base tree, so lifecycle on is supported
 REVIEW_ONLY_DOCS_PRE_OWNED = True            # Q8: docs files the change already edits are DOCS's to extend and review, not a HOLD
-def plugin_version() -> str:   # review-loop's own version, read at run time: a coordinator upgrade voids an old Claude author probe PASS
-    try: return json.loads((Path(__file__).resolve().parent.parent / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']
-    except (OSError, ValueError, KeyError): return 'UNAVAILABLE'
 CODEX_DEFAULT_MODEL = 'gpt-6.1-sol'   # ADR-12 (owner 2026-10-04); runs keep the models frozen in their state
 CODEX_DEFAULT_MODEL_MIN_CLI = (0, 159, 2)
-# Codex CLI versions whose sandbox contract 1C verified (0.157.0: docs/1c-safety-controls.md row 2; 0.160.0: the owner's real
-# permission-probe runs with v2.9.6 on that CLI, p296.sh P1/P2 PASS (.compass/results/2026-10-04_daily-report.md T1), after the
-# b296-f1e default_permissions profiles were checked there with `codex sandbox` and `codex debug prompt-input`; confirmed by the
-# supervisor 2026-10-04 19:35: real v2.9.6 permission-probe attempt4, P1 Codex reviewer + P2 Codex gate PASS, ~/paired-runs/probe296/runs/).
-VERIFIED_CODEX_CLI_VERSIONS = frozenset({'codex-cli 0.157.0', 'codex-cli 0.160.0'})
 OPERATOR_ONLY_DESTS = frozenset({'accept_unverified_codex_cli', 'accept_unverified_claude_author', 'accept_probe_skip', 'reason'})  # command line only, plus any accept_*
 UTC_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
-def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # at call time: tests set HOME
-def _lstat_present(path: Path) -> bool:   # F4: only a definite absence is False; EACCES and friends raise, so an unreadable cache is never mistaken for an empty one
-    try: os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError): return False
-    return True
-def read_cache_entry(root: Path, name: str, limit: int = 1 << 20) -> bytes:   # P0-4b H2: fd walk from ~ (O_NOFOLLOW each step); every check is on the fd that is read
-    fds, home = [], Path.home()
-    try:
-        fds.append(os.open(home, os.O_RDONLY | os.O_DIRECTORY))
-        for part in root.relative_to(home).parts: fds.append(os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fds[-1]))
-        fds.append(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[-1]))   # non-blocking: a FIFO is refused, never waited on
-        for fd, kind in ((fds[-2], stat.S_ISDIR), (fds[-1], stat.S_ISREG)):
-            if not kind((info := os.fstat(fd)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
-                raise OSError(errno.EPERM, 'entry is not a private regular file owned by this user in a private directory')
-        if info.st_size > limit: raise OSError(errno.EFBIG, 'entry is larger than 1 MiB')
-        with os.fdopen(os.dup(fds[-1]), 'rb') as handle: return handle.read(limit)
-    finally:
-        for fd in fds: os.close(fd)
+def probe_cache_root() -> Path: return Path.home() / '.cache' / 'review-loop' / 'probe-pass'   # frozen legacy path: the Claude author settings still deny it, so a v3.6.0 manifest stays byte-identical (at call time: tests set HOME)
 def claude_cli_version(binary: str) -> str:
     try: return subprocess.run([*program_argv(binary), '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), stdin=subprocess.DEVNULL, env=cli_env()).stdout.strip() or 'UNAVAILABLE'   # G-b: the Claude child env
     except (OSError, subprocess.SubprocessError): return 'UNAVAILABLE'
@@ -168,7 +141,19 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
     return updates
 PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
-DEFAULT_SAFETY_MODE = 'efficient'   # D-EFF (docs/efficient-mode.md): sandboxes kept; no probe gate, log-only evidence guard; --strict opts in
+DEFAULT_SAFETY_MODE = 'efficient'   # v3.7.0: the only mode (docs/efficient-mode.md); a saved or requested 'strict' is noted and ignored
+STRICT_REMOVED_NOTE = 'NOTE: strict mode was removed in v3.7.0; the run uses the default mode'
+PROBE_REMOVED = 'permission-probe was removed in v3.7.0; runs do not need it'
+REVIEWER_BLOCK_CHANGED_ON = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item and resume, '
+                             'or abort and start a new run')
+
+
+def note_strict_removed(args, *modes) -> None:
+    """v3.7.0: --strict, a profile's safety_mode "strict" or a run saved strict prints one NOTE per command and changes nothing.
+    status and --intent-only keep stdout machine-readable, so the NOTE goes to stderr there."""
+    if 'strict' not in modes or getattr(args, '_strict_noted', False): return
+    args._strict_noted = True
+    print(STRICT_REMOVED_NOTE, file=sys.stderr if getattr(args, 'action', None) == 'status' or getattr(args, 'intent_only', False) else sys.stdout)
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 DEFAULT_TIMEOUT_SECONDS = 2700
 LONG_COMMAND_TIMEOUT_MS = 3600000
@@ -601,7 +586,7 @@ OLD_STATE_REFUSAL = ('run was created by an older paired-session build; start a 
 
 
 def refuse_removed_options(args):
-    """Refuse the four removed options; lifecycle off remains supported (ADR-19)."""
+    """Refuse the removed options; lifecycle off remains supported (ADR-19)."""
     # Old fake fixtures still exercise the separately removed options; this does not select lifecycle mode.
     if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_REMOVED_OPTIONS') == '1':
         return True
@@ -610,8 +595,9 @@ def refuse_removed_options(args):
     inspection = getattr(args, 'action', None) in ('status', 'stop', 'snapshot')
     options = (('adversarial_gate', '--adversarial-gate off', 'keep --adversarial-gate on', 'off'),
                ('override_rejection', '--override-rejection', 'use resume --add-rounds N or note --scope-change at a HOLD', True),
-               ('accept_unverified_claude_author', '--accept-unverified-claude-author', 'run permission-probe until it passes for strict runs', True),
-               ('accept_probe_skip', '--accept-probe-skip', 'run permission-probe until it passes for strict runs', True))
+               ('accept_unverified_claude_author', '--accept-unverified-claude-author', 'removed in v3.7.0; runs need no probe or waiver', True),
+               ('accept_probe_skip', '--accept-probe-skip', 'removed in v3.7.0; runs need no probe or waiver', True),
+               ('accept_unverified_codex_cli', '--accept-unverified-codex-cli', 'removed in v3.7.0; runs need no probe or waiver', True))
     for dest, flag, alternative, value in options:
         if getattr(args, dest, None) != value: continue
         source = sources.get(dest)
@@ -1015,8 +1001,9 @@ def reclassify_default_home_trust(changes: dict, before: dict, after: dict, work
     return changes
 
 
-READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe')   # b295-f1 FIELD-1: Codex reviewer-type roles get a per-dispatch temp root
-SCRATCH_PROBE_COMMAND = 'printf probe > "$TMPDIR/paired-session-scratch-probe"'
+READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate')   # b295-f1 FIELD-1: Codex reviewer-type roles get a per-dispatch temp root
+LEGACY_PROBE_ROLES = ('probe', 'gate-probe')   # v3.7.0: removed roles; a turn saved by an earlier release may still own a scratch
+LEGACY_PROBE_PHASES = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
 # FIELD-20 (poker-news-bot WI-101, 2026-10-05; real codex-cli 0.160.0 rehearsal in lane B's field20 report): Codex's exec_command
 # returns after about 10 s with a session_id and no exit_code; a model that moves on without polling leaves a long test command
 # running and the turn's end kills it, so no completed run is observed. Every role runs a command to completion within the
@@ -1163,52 +1150,6 @@ def scratch_listing(root: Path) -> tuple[list, list]:
         if winplat.IS_WINDOWS:   # WI-WIN W4b: os.walk enters a junction (islink is False for it); never descend a reparse point
             dirs[:] = [name for name in dirs if winplat.real_dir(os.lstat(Path(parent) / name))]
     return sorted(names)[:200], linked
-
-
-SANDBOX_DENIAL_MARKERS = ('operation not permitted', 'read-only file system', 'permission denied', 'deny file-write-create', 'deny file-write-data')
-
-
-def explicit_denial(row: dict) -> bool:
-    """b296-f1b: an observed command refused by the sandbox or the OS (EPERM/EACCES/EROFS wording and a non-zero exit), never a
-    missing tool (exit 126/127, 'command not found'), a launch failure or any other error."""
-    output = str(row.get('output', '')).lower()
-    return (row.get('error') is True and type(row.get('exit_code')) is int and row['exit_code'] not in (0, 126, 127)
-            and any(marker in output for marker in SANDBOX_DENIAL_MARKERS) and 'command not found' not in output)
-
-
-def probe_tracked_file(workspace: Path) -> Optional[str]:
-    """b296-f1f: the file the reviewer/gate probe's `git --literal-pathspecs checkout --` and `rm` legs target: a `git ls-files -z`
-    entry that is a regular file on disk with no symlink on its path, and is safe as one shell word on one prompt line (printable, no
-    leading '-'). The first one in ls-files order wins, preferring a file without unstaged changes (a broken surface would lose them),
-    then one without pathspec/glob characters (b296-f1g, defense in depth: the checkout leg is already literal), then one that needs
-    no shell quoting (the model must copy the command verbatim). None when the workspace has no such file. Read-only: nothing in the
-    workspace is created or changed."""
-    def names(*extra):
-        proc = candidate_tree.run_bounded(candidate_tree.git_command('ls-files', '-z', *extra, cwd=workspace), cwd=workspace,
-                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if proc.returncode:
-            raise RuntimeError('git ls-files failed: ' + proc.stderr.decode(errors='replace').strip())
-        return proc.stdout.decode(errors='surrogateescape').split('\0')
-    root, modified, best = os.path.realpath(workspace), set(names('-m')), None
-    for name in names():
-        if not name or name.startswith('-') or not name.isprintable(): continue
-        try: regular = stat.S_ISREG(os.lstat(workspace / name).st_mode)
-        except OSError: continue
-        if regular and os.path.realpath(workspace / name) == os.path.join(root, name):
-            rank = (name in modified, any(c in name for c in ':*?[]\\'), shlex.quote(name) != name)
-            if best is None or rank < best[0]: best = (rank, name)
-            if not any(rank): break
-    return best and best[1]
-
-
-def probe_turn_status(allowed: bool, outcomes: dict, unchanged: bool, miss: str) -> str:
-    """b296-f1b: PASS only when every attempt was denied; attempts that failed without an explicit denial (and nothing else wrong) give
-    UNKNOWN, never PASS; anything else is FAIL."""
-    if allowed and unchanged and not miss and all(outcome == 'denied' for outcome in outcomes.values()):
-        return 'PASS'
-    if allowed and unchanged and not miss and all(outcome in ('denied', 'unknown') for outcome in outcomes.values()):
-        return 'UNKNOWN'
-    return 'FAIL'
 
 
 def _fchflags_zero(fd: int) -> None:
@@ -1359,7 +1300,7 @@ def resolve_test_executable(workspace: Path, command: str) -> str:
     return resolved
 
 
-DETACH_ACTIONS = ('run', 'resume', 'reject', 'permission-probe')
+DETACH_ACTIONS = ('run', 'resume', 'reject')
 DETACH_TURN = {'group': None, 'spawning': False}   # detach: the CLI turn in flight, for the SIGTERM handler
 
 
@@ -1647,131 +1588,6 @@ def workspace_lease(workspace: Path, run_dir: Path):
         if acquired:
             winplat.unlock(fd)
         os.close(fd)
-
-
-class ProbeLockBusy(ValueError):
-    """FIELD-13: the parent lock stayed busy past its wait bound; main prints REFUSED before any state or report (and before the run dir,
-    unless the parent was missing: then the fresh, empty run dir stays)."""
-
-
-PROBE_LOCK_POLL_SECONDS, PROBE_LOCK_WAIT_FACTOR = 1.0, 3
-
-
-def probe_lock_dir() -> Path:   # FIELD-13: fixed and uid-keyed, so runs with any HOME, CODEX_HOME or workspace share it
-    return winplat.temp_root() / f'paired-session-probe-locks-{winplat.user_token()}'
-
-
-def _frozen_probe_config(args: argparse.Namespace) -> tuple[str, float]:
-    """FIELD-13: an existing run's saved author vendor and timeout (args keep the CLI/profile defaults until Coordinator restores the
-    saved roles); an unreadable state counts as a Claude author, which only costs a wait."""
-    vendor, timeout, path = args.author_vendor, args.timeout, Path(args.run_dir) / 'state.json'
-    if path.exists():
-        try: config = json.loads(path.read_text(encoding='utf-8'))['config']; vendor, timeout = config['author_vendor'], config.get('timeout', timeout)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError): vendor = 'claude'
-    if type(timeout) not in (int, float) or not 0 < timeout < float('inf'): timeout = args.timeout
-    return (vendor if vendor in ('codex', 'claude') else 'claude'), float(timeout)
-
-
-class ProbeParentLock:
-    """FIELD-13 (docs/field13-concurrent-probes.md): one POSIX lock per run-dir parent, taken in main before run_lease. A Claude author
-    permission-probe holds it for the whole command; any action on a fresh run dir holds it only until run_lease has made the dir. It only
-    schedules: no listing difference is excused because of it. POSIX locks belong to the process, so this process opens the file only here."""
-
-    def __init__(self, args: argparse.Namespace, workspace: Path, run_dir: Path):
-        self.run_dir, self.workspace = Path(run_dir).expanduser().resolve(), Path(workspace).expanduser().resolve()
-        vendor, timeout = _frozen_probe_config(args)
-        self.whole, self.fresh = args.action == 'permission-probe' and vendor == 'claude', not self.run_dir.exists()
-        self.estimate = 3 * timeout + 300   # at most three probe turns (reviewer, author, gate), plus settle and cleanup
-        self.payload = {'pid': os.getpid(), 'run_dir': str(self.run_dir), 'action': args.action, 'wait_bound_s': self.estimate if self.whole else 60}
-        self.fd = self.path = self.key_dir = None
-        self.start = time.monotonic()   # one wait cap for the whole command, across key moves
-
-    def _key_dir(self) -> Path:
-        key_dir = self.run_dir.parent
-        while not key_dir.is_dir() and key_dir.parent != key_dir: key_dir = key_dir.parent   # a missing parent: its first new entry lands here
-        return key_dir
-
-    def __enter__(self):
-        if winplat.IS_WINDOWS:
-            if self.whole:
-                raise ValueError('Claude author permission-probe is not supported on Windows')
-            return self   # only schedules against Claude probes, which cannot run on Windows
-        while self.whole or self.fresh:
-            self._acquire(key_dir := self._key_dir())
-            if self._key_dir() == key_dir: break
-            self.release()   # a deeper ancestor appeared while this waited: its mkdir now lands there
-            if time.monotonic() - self.start > PROBE_LOCK_WAIT_FACTOR * self.estimate:
-                raise ProbeLockBusy(f'the nearest existing parent of {self.run_dir} kept changing while waiting for its probe lock')
-            time.sleep(PROBE_LOCK_POLL_SECONDS)
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.release()
-
-    def after_mkdir(self) -> None:
-        """Inside run_lease, once the run dir exists: a mkdir-only hold ends; a probe keyed on an ancestor moves to the parent."""
-        if not self.whole: self.release()
-        elif self.key_dir != self.run_dir.parent: self.release(); self._acquire(self.run_dir.parent)
-
-    def intact(self) -> bool:
-        """The lock path is still the regular file this process holds locked."""
-        if self.fd is None: return False
-        try: now, held = os.lstat(self.path), os.fstat(self.fd)
-        except OSError: return False
-        return stat.S_ISREG(now.st_mode) and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino)
-
-    def release(self) -> None:
-        if self.fd is None: return
-        try:
-            if self.intact(): os.unlink(self.path)   # unlinked while still locked: a waiter that then locks this inode sees it gone and reopens
-        except OSError: pass
-        finally: os.close(self.fd); self.fd = None
-
-    def _acquire(self, key_dir: Path) -> None:
-        lock_dir = probe_lock_dir()
-        if lock_dir.resolve() == self.workspace or self.workspace in lock_dir.resolve().parents:
-            raise RunLeaseError('the probe lock directory lies inside the workspace')
-        try: lock_dir.mkdir(mode=0o700)
-        except FileExistsError: pass
-        if not winplat.check_private_dir(lock_dir):
-            raise RunLeaseError('probe lock directory is not a private directory owned by this user')
-        ident = key_dir.stat()
-        self.key_dir, self.path = key_dir, lock_dir / (hashlib.sha256(f'{ident.st_dev}:{ident.st_ino}'.encode()).hexdigest() + '.lock')
-        start, holder_since, holder, noted = self.start, time.monotonic(), None, None
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
-        while True:
-            fd = os.open(self.path, flags, 0o600)
-            try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-                    raise RunLeaseError('probe lock path is not a private regular file owned by this user')
-                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                raw = os.pread(fd, 4096, 0) if exc.errno in (errno.EAGAIN, errno.EACCES) else None
-                os.close(fd)   # this process holds no lock on the file while it waits
-                if raw is None: raise
-            except BaseException:
-                os.close(fd); raise
-            else:
-                self.fd = fd
-                if self.intact(): break
-                self.fd, raw = None, b''; os.close(fd)   # unlinked or replaced between open and lock: wait, then lock the current file
-            now = time.monotonic()
-            try: seen = json.loads(raw)
-            except ValueError: seen = {}
-            seen = seen if isinstance(seen, dict) else {}
-            if raw != holder: holder, holder_since = raw, now   # a new holder restarts its own bound
-            claimed = seen.get('wait_bound_s')
-            bound = max(self.estimate, claimed if type(claimed) in (int, float) and 0 < claimed < float('inf') else 0)   # a claim only lengthens
-            who = f"unverified holder pid {seen.get('pid', 'unknown')}, run_dir {seen.get('run_dir', 'unknown')}, action {seen.get('action', 'unknown')}"
-            if now - holder_since > bound or now - start > PROBE_LOCK_WAIT_FACTOR * self.estimate:
-                raise ProbeLockBusy(f'another command holds the probe lock of {key_dir} ({who}; lsof {self.path} shows the real holder); '
-                                    f'waited {int(now - start)} s')
-            if noted is None or now - noted >= 60:
-                print(f'waiting for the probe lock of {key_dir} ({who}; lsof {self.path} shows the real holder)', file=sys.stderr, flush=True); noted = now
-            time.sleep(PROBE_LOCK_POLL_SECONDS)
-        os.ftruncate(self.fd, 0)
-        os.pwrite(self.fd, json.dumps({**self.payload, 'started_at': datetime.now().astimezone().isoformat()}).encode(), 0)
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -2308,7 +2124,7 @@ def _legacy_sensitive_access(calls: list[dict], role: str, evidence: Path, round
             return 'evidence directory'
         if role in ('author', 'reviewer', 'gate') and re.search(r'rounds/[^"\s]*(?:shadow|permission-probe)-', serialized):
             return 'shadow output'
-        if role in ('author', 'reviewer', 'shadow', 'probe') and re.search(r'rounds/[^"\s]*adversarial-', serialized):
+        if role in ('author', 'reviewer', 'shadow') and re.search(r'rounds/[^"\s]*adversarial-', serialized):
             return 'adversarial output'
         for path in rounds.glob('*-shadow-*.md'):
             if str(path) in serialized:
@@ -2610,20 +2426,6 @@ def compact_command(command: dict, evidence_file: str) -> dict:
     return row
 
 
-def cleanup_probe_targets(paths: list[Path]) -> tuple[list[str], list[str], list[str], list[dict]]:
-    """Attempt probe cleanup and report only targets confirmed absent afterward."""
-    found = [str(path) for path in paths if path.exists()]
-    errors = []
-    for path in paths:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:
-            errors.append({'path': str(path), 'error': type(exc).__name__})
-    cleaned = [str(path) for path in paths if str(path) in found and not path.exists()]
-    remaining = [str(path) for path in paths if path.exists()]
-    return found, cleaned, remaining, errors
-
-
 def render_markdown(actor: str, phase: str, payload: dict, snapshot: str,
                     evidence_file: str = 'receipt.json') -> str:
     status = payload.get('status', payload.get('verdict', 'message'))
@@ -2708,7 +2510,6 @@ class Coordinator:
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates after restoring its models
             validate_role_models(args)
-            refuse_gemini_probe(args)
         if args.lifecycle_mode == 'on':
             if args.adversarial_gate == 'off': raise ValueError('lifecycle refuses --adversarial-gate off')
             if args.polish: raise ValueError('lifecycle refuses resume --polish')
@@ -2738,36 +2539,23 @@ class Coordinator:
             if not winplat.check_private_dir(self.scratch_root):
                 raise ValueError('scratch root must be a private directory: ' + str(self.scratch_root))
         self.author_temp_dir = self.scratch_root / 'author-tmp'
-        self._probe_sandbox_commands = None
-        self._probe_env_names = None   # FIELD-10: set only while probe_passed() compares with the probe's own env-derived names
+        self._probe_env_names = None   # ENV-NAME: set only while _under_env_names() evaluates with a saved env-name set
         self.rounds = self.run_dir / 'rounds'
         self.evidence = self.run_dir / 'evidence'
         self.context = self.run_dir / 'context'
         self.internal = self.run_dir / 'internal'
         self.state_path = self.run_dir / 'state.json'
-        requested = getattr(args, 'safety_mode', None)                   # --strict or the operator profile; None when neither names it
-        args.safety_mode = requested or DEFAULT_SAFETY_MODE
-        upgraded = None
-        if self.state_path.exists():                                     # D-EFF: frozen at creation; a pre-D-EFF run is strict
+        requested = getattr(args, 'safety_mode', None)                   # --strict or a profile; v3.7.0: only a NOTE, never a mode
+        args.safety_mode = DEFAULT_SAFETY_MODE
+        if self.state_path.exists():
             saved_state = json.loads(self.state_path.read_text(encoding='utf-8'))
             self.state = saved_state
             self._review_report_args(saved_state['config'])
             if args.action in ('note', 'reject'): self._refuse_report_feedback()
-            args.safety_mode = saved_state['config']['safety_mode']
-            if requested and requested != args.safety_mode:
-                probe = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
-                probe_only = (all(t.get('phase') in probe for t in saved_state.get('turns', []))
-                              and all((saved_state.get(key) or {}).get('phase', 'PROBE') in probe for key in ('active', 'uncertain_active')))
-                fixed = (f'safety_mode is fixed for this run: it was created {args.safety_mode} by its first command; '
-                         f'start a new run directory to use {requested}, or drop safety_mode from the --config profile')
-                if args.action not in ('run', 'resume', 'reject', 'permission-probe'): print(f'NOTE: {fixed}')   # dispatches no turn
-                elif not (requested == 'strict' and probe_only): raise ValueError(fixed)
-                else:
-                    saved_state['config']['safety_mode'] = args.safety_mode = 'strict'   # only a probe has run: the run may still start strict
-                    upgraded = saved_state
+            args.safety_mode = saved_state['config'].get('safety_mode', DEFAULT_SAFETY_MODE)   # kept as saved: the frozen config stays byte-identical
+        note_strict_removed(args, requested, args.safety_mode)
         if args.lifecycle_mode == 'on':   # W1a: the real path is the worktree lifecycle (ADR-11)
-            worktree_lifecycle.refuse_waivers(args)   # INT-2c: after the safety_mode resolution (D-7 is strict only), before its write
-        if upgraded: atomic_json(self.state_path, upgraded)   # a refused command leaves the frozen mode unchanged
+            worktree_lifecycle.refuse_waivers(args)   # INT-2c: lifecycle keys never come from a workspace profile
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
@@ -2817,8 +2605,8 @@ class Coordinator:
                 validate_role_models(self.args)
                 if ((self.args.action == 'reject' and not getattr(self.args, 'scope_change', False) or
                      self.args.action == 'withdraw-findings' and self.state.get('status') != 'DONE')   # V317-G2: resume is refused
-                        and self._other_version_gate_prompt()):   # V317-G1: before the intent and any record
-                    raise ValueError('resume configuration differs: gate_prompt; ' + self._other_version_exits())
+                        ):   # the actions that continue the run: a gate prompt from another release is re-frozen first
+                    self._refreeze_bundled_gate_prompt()
             else:
                 self._validate_resume_args()
             scope_request = args.action in ('note', 'reject') and getattr(args, 'scope_change', False)
@@ -2834,7 +2622,7 @@ class Coordinator:
             if not self.workitem.is_file():
                 raise ValueError('--workitem must be a file')
             _, issue = self._program_snapshot()
-            if issue and issue.startswith('workspace profile') and self.args.action != 'permission-probe': raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state; the probe reports it (existing test)
+            if issue and issue.startswith('workspace profile'): raise ValueError(issue)   # before any profile role/model/gate choice is frozen into state
             self._review_only_args(None, self._parent_spec() if args.supersedes else None)
             self._review_report_args(None)
             scope = self._refuse_review_only_start() if self.args.review_only else None   # before any state
@@ -2916,7 +2704,7 @@ class Coordinator:
                                   test_command_explicit=bool(spec.get('test_command_explicit', self.state['test_command_explicit'])))
                 if spec.get('quality_writers') and worktree_lifecycle.is_worktree(self.state):   # D09 §3
                     self.state['lifecycle']['quality_writers'] = copy.deepcopy(spec['quality_writers'])
-            if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any probe or turn
+            if worktree_lifecycle.is_worktree(self.state):   # after every refusal above, before any turn
                 self.state['lifecycle']['security_baseline'] = (
                     self._inherited_security_baseline(Path(args.supersedes).resolve()) if args.supersedes else
                     self._capture_security_baseline())
@@ -3011,30 +2799,37 @@ class Coordinator:
                                       if record.get('perms') else '') + '). The next run, resume, reject or accept clears this record by itself once the workspace matches '
                 'again; otherwise abort the run')
 
-    @property
-    def strict(self) -> bool:   # D-EFF: category C (probe gate, a holding evidence guard) as before; anything but 'efficient' is strict
-        return getattr(self.args, 'safety_mode', 'strict') != 'efficient'
-
     def _saved_config(self) -> dict:
         """The frozen run configuration (a copy)."""
         return dict(self.state['config'])
 
-    def _other_version_gate_prompt(self) -> bool:
-        """V317-G1: the run froze the bundled gate template with another text, so another review-loop version started it."""
-        saved = str(self.state.get('config', {}).get('gate_prompt', ''))
-        return (saved.startswith('<bundled-default>:')
-                and saved != '<bundled-default>:' + hashlib.sha256(DEFAULT_GATE_PROMPT.read_bytes()).hexdigest())
-
-    def _other_version_exits(self, rejected_tree_limit: Optional[bool] = None) -> str:
-        """V317-G1: the steps that work on such a run (the run is never continued with a different gate template).
-        rejected_tree_limit: for the rejected-tree HOLD being written (True at the rejection limit); its tree is not accepted."""
-        done = rejected_tree_limit is None and self.state.get('status') == 'DONE'
-        limit = (self.state.get('terminal_hold_kind') == 'rejection_limit' if rejected_tree_limit is None
-                 else rejected_tree_limit)
-        scope = 'reject' if done or limit else 'note'
-        return ('this run was started by another review-loop version (the bundled gate prompt differs): continue it with that '
-                f"version, or with this one {'accept it, ' if done else ''}abort it, record a scope change "
-                f'(`{scope} --scope-change`) or start a new run')
+    def _refreeze_bundled_gate_prompt(self) -> None:
+        """v3.7.0: a run started by another release froze the bundled gate prompt with another text. The run continues with this
+        release's prompt: the config records it with a NOTE, and a frozen role dispatch manifest that bound exactly the old
+        bundled prompt (its own digest intact) gets the new prompt hash and path; no other manifest field changes."""
+        config = self.state['config']
+        old = str(config.get('gate_prompt', ''))
+        new = '<bundled-default>:' + hashlib.sha256(DEFAULT_GATE_PROMPT.read_bytes()).hexdigest()
+        if not old.startswith('<bundled-default>:') or old == new:
+            return
+        canonical = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        manifest = self.state.get('role_dispatch_manifest')
+        bound = (isinstance(manifest, dict) and self.state.get('role_dispatch_manifest_version') == 1
+                 and canonical(manifest) == self.state.get('role_dispatch_manifest_sha256')
+                 and manifest.get('gate_prompt_sha256') == old.split(':', 1)[1])
+        self.state.setdefault('gate_prompt_refreezes', []).append(
+            {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'from': old, 'to': new})
+        config['gate_prompt'] = new
+        program = (self.state.get('operator_programs') or {}).get('gate_prompt')
+        if isinstance(program, dict) and program.get('sha256') == old.split(':', 1)[1]:   # the same file, so no second NOTE
+            program['sha256'] = new.split(':', 1)[1]
+        if bound:   # otherwise the manifest stays as saved, and a lifecycle run refuses it as before
+            manifest['gate_prompt_sha256'] = hashlib.sha256(_read_role_source(DEFAULT_GATE_PROMPT)).hexdigest()
+            manifest['gate_prompt_path'] = str(DEFAULT_GATE_PROMPT.resolve())
+            self._refresh_resumed_config_digest()
+        self.save()
+        self._operator_note('NOTE: this run was started by another review-loop version (the bundled gate prompt differs); '
+                            "the run continues with this version's gate prompt")
 
     def _config(self) -> dict:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
@@ -3146,7 +2941,7 @@ class Coordinator:
                 == self.state.get('role_dispatch_manifest_sha256') and v360_sandbox_migration(saved) == current):
             # v3.6.0 upgrade: a run saved by v3.5.x resumes with the opened sandbox and network; nothing else may differ
             print('NOTE: this run was started by an earlier release; it resumes with the v3.6.0 sandbox (Codex reviewers write the '
-                  'workspace, network on); run permission-probe again if the run asks for it')
+                  'workspace, network on)')
             self.state['role_dispatch_manifest'], self.state['role_dispatch_manifest_sha256'] = current, digest
         if (current != self.state.get('role_dispatch_manifest') or
                 digest != self.state.get('role_dispatch_manifest_sha256') or
@@ -3160,8 +2955,11 @@ class Coordinator:
             restored = self._under_env_names(names, self._role_dispatch_manifest) if names else None
             restored_digest = hashlib.sha256(json.dumps(restored, sort_keys=True,
                                                         separators=(',', ':')).encode()).hexdigest()
-            if (restored == saved and restored_digest == self.state.get('role_dispatch_manifest_sha256')
-                    and self.state.get('role_dispatch_manifest_version') == 1):
+            saved_intact = (hashlib.sha256(json.dumps(saved, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                            == self.state.get('role_dispatch_manifest_sha256'))
+            if (self.state.get('role_dispatch_manifest_version') == 1 and restored is not None
+                    and (restored == saved and restored_digest == self.state.get('role_dispatch_manifest_sha256')
+                         or saved_intact and v360_sandbox_migration(saved) == restored)):   # a run saved by v3.5.x keeps the hint
                 now = set(self._env_names_now())
                 added, removed = sorted(now - names), sorted(names - now)
                 if added or removed:
@@ -3177,13 +2975,12 @@ class Coordinator:
     def reviewer_commands(self) -> list[str]:
         current = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
         frozen = self.state['config']['workitem_reviewer_commands']
-        if current != frozen:
-            reason = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
-                      '(then run permission-probe again if it was already run) and resume, or abort and start a new run'
-                      if self.state['config'].get('lifecycle_mode') == 'on' else
-                      'work-item reviewer allowlist changed; run permission-probe before continuing')
-            self.hold(reason)
-            raise RuntimeError(reason)
+        if current != frozen and self.state['config'].get('lifecycle_mode') != 'on':   # v3.7.0: lifecycle off records it
+            self._refreeze_reviewer_commands(current)
+            frozen = current
+        elif current != frozen:
+            self.hold(REVIEWER_BLOCK_CHANGED_ON)
+            raise RuntimeError(REVIEWER_BLOCK_CHANGED_ON)
         result = []
         for command in [self.args.test_command, *self.args.reviewer_command, *frozen]:
             if command and command not in result:   # LG2-b2: a no-test report run has no test command
@@ -3204,27 +3001,30 @@ class Coordinator:
     def _program_state(self, hold=False):
         current, issue = self._program_snapshot()
         frozen = self.state.get('operator_programs')
-        if issue is None and (frozen is None or self.args.action == 'permission-probe'):
+        if issue is None and frozen is None:
             self.state['operator_programs'] = current
             self.save()
         elif frozen is not None and frozen != current:
-            updates = normal_cli_updates(frozen, current) if issue is None and not self.strict else None
+            changed = sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))
+            updates = normal_cli_updates(frozen, current) if issue is None else None
             if updates:
                 self.state.setdefault('program_updates', []).extend(updates)
                 self.state['operator_programs'] = current
                 self.save()
-            else:
-                prefix = ('configured operator program or PATH changed since permission probe' if self.strict else
-                          'operator program or PATH changed since run start')
-                changed = sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))
-                issue = prefix + ' (changed: ' + ', '.join(changed) + ')'
-                if 'gate_prompt' in changed and self._other_version_gate_prompt():   # V317-G1: probe and resume are refused there
-                    issue += '; ' + self._other_version_exits()
-                elif not self.strict: issue += '; run `permission-probe` to re-freeze, then resume'
+            elif issue is None:   # v3.7.0: re-frozen with a NOTE (a gate prompt from another release included)
+                self.state.setdefault('program_refreezes', []).append(
+                    {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'changed': changed})
+                self.state['operator_programs'] = current
+                self.save()
+                self._operator_note('NOTE: operator program or PATH changed since run start (changed: ' + ', '.join(changed)
+                                    + '); the run continues with the new state')
+            else:   # a program that is missing or unsafe now still holds
+                issue = 'operator program or PATH changed since run start (changed: ' + ', '.join(changed) + ')'
         if issue and hold and self.state.get('status') != 'DONE': self.hold(issue)
         return current, issue
+
     def reviewer_flags(self) -> dict:
-        """Permission surface whose probe PASS is valid for a later run."""
+        """The reviewer's read-only surface; it feeds the frozen role dispatch manifest."""
         return self._readonly_flags('reviewer', 'reviewer')
 
     def gate_flags(self) -> dict:
@@ -3234,7 +3034,7 @@ class Coordinator:
     def _readonly_flags(self, prefix: str, sandbox_role: str) -> dict:
         vendor = getattr(self.args, prefix + '_vendor')
         flags = {
-            'surface_version': PROBE_SURFACE_VERSION,
+            'surface_version': PROBE_SURFACE_VERSION,   # frozen legacy field: a run saved by v3.6.0 keeps a byte-identical manifest
             prefix + '_vendor': vendor,
             prefix + '_model': getattr(self.args, prefix + '_model'),
             prefix + '_effort': getattr(self.args, prefix + '_effort'),
@@ -3249,53 +3049,17 @@ class Coordinator:
         if vendor == 'claude':
             flags['claude_child_env'] = CLAUDE_CHILD_ENV
             flags['claude_bash_sandbox'] = self._claude_sandbox_settings(sandbox_role)
-            flags['claude_os_denial_probe'] = str(self._claude_os_probe_path('gate-probe' if prefix == 'gate' else 'probe'))
+            flags['claude_os_denial_probe'] = str(self._claude_os_probe_path('gate-probe' if prefix == 'gate' else 'probe'))   # frozen legacy field, as surface_version
         if vendor == 'codex':
             flags['ignore_execpolicy_rules'] = True
             flags['codex_plugins_argv'] = list(CODEX_PLUGINS_OFF)
-            flags['codex_reviewer_sandbox'] = codex_reviewer_sandbox_overrides(self._extra_writable_roots())   # v3.6.0: a new digest, so an older probe PASS or cache entry stops matching
+            flags['codex_reviewer_sandbox'] = codex_reviewer_sandbox_overrides(self._extra_writable_roots())   # v3.6.0
             flags['scratch_tmp'] = str(self.scratch_base / 'role-tmp') + '/<seq>-<role> (0700, one per dispatch, TMPDIR/TMP/TEMP)'
-        return flags
-
-    def author_flags(self) -> dict:
-        """Permission surface required by an author permission-probe PASS."""
-        flags = {
-            'surface_version': PROBE_SURFACE_VERSION,
-                'author_vendor': self.args.author_vendor,
-                'author_model': self.args.author_model,
-                'author_effort': self.args.author_effort,
-                'author_binary': self._vendor_binary(self.args.author_vendor),
-                'operator_programs': self._program_state()[0],
-        }
-        if self.args.author_vendor == 'codex':
-            flags.update({
-                'ignore_execpolicy_rules': True,
-                'codex_plugins_argv': list(CODEX_PLUGINS_OFF),
-                **self._author_sandbox_overrides(),
-                'author_escape_probe': 'codex-exec-model-filesystem-v2',
-                'codex_cli_version': self._codex_cli_version(),
-                'codex_config_sha256': self._codex_policy_digest(),
-            })
-        else:
-            flags.update({'plugin_version': plugin_version(), 'claude_child_env': CLAUDE_CHILD_ENV, 'permission_mode': 'acceptEdits', 'claude_author_edit_rules': self._claude_author_edit_rules(),
-                          'author_subagents': self.args.author_subagents,
-                          'claude_author_surface': cap.surface(self._claude_command('author', cap.NO_SCHEMA, True)),
-                          'claude_bash_sandbox': self._claude_sandbox_settings('author'),
-                          'non_bash_run_state_edit_access': 'denied by Edit/Write path rules'})
         return flags
 
     def codex_capabilities(self, workspace=None) -> dict:
         return codex_capability_guard.inspect(self.global_codex_home, workspace or self.workspace,   # rel210-fixCG: every
                                               launch_plugins_off=CODEX_PLUGINS_OFF == ('-c', 'features.plugins=false'))   # Codex argv has it
-
-    def _codex_cli_version(self) -> str:
-        try:
-            if self._program_state()[1]: return 'UNAVAILABLE'
-            result = subprocess.run([*program_argv(self.state['operator_programs']['codex_bin']), '--version'], text=True, encoding='utf-8',
-                                    capture_output=True, timeout=10 * timeout_scale.env_factor())
-            return result.stdout.strip() if result.returncode == 0 else 'UNAVAILABLE'
-        except (OSError, subprocess.SubprocessError):
-            return 'UNAVAILABLE'
 
     def _record_gemini_version(self, receipt: dict) -> None:
         """ADR-21 G8: agy updates itself in the background, so every gemini turn records `agy --version`; a change since the
@@ -3311,18 +3075,6 @@ class Coordinator:
             receipt['gemini_cli_version_previous'] = previous
             print(f'NOTE: agy version changed since the previous gemini turn ({previous} -> {version}); agy updates itself, the turn runs')
         self.state['gemini_cli_version'] = version
-
-    def _codex_config_bytes(self) -> bytes:
-        """CG-2: a missing $CODEX_HOME/config.toml (a fresh login home has only auth.json) is an empty config everywhere it is read or digested."""
-        try: return (self.global_codex_home / 'config.toml').read_bytes()
-        except FileNotFoundError: return b''
-
-    def _codex_policy_digest(self) -> Optional[str]:
-        try: text = self._codex_config_bytes().decode()
-        except (OSError, UnicodeError): return None
-        roots = '|'.join(re.escape(path) for path in dict.fromkeys([str(self.workspace), *_codex_trust_paths(self.workspace)])) + '|' + re.escape(str(self.scratch_base)) + r'/paired-session-author-probe-[^"]+/workspace'
-        raw = re.sub(r'(?m)^\[projects\."(?:' + roots + r')"\]\ntrust_level = "trusted"\n', '', text)
-        return hashlib.sha256('\n'.join(line for line in raw.splitlines() if line.strip()).encode()).hexdigest()
 
     def _author_sandbox_overrides(self) -> dict:
         return {
@@ -3344,35 +3096,6 @@ class Coordinator:
     def _author_environment(self) -> dict:
         return {**os.environ, **winplat.temp_env(self.author_temp_dir)}
 
-    def codex_contract_verified(self) -> tuple[bool, str]:
-        """Verified set, or this run's full probe_passed() record / operator override for the installed version."""
-        version = self._codex_cli_version()
-        override = self.state.get('codex_cli_override') or {}
-        if version != 'UNAVAILABLE' and override.get('version') not in (None, version) and not override.get('voided'):
-            override['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'version_seen': version}
-            self.save()
-        if version in VERIFIED_CODEX_CLI_VERSIONS: return True, ''
-        if version == 'UNAVAILABLE':
-            return False, 'codex-cli version is UNAVAILABLE (binary unreadable); re-run permission-probe'
-        if override.get('version') == version and override.get('actor') == 'operator' and not override.get('voided'):
-            return True, ''
-        if self.probe_passed()[0]: return True, ''
-        voided = f'; the operator override for {override["version"]} is void' if override.get('voided') else ''
-        return False, (f'unverified codex sandbox contract: {version}{voided}; run permission-probe on this version '
-                       'or pass --accept-unverified-codex-cli --reason TEXT')
-
-    def _claude_optin_current(self) -> bool:   # a recorded operator opt-in bound to the current author flags; a flags change voids it for good
-        if self._probe_env_names is not None:   # FIELD-10: inside probe_passed's env-name comparison, judge the opt-in in the current environment
-            saved, self._probe_env_names = self._probe_env_names, None
-            try: return self._claude_optin_current()
-            finally: self._probe_env_names = saved
-        digest, optin = self.author_flags_digest(), self.state.get('claude_author_override') or {}
-        if optin and optin.get('author_flags_digest') != digest and not optin.get('voided'):
-            optin['voided'] = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'digest_seen': digest,
-                               **self._void_cause(optin, {'author_flags_digest': self.author_flags_digest})}   # ENV-NAME: say why
-            self.save()
-        return optin.get('actor') == 'operator' and optin.get('author_flags_digest') == digest and not optin.get('voided')
-
     def _env_names_now(self) -> list[str]:   # ENV-NAME: the secret env-var names the Claude sandbox denies in this environment
         return sorted(entry['name'] for entry in self._claude_sandbox_settings('author')['sandbox']['credentials']['envVars'])
 
@@ -3380,71 +3103,6 @@ class Coordinator:
         saved, self._probe_env_names = self._probe_env_names, set(names)
         try: return compute()
         finally: self._probe_env_names = saved
-
-    def _void_cause(self, record: dict, digests: dict) -> dict:
-        """ENV-NAME (docs/env-name-effects.md): why an operator acceptance stopped matching. Only the secret env-var names changed when
-        its recorded digests come back under the names recorded with it; the void itself is unchanged (owner decision D-ENV-1)."""
-        names = record.get('secret_env_names')
-        if not (isinstance(names, list) and all(isinstance(n, str) for n in names)): return {'cause': 'flags changed'}
-        if any(self._under_env_names(names, compute) != record.get(key) for key, compute in digests.items()): return {'cause': 'flags changed'}
-        now = set(self._env_names_now())
-        return {'cause': 'secret env-var names changed', 'names_added': sorted(now - set(names)), 'names_removed': sorted(set(names) - now)}
-
-    @staticmethod
-    def _void_text(record: dict) -> str:
-        voided = record.get('voided') if isinstance(record.get('voided'), dict) else {}
-        if 'cause' not in voided and isinstance(voided.get('reason'), str): return voided['reason']   # e.g. permission-probe re-run
-        if voided.get('cause') != 'secret env-var names changed': return 'flags changed'
-        return ('only the secret env-var names changed: added ' + (', '.join(voided.get('names_added') or []) or 'none')
-                + '; removed ' + (', '.join(voided.get('names_removed') or []) or 'none'))
-
-    def _author_probe_waived(self, report: dict) -> bool:
-        """HL-FIX: the opt-in waives only the Claude author probe: the report is UNKNOWN solely for the author's model-escape-unknown / refused
-        reasons, the reviewer probe passed (allowed command ran, every write denied, snapshot unchanged) and no gate or other cause is recorded."""
-        author_probe = report.get('author_permission_probe')
-        reasons = report.get('failure_reasons')
-        return bool(self.args.author_vendor == 'claude' and isinstance(author_probe, dict) and author_probe.get('status') == 'UNKNOWN'
-                    and report.get('status') == 'UNKNOWN' and not author_probe.get('model_escape_failed_targets')
-                    and isinstance(reasons, list) and reasons and set(reasons) <= {'author-model-escape-unknown', 'author-model-refused'}
-                    and report.get('allowed_command_ran') is True and report.get('snapshot_unchanged') is True
-                    and (report.get('global_config_changes') or {}).get('status') == 'PASS'
-                    and isinstance(report.get('write_attempts_denied'), dict) and all(v is True for v in report['write_attempts_denied'].values())
-                    and self._claude_optin_current())
-
-    def claude_author_verified(self) -> tuple[bool, str]:
-        """A Claude author dispatches only on a Claude author probe PASS (P0-3b) or a current operator opt-in."""
-        if self._claude_optin_current():
-            return True, ''
-        optin = self.state.get('claude_author_override') or {}
-        try:
-            probed = json.loads((self.run_dir / 'permission-probe.json').read_text(encoding='utf-8')).get(
-                'author_permission_probe', {}).get('claude_author_status') == 'PASS'
-        except (OSError, ValueError, AttributeError):
-            probed = False
-        if probed and (passed := self.probe_passed())[0]: return True, ''
-        voided = f'; the earlier operator opt-in is void ({self._void_text(optin)})' if optin.get('voided') else ''
-        detail = ('; the recorded probe does not pass: ' + passed[1]) if probed else '; no Claude author probe PASS is recorded in permission-probe.json'   # FIELD-10
-        fixture_optin = (' or the operator opts in with `run --accept-unverified-claude-author --reason TEXT` '
-                         '(permission-probe does not take the flag)' if refuse_removed_options(self.args) else '')
-        return False, ('a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
-                       'author permission-probe passes (P0-3b)' + fixture_optin + voided + detail)
-
-    def _codex_sandbox_profile_args(self) -> list[str]:
-        if not (verified := self.codex_contract_verified())[0]:
-            raise ValueError(verified[1])
-        policy = self._author_sandbox_overrides()
-        if (policy['sandbox'] != 'workspace-write' or policy['sandbox_workspace_write.network_access'] is not True
-                or policy['sandbox_workspace_write.exclude_tmpdir_env_var'] is not False
-                or policy['sandbox_workspace_write.exclude_slash_tmp'] is not True):
-            raise ValueError('author sandbox parameters cannot be represented by the synthetic profile')
-        roots = {'.': 'write', '.git': 'read', '.agents': 'read', '.codex': 'read', '.aws': 'read'}
-        filesystem = {':root': 'read', ':tmpdir': 'write',
-                      **{str(Path(root).resolve()): 'write' for root in policy['sandbox_workspace_write.writable_roots']},
-                      ':workspace_roots': roots}
-        inline = '{' + ', '.join(json.dumps(k) + '=' + ('{' + ', '.join(json.dumps(r) + '=' + json.dumps(v) for r, v in value.items()) + '}' if isinstance(value, dict) else json.dumps(value)) for k, value in filesystem.items()) + '}'
-        # b296-f1e: only `codex sandbox` (the escape check) takes this argv; `codex sandbox` has -P, `codex exec` does not.
-        return ['-P', 'paired_session_author', '--config', 'permissions.paired_session_author.filesystem=' + inline,
-                '--config', 'permissions.paired_session_author.network.enabled=true']
 
     def reviewer_flags_digest(self) -> str:
         raw = json.dumps(self.reviewer_flags(), sort_keys=True, separators=(',', ':')).encode()
@@ -3507,8 +3165,8 @@ class Coordinator:
                     'files': [{'path': path, 'mode': 'deny'} for path in credential_paths],
                 },
                 'filesystem': {
-                    'denyWrite': [str(self.run_dir)] + ([str(self._claude_os_probe_path(role))] if role in ('probe', 'gate-probe') and self._probe_sandbox_commands else [])
-                                 + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else [])   # the probe's context; the real one is under run_dir
+                    'denyWrite': [str(self.run_dir)]
+                                 + ([str(self.context)] if role == 'author' and not self.context.is_relative_to(self.run_dir) else [])   # a context outside run_dir (kept: part of the frozen manifest)
                                  + ([str(probe_cache_root())] if role == 'author' and ((r := probe_cache_root().resolve()) == (w := self.workspace.resolve()) or r in w.parents or w in r.parents) else []),   # P0-4b: an overlapping workspace would make the cwd-bound Bash sandbox cover the cache
                     **({'allowWrite': extra} if (extra := self._extra_writable_roots()) else {}),   # v3.6.0: the run's extra_writable_roots, as for Codex roles; absent by default
                 },
@@ -3519,173 +3177,6 @@ class Coordinator:
         }
 
     def _claude_os_probe_path(self, role: str = 'probe') -> Path: return self.scratch_parent / ('.paired-session-os-probe-' + hashlib.sha256((str(self.run_dir) + ('|gate-probe' if role == 'gate-probe' else '')).encode()).hexdigest()[:16])   # G-a K2: the gate probe's OS-only target differs from the reviewer probe's
-
-    def author_flags_digest(self) -> str:
-        raw = json.dumps(self.author_flags(), sort_keys=True, separators=(',', ':')).encode()
-        return hashlib.sha256(raw).hexdigest()
-
-    def probe_passed(self) -> tuple[bool, str]:
-        """FIELD-10: the credential env-name deny list follows each command's environment (every secret-looking name present is
-        denied), so it alone never voids a PASS: a flags/rules mismatch is re-checked once with the probe's own names; every other
-        input stays bound, and the real dispatch keeps the current names."""
-        ok, reason = self._probe_passed_once()
-        if ok or not (reason.endswith('flags do not match this run') or reason.endswith('Claude author rules do not match this run')):
-            return ok, reason
-        if (names := self._probe_report_env_names()) is None: return ok, reason
-        self._probe_env_names = names
-        try: again = self._probe_passed_once()
-        finally: self._probe_env_names = None
-        return (True, '') if again[0] else again   # the check that still fails once the env names are set aside
-
-    def _probe_report_env_names(self) -> Optional[set]:
-        try: report = json.loads((self.run_dir / 'permission-probe.json').read_bytes())
-        except (OSError, ValueError): return None
-        for key in ('reviewer_flags', 'author_flags', 'gate_flags'):
-            try: return {entry['name'] for entry in report[key]['claude_bash_sandbox']['sandbox']['credentials']['envVars']}
-            except (KeyError, TypeError): continue
-        return None
-
-    def _probe_passed_once(self) -> tuple[bool, str]:
-        if (issue := self._program_state()[1]): return False, issue
-        path = self.run_dir / 'permission-probe.json'
-        if not path.exists():
-            return False, 'permission-probe.json is missing' + (f' (gate vendor {self.args.gate_vendor} differs from reviewer vendor {self.args.reviewer_vendor}: only a passing gate probe covers it)'
-                                                               if self.args.gate_vendor != self.args.reviewer_vendor and not lifecycle_spine.fake_dispatch_guard(self.args) else '')
-        try:
-            raw = path.read_bytes()
-            report = json.loads(raw)
-        except (OSError, json.JSONDecodeError):
-            return False, 'permission-probe.json is unreadable'
-        # A Claude author's PASS must be the very file permission_probe wrote (state.json shares run_dir's write protection).
-        if self.args.author_vendor == 'claude' and self.state.get('permission_probe') != {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}:
-            return False, 'permission-probe.json is not the report this run recorded'
-        waived = self._author_probe_waived(report)   # HL-FIX: only the author's part of an UNKNOWN report, only under the operator opt-in
-        if report.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK') and not waived:
-            return False, 'permission probe status is not PASS'
-        if report.get('reviewer_flags_digest') != self.reviewer_flags_digest():
-            return False, 'permission probe reviewer flags do not match this run'
-        if report.get('author_flags_digest') != self.author_flags_digest():
-            return False, 'permission probe author flags do not match this run'
-        author_probe = report.get('author_permission_probe', {})
-        report_mode = self.state['config'].get('review_report')
-        expected_author_status = ('NOT-APPLICABLE' if report_mode else
-                                  report['status'] if self.args.author_vendor == 'codex' else 'PASS')
-        if not report_mode and self.args.author_vendor == 'claude' and not self._claude_probe_rules_match(author_probe):
-            return False, 'permission probe Claude author rules do not match this run'
-        if (not waived and author_probe.get('status') != expected_author_status) or (report['status'] == 'PASS_RESIDUAL_RISK' and (author_probe.get('d1a_model_verdict'), author_probe.get('d1b_synthetic_verdict')) != ('UNKNOWN', 'PASS')):
-            return False, 'permission probe author permission status is not current'
-        if report.get('global_config_changes', {}).get('status') != 'PASS':
-            return False, 'permission probe global config changes were not fully attributed'
-        fake = lifecycle_spine.fake_dispatch_guard(self.args)
-        if 'gate_flags_digest' in report or not fake:   # G-a K4: a pre-G-a report has no gate digest and does not pass on the real CLI
-            if 'gate_flags_digest' not in report: return False, 'permission probe report has no gate_flags_digest (made before the gate probe); run permission-probe again'
-            if report['gate_flags_digest'] != self.gate_flags_digest(): return False, 'permission probe gate flags do not match this run'
-        if self.args.gate_vendor != self.args.reviewer_vendor and not fake:
-            gate_probe = report.get('gate_permission_probe')
-            if not isinstance(gate_probe, dict) or gate_probe.get('status') not in ('PASS', 'PASS_RESIDUAL_RISK'): return False, 'permission probe has no passing gate probe for gate vendor ' + self.args.gate_vendor
-        return True, ''
-
-    def _gate_probe_covered(self) -> bool:   # RF-1: a gate vendor other than the reviewer's is covered only by a passing gate probe bound to the current gate flags digest
-        if self.args.gate_vendor == self.args.reviewer_vendor or lifecycle_spine.fake_dispatch_guard(self.args): return True
-        try:
-            report = json.loads((self.run_dir / 'permission-probe.json').read_bytes())
-            return report.get('gate_flags_digest') == self.gate_flags_digest() and report['gate_permission_probe']['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
-        except (OSError, ValueError, KeyError, TypeError, AttributeError): return False
-
-    def _probe_skip_accepted(self) -> bool:   # P0-4 V2: the flag is command-line only; the recorded acceptance is honoured until a digest changes or a probe re-runs
-        if not self._gate_probe_covered(): return False   # RF-1: also for an acceptance saved earlier
-        acc, seen = self.state.get('probe_skip_override') or {}, {'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest()}
-        if acc and not acc.get('voided') and any(acc.get(k) != v for k, v in seen.items()):
-            acc['voided'] = {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'digests_seen': seen, **self._void_cause(acc, {   # ENV-NAME: say why
-                'reviewer_flags_digest': self.reviewer_flags_digest, 'author_flags_digest': self.author_flags_digest, 'gate_flags_digest': self.gate_flags_digest})}; self.save()
-        return acc.get('actor') == 'operator' and not acc.get('voided') and all(acc.get(k) == v for k, v in seen.items())
-
-    def _probe_cache_key(self) -> Optional[tuple[str, dict]]:   # P0-4 V3: sha256 over the probe surface, both flag digests and the Claude CLI version
-        root, ws = probe_cache_root().resolve(), self.workspace.resolve()
-        if self._program_state()[1] or ws == root or root in ws.parents or ws in root.parents: return None   # a workspace role could write an overlapping cache
-        versions = [claude_cli_version(self.state['operator_programs']['claude_bin'] if winplat.IS_WINDOWS else self.state['operator_programs']['claude_bin']['path'])] if 'claude' in (self.args.author_vendor, self.args.reviewer_vendor, self.args.gate_vendor) else []
-        if 'UNAVAILABLE' in versions: return None
-        inputs = {'surface_version': PROBE_SURFACE_VERSION, 'reviewer_flags_digest': self.reviewer_flags_digest(), 'author_flags_digest': self.author_flags_digest(), 'gate_flags_digest': self.gate_flags_digest(), 'claude_versions': versions,
-                  **({'review_report': True} if self.state['config'].get('review_report') else {})}   # LG2-a2: report and ordinary entries never share a key
-        return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest(), inputs
-
-    def _probe_cache_put(self, keyed: Optional[tuple[str, dict]], body: dict) -> None:   # the one private-dir + symlink-checked write path of an entry or a tombstone
-        key, inputs, root = *(keyed or (None, None)), probe_cache_root()
-        if key is None or any(p.is_symlink() for p in (root.parent.parent, root.parent, root)):
-            raise RuntimeError('no cache key (Claude version or program state unavailable) or a symlinked cache path')
-        os.makedirs(root, mode=0o700, exist_ok=True)
-        if not stat.S_ISDIR((info := os.lstat(root)).st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022: raise RuntimeError('cache root is not a private directory')   # P0-4b H2
-        (temp := root / f'{key}.json.tmp').unlink(missing_ok=True)
-        os.close(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))   # atomic_json rewrites this file, which keeps 0600
-        atomic_json(root / f'{key}.json', {'key': key, 'key_inputs': inputs, 'run_dir': str(self.run_dir), 'time': time.strftime(UTC_FORMAT, time.gmtime()), **body})
-
-    def _probe_cache_write(self, report: dict, report_sha256: str) -> None:   # the caller turns any failure into a report warning, never a verdict change
-        self._probe_cache_put(self._probe_cache_key(), {'source_report_sha256': report_sha256, 'report': report})
-
-    def _probe_cache_void(self, report_sha256: str) -> str:   # F4: a non-PASS probe voids this key's entry (tombstone, else delete); returns a warning text, '' when nothing stays reusable
-        if not _lstat_present(root := probe_cache_root()): return ''
-        if (keyed := self._probe_cache_key()) is None: return f'WARNING: PROBE CACHE ENTRY MAY NOT BE VOIDED: no cache key for this probe (Claude version or program state unavailable), so an older PASS in {root} for this configuration was not looked up and can still be reused once the key is available again, until it is deleted by hand or is 7 days old; the verdict of this probe is unchanged'
-        if not _lstat_present(path := root / f'{keyed[0]}.json'): return ''   # no cache dir: no key lookup (no claude --version) either
-        try:
-            if path.is_symlink(): raise RuntimeError('symlinked entry')
-            return self._probe_cache_put(keyed, {'status': 'VOID', 'source_report_sha256': report_sha256}) or ''
-        except Exception as exc: why = f'{type(exc).__name__}: {exc}'
-        try:
-            if any(p.is_symlink() for p in (root.parent.parent, root.parent, root)): raise RuntimeError('symlinked cache directory')
-            path.unlink(); return f'probe cache: could not write a VOID tombstone ({why}); {path} was deleted instead'
-        except Exception as exc:
-            return f'WARNING: PROBE CACHE ENTRY NOT VOIDED: {path} still holds an older PASS for this key ({why}; delete failed: {type(exc).__name__}: {exc}); a run with the same key can still reuse it until it is deleted by hand or is 7 days old; the verdict of this probe is unchanged'
-
-    def _probe_void_on_non_pass(self, report: dict) -> None:   # F4: the report and stdout carry the warning; never a verdict change, whatever fails here
-        if lifecycle_spine.fake_dispatch_guard(self.args): return
-        try: note = self._probe_cache_void(hashlib.sha256((json.dumps(report, indent=2, ensure_ascii=False) + '\n').encode()).hexdigest())
-        except Exception as exc: note = f'WARNING: PROBE CACHE ENTRY MAY NOT BE VOIDED ({type(exc).__name__}: {exc}); an older PASS in {probe_cache_root()} can still be reused until it is deleted by hand or is 7 days old; the verdict of this probe is unchanged'
-        if note: report['warning'] = (report.get('warning', '') + '; ' if report.get('warning') else '') + note; print(note)
-
-    def _probe_cache_reuse(self) -> tuple[bool, str]:   # P0-4 V3: adopt an earlier PASS for this exact key after the checks; else name the failed one
-        keyed, root = self._probe_cache_key(), probe_cache_root()
-        if keyed is None: return False, 'probe cache: no key (Claude version or program state unavailable)'
-        (key, inputs), path = keyed, root / f'{keyed[0]}.json'
-        if any(p.is_symlink() for p in (root.parent.parent, root.parent, root, path)): return False, 'probe cache: symlinked entry or directory'
-        try: raw = read_cache_entry(root, path.name)
-        except OSError as exc: return False, 'probe cache: ' + ('no entry for these flags and versions' if exc.errno == errno.ENOENT else 'symlinked entry or directory' if exc.errno in (errno.ELOOP, errno.ENOTDIR) else exc.strerror)
-        try: entry = json.loads(raw); void = isinstance(entry, dict) and entry.get('status') == 'VOID'; report = {} if void else entry['report']; age = time.time() - calendar.timegm(time.strptime(entry['time'], UTC_FORMAT)); json.dumps(entry, ensure_ascii=False).encode()   # the last: a lone surrogate would fail atomic_json's write
-        except (ValueError, KeyError, TypeError, RecursionError): return False, 'probe cache: entry is unreadable'
-        if not isinstance(report, dict): return False, 'probe cache: entry is malformed (report is not an object)'   # P0-4b H4
-        if entry.get('key') != key or entry.get('key_inputs') != inputs: return False, 'probe cache: recorded key inputs differ'
-        if not 0 <= age <= 7 * 86400: return False, 'probe cache: entry is older than 7 days'
-        if 'permission_probe_superseded' in self.state and not self.state.get('permission_probe'): return False, 'probe cache: the last permission-probe did not complete'
-        if (target := self.run_dir / 'permission-probe.json').exists(): return False, 'probe cache: this run already has a report that does not pass'
-        if self.state.get('permission_probe'): return False, 'probe cache: this run has already probed; the cache never revives an older PASS'   # P0-4b H3
-        if void: return False, f'probe cache: voided by a later non-PASS probe ({entry["time"]}, {entry.get("run_dir")})'   # F4
-        prior = self.state.get('permission_probe')
-        atomic_json(target, {**report, 'reused_from': {'cache_path': str(path), 'cache_sha256': hashlib.sha256(raw).hexdigest(), 'source_run_dir': entry.get('run_dir'), 'original_time': entry['time'], 'reuse_time': time.strftime(UTC_FORMAT, time.gmtime())}})
-        self.state['permission_probe'] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'turn': report.get('probe_turn')}
-        try: passed, why = self.probe_passed()
-        except Exception as exc: passed, why = False, f'malformed report ({type(exc).__name__})'   # P0-4b H4: a wrongly typed field is a miss
-        if passed: self.save(); print(f'probe reused from {path} (PASS of {entry["time"]} in {entry.get("run_dir")})'); return True, ''
-        self.state['permission_probe'] = prior; target.unlink()      # not adopted
-        return False, 'probe cache: entry does not pass for this run: ' + why
-
-    def _probe_negative_status(self) -> str:   # P0-4b H1: status of this run's current, bound report when it is not a PASS, else ''
-        try:
-            raw = (self.run_dir / 'permission-probe.json').read_bytes(); report = json.loads(raw)
-            same = lambda: (report.get('reviewer_flags_digest') == self.reviewer_flags_digest() and report.get('author_flags_digest') == self.author_flags_digest()
-                            and report.get('gate_flags_digest', self.gate_flags_digest()) == self.gate_flags_digest())
-            current = (self.state.get('permission_probe') == {'sha256': hashlib.sha256(raw).hexdigest(), 'turn': report.get('probe_turn')}
-                       and (same() or ((names := self._probe_report_env_names()) is not None and self._under_env_names(names, same))))   # ENV-NAME: FIELD-10's comparison
-            return str(report.get('status')) if current and report.get('status') != 'PASS' and not self._author_probe_waived(report) else ''   # HL-FIX: the opted-in author part is not negative evidence
-        except (OSError, ValueError, AttributeError): return ''
-
-    def probe_gate(self) -> tuple[bool, str]:   # run/resume/reject: a passing report, an accepted skip or a verified cache reuse (noted on stdout)
-        passed, reason = self.probe_passed()
-        if passed: return True, ''
-        if self._probe_skip_accepted(): print('probe skipped by operator acceptance (--accept-probe-skip)'); return True, ''
-        if (acc := self.state.get('probe_skip_override') or {}).get('voided'):   # ENV-NAME: a voided acceptance is reported, not silent
-            reason += f'; the earlier --accept-probe-skip is void ({self._void_text(acc)}; run permission-probe)'
-        if lifecycle_spine.fake_dispatch_guard(self.args): return False, reason       # the fake harness never touches the real cache
-        reused, note = self._probe_cache_reuse()
-        return (True, '') if reused else (False, reason + '; ' + note)
 
     def _validate_resume_args(self) -> None:
         if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
@@ -3732,7 +3223,7 @@ class Coordinator:
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
             self.args.wi_deadline = self.state['config'].get('wi_deadline')
         elif 'wi_deadline' not in self.state['config']:
-            raise ValueError('--wi-deadline is fixed at run start (the run or permission-probe that creates the run directory); '
+            raise ValueError('--wi-deadline is fixed at run start (the run that creates the run directory); '
                              'this run directory was created without one')
         recorded_roots = self.state['config'].get('extra_writable_roots', [])   # fixed at run start, like the deadline
         try: profile_roots = validate_extra_writable_roots(getattr(self.args, 'extra_writable_roots', None) or [], self.run_dir)
@@ -3744,30 +3235,37 @@ class Coordinator:
         raised = {'timeout': getattr(self.args, 'resume_timeout', None) is not None,
                   'max_invocations': invocation_cap_override, 'exec_turn_timeout': exec_timeout_override}
         skip = lambda key: self.args.action == 'resume' and raised.get(key, False)   # the three values a resume may raise
+        refreeze_gate_prompt = refreeze_commands = False
         for key, value in self.state['config'].items():
             if skip(key):
                 continue
             current = current_config[key]
             if key == 'workitem_reviewer_commands' and current != value:
-                if self.args.action == 'permission-probe':
-                    self.state['config'][key] = current
-                    self.save()
+                if self.state['config'].get('lifecycle_mode') != 'on':   # v3.7.0: recorded with a NOTE once nothing else differs
+                    refreeze_commands = True
                     continue
-                reason = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item '
-                          '(then run permission-probe again if it was already run) and resume, or abort and start a new run'
-                          if self.state['config'].get('lifecycle_mode') == 'on' else
-                          'work-item reviewer allowlist changed; run permission-probe before continuing')
+                reason = REVIEWER_BLOCK_CHANGED_ON
                 self.hold(reason)
                 raise RuntimeError(reason)
             if current != value:
-                bundled = key == 'gate_prompt' and all(str(v).startswith('<bundled-default>:') for v in (value, current))
-                if bundled and self.args.action == 'abort':
-                    continue   # V317-G1: abort ends the run and dispatches nothing; every other key is still compared
-                only = bundled and not any(current_config[k] != v for k, v in self.state['config'].items()
-                                           if k != key and not skip(k))   # with another difference the plain text stays
+                if key == 'gate_prompt' and all(str(v).startswith('<bundled-default>:') for v in (value, current)):
+                    refreeze_gate_prompt = self.args.action != 'abort'   # abort ends the run and dispatches nothing
+                    continue   # every other key is still compared before anything is recorded
                 raise ValueError(('role models are fixed for this run: ' if key in ROLE_DESTS else
-                                  'resume configuration differs: ') + key
-                                 + ('; ' + self._other_version_exits() if only else ''))
+                                  'resume configuration differs: ') + key)
+        if refreeze_gate_prompt:
+            self._refreeze_bundled_gate_prompt()
+        if refreeze_commands and self.args.action != 'abort':
+            self._refreeze_reviewer_commands(current_config['workitem_reviewer_commands'])
+
+    def _refreeze_reviewer_commands(self, current: list) -> None:
+        """v3.7.0, lifecycle off: the work item's reviewer-commands block changed; the run records the new block and goes on."""
+        self.state.setdefault('reviewer_command_refreezes', []).append(
+            {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'from': self.state['config']['workitem_reviewer_commands'], 'to': current})
+        self.state['config']['workitem_reviewer_commands'] = current
+        self._refresh_resumed_config_digest()
+        self.save()
+        self._operator_note("NOTE: the work item's reviewer commands changed; the run uses the new block")
 
     def save(self) -> None:
         with self._save_lock:
@@ -4127,7 +3625,7 @@ class Coordinator:
     def progress(self, kind: str, **fields) -> None:
         """PL: one event as a stdout line and a RUN/progress.jsonl row. Callers pass ids, counts and ledger summaries only; this never raises and never touches state."""
         try:
-            if not kind.startswith('probe'): fields.setdefault('label', self._progress_label)
+            fields.setdefault('label', self._progress_label)
             row = {'ts': time.strftime(UTC_FORMAT, time.gmtime()), 'kind': kind, **fields}
             fd = os.open(self.run_dir / 'progress.jsonl', os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0), 0o600)
             with os.fdopen(fd, 'r+b') as log:
@@ -4167,8 +3665,8 @@ class Coordinator:
         self.progress('terminal', status=status, reason=brief_reason(reason), invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
 
     def _progress_dispatch(self, role: str, phase: str, fresh: bool, call):
-        kind = {'probe': 'probe:reviewer', 'gate-probe': 'probe:gate'}.get(role) or ('probe:author-escape' if phase == 'AUTHOR_PERMISSION_PROBE' else 'dispatch')
-        if kind == 'dispatch': self._progress_phase(role, phase)
+        kind = 'dispatch'
+        self._progress_phase(role, phase)
         model, effort = self._model_effort(role)
         who = dict(role=role, vendor=self._role_vendor(role), model=model, effort=effort, fresh=fresh)
         self.progress(kind, step='start', **who)
@@ -4311,7 +3809,6 @@ class Coordinator:
         lines.append('Acceptance state: **' + self.state.get('acceptance_state', 'IN_PROGRESS') + '**')
         if rows := (self.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
             lines.append(f'Uncommitted after acceptance ({uncommitted_cause(self.state)}): ' + ', '.join(rows))
-        if self.state.get('residual_risk'): lines.append('Residual risk: ' + self.state['residual_risk'])
         if self.state.get('pending_operator_note_id'):
             lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
         if self.state.get('hold_reason'):
@@ -4327,10 +3824,7 @@ class Coordinator:
                 'rationale': str(author.get('answer', {}).get('body', ''))[:2000],
                 'rationale_evidence': {'run_dir': str(self.run_dir), 'turn_sequence': author.get('sequence')}}
             self.state.update(next='author', pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
-            if self._other_version_gate_prompt():   # V317-G1 R2: resume is refused there, so "note and resume" is no exit
-                limit = terminal_kind == 'rejection_limit'
-                reason += ('; post-DONE rejection limit reached; ' if limit else '; ') + self._other_version_exits(limit)
-            elif worktree_lifecycle.is_worktree(self.state):   # W accepts no held tree (no --override-rejection)
+            if worktree_lifecycle.is_worktree(self.state):   # W accepts no held tree (no --override-rejection)
                 reason += ('; post-DONE rejection limit reached; note and resume, reject --scope-change, or abort'
                            if terminal_kind == 'rejection_limit' else '; note, change the workspace, or abort')
             else:
@@ -4418,7 +3912,7 @@ class Coordinator:
                   '--config', str(config_path), '--supersedes', str(self.run_dir)]
         if self.state['config'].get('exercise_revisions'): common.append('--exercise-revisions')
         entry = str(HERE.parent / 'bin/paired-session')
-        command = lambda: 'Probe: ' + shlex.join([entry, 'permission-probe', *common]) + '\nStart: ' + shlex.join([entry, 'run', *common])
+        command = lambda: 'Start: ' + shlex.join([entry, 'run', *common])
         if self.state['status'] == 'ABORTED':
             if not intent or intent['action'] != self.args.action or intent['source'] != (str(Path(file).expanduser().resolve()) if file else 'cli') or (text is not None and text != intent['text']): raise ValueError('different scope-change request')
             if not (self.run_dir / 'scope-change-report.md').is_file():
@@ -4528,10 +4022,8 @@ class Coordinator:
             unavailable = (f'notes reach only PLAN or EXEC author turns; this run is in {phase} '
                            '(at DONE use reject; at an eligible idle HOLD use note --scope-change)')
         elif self.state.get('active') or self.state.get('uncertain_active'):
-            turn = self.state.get('active') or self.state.get('uncertain_active')
-            recovery = 'permission-probe' if turn.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') else 'resume'
             unavailable = ('an active or uncertain_active turn is recorded; wait for it to finish, or inspect the evidence '
-                           f'and confirm its process group has stopped before {recovery} --retry-uncertain; '
+                           'and confirm its process group has stopped before resume --retry-uncertain; '
                            'add the note at the next eligible PLAN/EXEC HOLD')
         elif self.state['invocations_used'] >= self.args.max_invocations:
             unavailable = ('invocation budget exhausted; use resume --max-invocations N with a higher cap, '
@@ -4580,7 +4072,7 @@ class Coordinator:
         self._refuse_report_accept()
         if (self.state.get('status') != 'ACCEPTED' and not self.args.override_rejection   # the override already refuses these in operator_intent
                 and (turn := self.state.get('active') or self.state.get('uncertain_active'))):   # ACCEPT-ACTIVE: legacy and W
-            fix = ('permission-probe' if turn.get('phase') in ('PROBE', 'AUTHOR_PERMISSION_PROBE') else 'resume') + ' --retry-uncertain'   # resume returns early on DONE
+            fix = 'resume --retry-uncertain'   # resume returns early on DONE
             raise ValueError(f"accept refused: CLI turn {turn.get('sequence', '?')} is active or uncertain; settle it first "
                              f'({fix} once its process group is gone) or abort')
         if worktree_lifecycle.is_worktree(self.state):   # W3b DELIVERY; no accept may skip FINISH-SECURITY
@@ -5050,7 +4542,7 @@ class Coordinator:
         before any dispatch, so a change after this check is not silently taken into the next turn's baseline)."""
         verified = {}
         scratch = (receipt.get('environment_overrides') or {}).get('TMPDIR')
-        if receipt.get('role') in READONLY_SCRATCH_ROLES and scratch and Path(scratch).parent == self.scratch_base / 'role-tmp':
+        if receipt.get('role') in (*READONLY_SCRATCH_ROLES, *LEGACY_PROBE_ROLES) and scratch and Path(scratch).parent == self.scratch_base / 'role-tmp':
             self._drop_scratch(Path(scratch))   # b295-f1: the uncertain turn's child is stopped before it is archived
         if receipt.get('vendor') == 'claude' and receipt.get('global_claude_before'):
             current = global_config_snapshot(self.global_config_home, self.global_codex_home)
@@ -5180,7 +4672,7 @@ class Coordinator:
     def _role_vendor(self, role: str) -> str:
         if role == 'author':
             return self.args.author_vendor
-        if role in ('reviewer', 'shadow', 'probe'):
+        if role in ('reviewer', 'shadow', 'probe'):   # 'probe': a turn saved by v3.6.0 or earlier
             return self.args.reviewer_vendor
         return self.args.gate_vendor
 
@@ -5193,7 +4685,7 @@ class Coordinator:
     def _model_effort(self, role: str) -> tuple[str, str]:
         if role == 'author':
             return self.args.author_model, self.args.author_effort
-        if role in ('reviewer', 'shadow', 'probe'):
+        if role in ('reviewer', 'shadow', 'probe'):   # 'probe': a turn saved by v3.6.0 or earlier
             return self.args.reviewer_model, self.args.reviewer_effort
         return self.args.gate_model, self.args.gate_effort
 
@@ -5222,8 +4714,6 @@ class Coordinator:
                 cmd.append('--forward-subagent-text')
         else:
             exact_commands = self.reviewer_commands()
-            if role in ('probe', 'gate-probe') and self._probe_sandbox_commands:
-                exact_commands = [*exact_commands, *self._probe_sandbox_commands]
             allowed = ['Read,Grep,Glob', *(f'Bash({command})' for command in exact_commands)]
             cmd += ['--restricted', '--permission-mode', 'dontAsk',
                     '--tools', 'Read,Grep,Glob,Bash']
@@ -6262,11 +5752,11 @@ class Coordinator:
                     if name == 'workitem.md':
                         recovery = (f"this run's frozen work item cannot change. Edit the work-item file {self.workitem} "
                                     'to describe the point in words (no finding ids), then use note --scope-change --text "..." '
-                                    'and run the printed Probe: and Start: commands (a successor with a fresh PLAN), '
+                                    'and run the printed Start: command (a successor with a fresh PLAN), '
                                     'or abort and start a new run')
                     else:
                         recovery = ('resume does not rewrite the approved plan. Use note --scope-change --text "..." '
-                                    '(no finding ids) and run the printed Probe: and Start: commands for a successor '
+                                    '(no finding ids) and run the printed Start: command for a successor '
                                     'with a fresh PLAN, or abort and start a new run')
                     raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}: {shown}; ' + recovery)
         checked = self._mask_docs_reserved_paths(self._mask_guidance(prompt))   # operator guidance and DOCS paths
@@ -6557,7 +6047,8 @@ class Coordinator:
         answers EPERM on macOS only when the members left are unreaped zombies, which cannot act. kill=False (the sweep of a leftover from an
         earlier dispatch, whose pid may have been reused since) only probes and never signals: it returns only on ESRCH or a recorded
         never-started turn; no pid, EPERM or any other error is refused (b296-f1d)."""
-        receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}, self.state.get('uncertain_active') or {}]
+        receipt = next((row for row in [*reversed(self.state['turns']), self.state.get('active') or {}, self.state.get('uncertain_active') or {},
+                                        *reversed(self.state.get('abandoned_turns') or [])]   # an archived uncertain turn keeps its pid
                         if row.get('sequence') == sequence), {})
         pid, job = receipt.get('pid'), receipt.get('job')   # WI-WIN: Windows receipts also name the turn's Job Object
         if not kill:   # b296-f1d: the sweep deletes only on an explicit ESRCH or a recorded never-started turn; any unknown state keeps it
@@ -6632,7 +6123,7 @@ class Coordinator:
 
     def _void_opv_unknown_turn(self, turn: dict) -> None:
         """v2.9.7 OPV: an author turn in this workspace that became uncertain (cut off with the coordinator, e.g. a hard kill,
-        found by resume, run, permission-probe, abort or any hold) left an unknown tree."""
+        found by resume, run, abort or any hold) left an unknown tree."""
         if turn.get('role') == 'author' and turn.get('workspace') == str(self.workspace):
             opv.void_stale(self, None, atomic_json)
 
@@ -6735,8 +6226,7 @@ class Coordinator:
                      env_overrides: Optional[dict] = None) -> dict:
         issue = self._program_state(hold=True)[1]
         if issue: raise RuntimeError(issue)
-        if (self.state.get('config', {}).get('lifecycle_mode') == 'on' and
-                not (role == 'author' and phase == 'AUTHOR_PERMISSION_PROBE' and self.args.author_vendor == 'claude')):
+        if self.state.get('config', {}).get('lifecycle_mode') == 'on':
             self._verify_frozen_role_dispatch()
         rejection = None
         operator_note = next((row for row in self.state.get('operator_notes', [])
@@ -7025,14 +6515,14 @@ class Coordinator:
                                   normal_plugin_update(vendor_config_before['claude_plugins'], config_after['claude_plugins'])):
                         changes['plugin_update'] = update   # field21: recorded in both modes
                     settings_only = [(row['file'], row['reason']) for row in changes['findings']] == [('claude_settings', 'unexpected-content-change')]
-                    if settings_only and role in ('reviewer', 'shadow', 'gate') and not self.strict and voided is None and not touched:
+                    if settings_only and role in ('reviewer', 'shadow', 'gate') and voided is None and not touched:
                         # V325-CFG (efficient): a read-only Claude turn cannot write ~/.claude/settings.json, so the change came from
                         # another process (e.g. the owner's interactive session); the turn stands, the next turn snapshots afresh.
                         changes['concurrent_settings_change'] = {key: changes[key]['claude_settings']['sha256'] for key in ('before', 'after')}
                         changes['findings'], changes['status'] = [], 'PASS'
                         print(f'NOTE: ~/.claude/settings.json changed during the {role} turn; the read-only turn cannot write it, so '
                               'the turn is kept and the next turn starts from the new settings')
-                    elif not update or self.strict or voided is not None or touched:
+                    elif not update or voided is not None or touched:
                         raise ValueError(message + (PLUGIN_UPDATE_HINT if update else GLOBAL_CONFIG_HINT))
                     else:
                         # FIELD-24 (efficient): the running CLI loaded its plugins at start and the old versioned cache stays on
@@ -7106,9 +6596,7 @@ class Coordinator:
                                          tuple(c for c in (self.args.test_command, *self.args.reviewer_command) if c), fallbacks)
             receipt['evidence_guard'] = {'fallbacks': len(fallbacks), 'fallback_reasons': fallbacks[:20],   # v297-eg-wire: substring-guard calls
                                          **({'codex_cwd_proven': proven} if proven is not None else {})}
-            if forbidden and self.strict:
-                raise ValueError(f'{role} accessed isolated {forbidden}')
-            if forbidden: receipt['evidence_guard']['would_hold'] = f'{role} accessed isolated {forbidden}'   # D-EFF efficient: log-only
+            if forbidden: receipt['evidence_guard']['would_hold'] = f'{role} accessed isolated {forbidden}'   # D-EFF: log-only
             if context_before != context_after:
                 raise ValueError(f'{role} mutated coordinator context outside workspace')
             if role == 'author' and phase == 'PLAN' and before != after:
@@ -7687,8 +7175,8 @@ class Coordinator:
 
     def _report_budget(self) -> int:
         """LG2-a3: a report run's invocation budget, set by its role count (reviewer, shadow, gate, the selected
-        specialists, the security reviewer) plus the permission-probe turns a2 kept (the reviewer probe, and the gate
-        probe when the gate vendor differs), each with one retry. Frozen at first use; the --max-invocations cap still applies."""
+        specialists, the security reviewer) plus the two former probe slots a2 kept (one, and a second when the gate vendor
+        differs), each with one retry. Frozen at first use; the --max-invocations cap still applies."""
         if (budget := self.state.get('report_budget')) is None:
             if git_snapshot(self.workspace)[0] != (self.state.get('review_only') or {}).get('candidate_tree_sha256'):
                 raise RuntimeError('the report tree changed since the run was created; restore it and resume, or abort')
@@ -9022,862 +8510,10 @@ class Coordinator:
                          f'{STRUCTURAL_BLOCK_STREAK} consecutive reviews ({history}); all blockers stay open; '
                          'note a structural plan and resume, note --scope-change, or abort')
 
-    def _codex_sandbox_escape_check(self, workspace: Path, label: str, target: Path,
-                                    expected_allowed=False) -> dict:
-        issue = self._program_state(hold=True)[1]
-        if issue: raise RuntimeError(issue)
-        command = ['/usr/bin/touch', str(target)]
-        try:
-            profile_args = self._codex_sandbox_profile_args()
-        except ValueError as exc:
-            return {'label': label, 'status': 'CONTRACT-FAIL', 'reason': str(exc),
-                    'expected': 'allowed' if expected_allowed else 'denied',
-                    'sandbox_overrides': self._author_sandbox_overrides(), 'returncode': None}
-        args = [*program_argv(self.state['operator_programs']['codex_bin']),
-                'sandbox', '--log-denials', '-C', str(workspace),
-                *profile_args, *self._author_sandbox_config_args(), '--', *command]
-        outcome = {'label': label, 'command': shlex.join(command), 'argv': args,
-                   'expected': 'allowed' if expected_allowed else 'denied',
-                   'sandbox_overrides': self._author_sandbox_overrides(),
-                   'tmpdir': str(self.author_temp_dir), 'returncode': None,
-                   'os_denial_observed': False, 'target_absent_before_cleanup': False,
-                   'target_present_after_command': False, 'denial_target_observed': False,
-                   'policy_observed': False, 'cleanup_ok': True, 'stdout': '', 'stderr': ''}
-        try:
-            source = self._codex_config_bytes()
-            with tempfile.TemporaryDirectory(prefix='codex-sandbox-home-', dir=self.scratch_base) as sandbox_home:
-                copied = Path(sandbox_home) / 'config.toml'
-                if copied.write_bytes(source) != len(source) or copied.read_bytes() != source:
-                    raise OSError('synthetic config copy differs from source')
-                outcome['copied_policy_files'] = ['config.toml']
-                outcome['source_config_sha256'] = hashlib.sha256(source).hexdigest()
-                outcome['copy_config_sha256'] = hashlib.sha256(copied.read_bytes()).hexdigest()
-                result = subprocess.run(args, cwd=workspace,
-                    env={**self._author_environment(), 'CODEX_HOME': sandbox_home},
-                    text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-            outcome.update({'returncode': result.returncode,
-                            'stdout': result.stdout[-OUTPUT_TAIL_CHARS:],
-                            'stderr': result.stderr[-OUTPUT_TAIL_CHARS:]})
-        except (OSError, subprocess.SubprocessError) as exc:
-            outcome['error'] = type(exc).__name__ + ': ' + str(exc)
-        output = (outcome['stdout'] + '\n' + outcome['stderr']).lower()
-        markers = ('operation not permitted', 'read-only file system',
-                   'deny file-write-create', 'deny file-write-data')
-        output_path = {str(target).lower(), str(target.resolve()).lower()}
-        outcome['denial_target_observed'] = any(path in output for path in output_path)
-        outcome['os_denial_observed'] = (outcome['returncode'] not in (None, 0)
-                                         and any(marker in output for marker in markers)
-                                         and outcome['denial_target_observed'])
-        target_present = target.exists()
-        outcome['target_absent_before_cleanup'] = not target_present
-        outcome['target_present_after_command'] = target_present
-        if expected_allowed:
-            outcome['policy_observed'] = outcome['returncode'] == 0 and target_present
-        else:
-            outcome['policy_observed'] = (outcome['returncode'] not in (None, 0)
-                                          and outcome['os_denial_observed'] and not target_present)
-        if target.exists():
-            try:
-                target.unlink()
-                outcome['cleanup_ok'] = not target.exists()
-            except OSError as exc:
-                outcome['cleanup_ok'] = False
-                outcome['cleanup_error'] = type(exc).__name__
-        outcome['status'] = ('PASS' if outcome['policy_observed'] and outcome['cleanup_ok']
-                             else 'FAIL')
-        return outcome
-
-    def _claude_probe_rules_match(self, probe: dict) -> bool:
-        allow, deny = self._claude_author_edit_rules()
-        settings_deny = self._claude_sandbox_settings('author')['permissions']['deny']
-        return cap.rules_match(probe, allow, deny, settings_deny, self.workspace.resolve(), self.context.resolve(),
-                               self.author_flags()['claude_author_surface'])
-
-    def _claude_author_probe(self) -> dict:
-        """P0-3b: one real Claude author turn in a probe-owned tree; filesystem evidence decides (1C row 3b)."""
-        out = {'status': 'FAIL', 'probe': cap.PROBE, 'attempts': {}, 'positive_control': False, 'rules': None,
-               'claude_version': 'UNAVAILABLE', 'model_escape_failed_targets': [], 'process_group': None}
-        real_context, base, tmp, dirs, gone = self.context, None, None, [], lambda p: not (p.exists() or p.is_symlink())
-        try:
-            # V322-PROBE: verify against the real context before swapping it; _invoke_once skips this Claude probe only.
-            if self.state.get('config', {}).get('lifecycle_mode') == 'on':
-                self._verify_frozen_role_dispatch()
-            # Outside run_dir: its Edit deny, denyWrite and workspace refusal cover it.
-            # New layouts keep the tree in external scratch, but still watch the shared run parent (FIELD-13).
-            base = Path(tempfile.mkdtemp(prefix=cap.TREE_PREFIX, dir=self.scratch_parent)).resolve()
-            ws, ctx, outside = base / 'workspace', base / 'context', base / 'outside'
-            for d in (ws, ctx, outside): d.mkdir(); dirs.append(d)
-            (ws / 'tracked.txt').write_text('probe baseline\n')
-            for git in (['init', '-q'], ['add', 'tracked.txt'], ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', 'commit', '-qm', 'probe']):
-                subprocess.run(['git', *git], cwd=ws, check=True)
-            sentinel, before = outside / 'sentinel.txt', b'sentinel-original\n'
-            sentinel.write_bytes(before)
-            sentinel_ino, skip = sentinel.stat().st_ino, {base, self.run_dir.resolve()}
-            os.symlink(outside, ws / 'escape-link')
-            tmp = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
-            if tmp.exists() or tmp.is_symlink(): raise RuntimeError('probe target collision')
-            table = cap.steps(base, tmp)
-            baseline, reason, result, seq0 = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,)), None, None, self.state['sequence']
-            self.context = ctx                 # the argv's --add-dir, context deny rules and denyWrite bind to the probe context
-            try: result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', cap.prompt(ws, table), review_schema(verified=False), fresh=True, workspace_override=ws)
-            except (RuntimeError, ValueError) as exc: reason = type(exc).__name__ + ': ' + str(exc)
-            finally: self.context = real_context
-            turn = self.state['turns'][-1] if self.state['turns'] else {}
-            pid = turn.get('pid') if turn.get('phase') == 'AUTHOR_PERMISSION_PROBE' and turn.get('sequence', 0) > seq0 else None   # never a stale turn's pid
-            if type(pid) is int and pid > 1:          # the author's process group must be gone before any evidence is read (as the Codex probe)
-                try: retry_killpg_eperm(pid)
-                except ProcessLookupError: out['process_group'] = 'exited'
-                except OSError as exc: raise RuntimeError('author probe process group cannot be verified stopped') from exc
-                else:
-                    out['process_group'], reason = 'alive-after-turn', reason or 'author process group still alive after the turn'
-                    try: os.killpg(pid, signal.SIGKILL)
-                    except OSError: pass
-                    time.sleep(0.2)
-            elif result: raise RuntimeError('author probe process group is unverifiable')
-            first = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,))
-            time.sleep(cap.SETTLE_SECONDS * timeout_scale.env_factor())
-            second = cap.listing(base, base.parent, skip, extra_parents=(self.run_dir.resolve().parent,))
-            rows = []
-            if result:
-                argv = self.state['turns'][-1]['command']
-                out['rules'] = cap.rules_used(argv, ws, ctx)
-                version_command = program_argv(self.state['operator_programs']['claude_bin']) if winplat.IS_WINDOWS else [argv[0]]
-                try: out['claude_version'] = subprocess.run([*version_command, '--version'], text=True, encoding='utf-8', capture_output=True, timeout=10 * timeout_scale.env_factor(), env=cli_env()).stdout.strip() or 'UNAVAILABLE'
-                except (OSError, subprocess.SubprocessError): pass
-                rows = read_json_lines(self.evidence / f'{result["sequence"]:03d}-author_permission_probe-author.stdout.jsonl')
-            got = cap.read_sentinel(sentinel)     # None unless still a small regular file: a FIFO or link never blocks or streams
-            unchanged = got == (before, sentinel_ino)
-            if got is None: reason = reason or 'sentinel-replaced'
-            out['attempts'], unexpected = cap.attempts(rows, table, unchanged, gone)
-            made = out['links_made'] = cap.links_made(out['attempts'], ws, sentinel_ino)
-            out['positive_control'] = (ws / 'ok.txt').is_file() and out['attempts']['positive_control']['tool_use_seen']
-            escaped = [str(p) for label, (_, _, targets) in table.items() if label != 'positive_control' for p in targets if not gone(p)]
-            allowed = {str(ws / n) for n in ('ok.txt', 'sl', 'hl')} | cap.cli_created_dirs(ws, first, second)      # the positive control and the prescribed link creations; the CLI's own empty .claude/.cc-writes (CG-6)
-            escaped += [k for k in baseline.keys() | first.keys() | second.keys()
-                        if k not in allowed and not baseline.get(k) == first.get(k) == second.get(k)] + ([] if unchanged else [str(sentinel)])
-            if (lock := getattr(self.args, '_probe_lock', None)) is not None and not lock.intact():   # FIELD-13: no role may write the lock dir
-                escaped.append(str(lock.path)); reason = reason or 'probe-lock-tampered'
-            if first != second: reason = reason or 'late-write: the probe tree changed after the settle delay'
-            if unexpected: reason = reason or 'unexpected-tool-use: ' + unexpected[0]
-            out['model_escape_failed_targets'], out['unexpected_tool_uses'] = sorted(set(escaped)), unexpected
-            out['changed_beside_run_dir'] = sorted({t for t in escaped if Path(t).parent == self.run_dir.resolve().parent})   # FIELD-8: may be an operator file (a launcher log)
-            out['hardlink_refused'] = refused = cap.hardlink_refused(out['attempts'], ws, sentinel_ino)
-            for label, row in out['attempts'].items():
-                if refused and 'hardlink' in label and label != 'link_hardlink': row['not_applicable'] = 'link denied'     # raw outcome kept
-            out['status'] = cap.verdict(out['attempts'], out['positive_control'], escaped, reason, made, refused)
-            # Classification only: the verdict above never reads the model's answer. No prescribed call made and a HOLD answer = the model declined.
-            out['model_refused'] = (out['status'] == 'UNKNOWN' and not unexpected and not any(r['tool_use_seen'] for r in out['attempts'].values())
-                                    and str(((result or {}).get('answer') or {}).get('status', '')).upper() == 'HOLD')
-            if reason: out['reason'] = reason
-        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
-            out.update(status='FAIL', reason=type(exc).__name__ + ': ' + str(exc))
-        finally:
-            self.context = real_context
-            tampered = []                         # a probe-made dir that is no longer a real dir was swapped by the author
-            for d in ([base] if base else []) + dirs:
-                try: real = stat.S_ISDIR(os.lstat(d).st_mode)
-                except OSError: real = False
-                if not real: tampered.append(str(d))
-            clean = out['cleanup'] = {'found': [], 'cleaned': [], 'remaining': [], 'errors': [], 'tree_tampered': tampered}
-            if tmp is not None and os.path.lexists(tmp):      # never follow: only a regular file or a symlink itself is unlinked
-                clean['found'].append(str(tmp))
-                try:
-                    if not (stat.S_ISREG(os.lstat(tmp).st_mode) or os.path.islink(tmp)): raise OSError('not a file or symlink')
-                    os.unlink(tmp)
-                    clean['cleaned'].append(str(tmp))
-                except OSError as exc: clean['errors'].append({'path': str(tmp), 'error': type(exc).__name__})
-                if os.path.lexists(tmp): clean['remaining'].append(str(tmp))
-            if base is not None:                  # fd-based rmtree removes a swapped-in symlink itself, never what it points to
-                if getattr(shutil.rmtree, 'avoids_symlink_attacks', False): shutil.rmtree(base, ignore_errors=True)
-                else: clean['errors'].append({'path': str(base), 'error': 'rmtree-not-symlink-safe'})
-            clean['base_removed'] = base is None or not os.path.lexists(base)
-            if tampered or clean['remaining'] or clean['errors'] or not clean['base_removed']: out['status'] = 'FAIL'
-        out['claude_author_status'] = out['status']
-        return out
-
-    def _author_permission_probe(self) -> dict:
-        if self.args.author_vendor == 'claude':
-            return self._claude_author_probe()
-        if self.args.author_vendor != 'codex':
-            return {'status': 'NOT-APPLICABLE', 'reason': 'author is not Codex'}
-        capability = self.codex_capabilities()
-        if capability['status'] != 'PASS':
-            return {'status': 'FAIL', 'reason': '; '.join(capability['issues'])}
-        codex_sandbox_checks = {'status': 'NOT-ATTEMPTED', 'checks': {}}
-        advisory = {'note': 'advisory: not proven policy-equivalent to codex exec',
-                    'checks': codex_sandbox_checks['checks']}
-        model_targets, report, owned_dirs = {}, None, []
-        def dir_stamp(path):
-            info = path.lstat()
-            if not stat.S_ISDIR(info.st_mode): raise RuntimeError('escape probe directory replaced')
-            return {'dev': info.st_dev, 'ino': info.st_ino, 'st_mtime_ns': info.st_mtime_ns,
-                    'st_ctime_ns': info.st_ctime_ns, 'st_nlink': info.st_nlink,
-                    'listing': sorted(os.listdir(path))}
-        try:
-            self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with nullcontext(tempfile.mkdtemp(prefix='paired-session-author-probe-', dir=self.scratch_base)) as base_text:
-                base = Path(base_text)
-                workspace = base / 'workspace'
-                workspace.mkdir()
-                subprocess.run(['git', 'init', '-q'], cwd=workspace, check=True)
-                subprocess.run(['git', 'config', 'user.email', 'permission-probe@example.invalid'],
-                               cwd=workspace, check=True)
-                subprocess.run(['git', 'config', 'user.name', 'paired-session permission probe'],
-                               cwd=workspace, check=True)
-                (workspace / 'tracked.txt').write_text('probe baseline\n')
-                subprocess.run(['git', 'add', 'tracked.txt'], cwd=workspace, check=True)
-                subprocess.run(['git', 'commit', '-qm', 'probe baseline'], cwd=workspace, check=True)
-
-                sandbox_workspace_path = workspace / ('sandbox-workspace-allowed-' + uuid.uuid4().hex)
-                sandbox_tmpdir_path = self.author_temp_dir / ('sandbox-tmpdir-allowed-' + uuid.uuid4().hex)
-                allowed_path = workspace / 'author-write-allowed.txt'
-                tmpdir_name = 'author-write-tmpdir-' + uuid.uuid4().hex + '.txt'
-                allowed_tmpdir_path = self.author_temp_dir / tmpdir_name
-                host_tmpdir = Path(tempfile.gettempdir()).expanduser().resolve()
-                allowed_roots = (workspace.resolve(), self.author_temp_dir.resolve())
-                if any(host_tmpdir == root or root in host_tmpdir.parents for root in allowed_roots):
-                    host_tmpdir = base / 'external-tmpdir'
-                    host_tmpdir.mkdir()
-                external_tmpdir_path = host_tmpdir / ('paired-session-external-tmpdir-' + uuid.uuid4().hex + '.txt')
-                slash_tmp_path = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
-                while slash_tmp_path.exists():
-                    slash_tmp_path = Path('/tmp') / ('paired-session-author-probe-' + uuid.uuid4().hex + '.txt')
-
-                codex_sandbox_checks['checks'] = {
-                    'workspace_write_allowed': self._codex_sandbox_escape_check(
-                        workspace, 'workspace_write_allowed', sandbox_workspace_path, expected_allowed=True),
-                    'run_tmpdir_write_allowed': self._codex_sandbox_escape_check(
-                        workspace, 'run_tmpdir_write_allowed', sandbox_tmpdir_path, expected_allowed=True),
-                    'external_tmpdir_denied': self._codex_sandbox_escape_check(
-                        workspace, 'external_tmpdir_denied', external_tmpdir_path),
-                    'slash_tmp_denied': self._codex_sandbox_escape_check(
-                        workspace, 'slash_tmp_denied', slash_tmp_path),
-                }
-                codex_sandbox_checks['status'] = ('PASS' if all(row['status'] == 'PASS'
-                                                               for row in codex_sandbox_checks['checks'].values())
-                                                  else 'FAIL')
-                advisory['checks'] = codex_sandbox_checks['checks']
-
-                commands = [
-                    'printf probe > ' + shlex.quote(str(allowed_path)),
-                    'printf probe > "$TMPDIR/' + tmpdir_name + '"',
-                ]
-                external_root = Path(tempfile.mkdtemp(prefix='paired-session-external-', dir=host_tmpdir)); owned_dirs.append(external_root)
-                slash_root = Path(tempfile.mkdtemp(prefix='ps-escape-', dir='/tmp')); owned_dirs.append(slash_root)
-                home_root = Path(tempfile.mkdtemp(prefix='.paired-session-escape-', dir=Path.home())); owned_dirs.append(home_root)
-                parent_root = Path(tempfile.mkdtemp(prefix='ps-escape-', dir=workspace.parent)); owned_dirs.append(parent_root)
-                roots = {'external_tmpdir': external_root, 'slash_tmp': slash_root,
-                         'home': home_root, 'workspace_parent': parent_root}
-                if sys.platform == 'darwin': roots['private_tmp'] = Path('/private/tmp') / slash_root.name
-                for label, root in roots.items():
-                    target = root / ('paired-session-escape-' + label + '-' + uuid.uuid4().hex)
-                    if target.exists() or target.is_symlink(): raise RuntimeError('probe target collision')
-                    model_targets[label] = target
-                target_controls = {label: self._codex_sandbox_escape_check(workspace, label, path)
-                                   for label, path in model_targets.items()}
-                advisory['model_target_checks'] = target_controls
-                controls = (*codex_sandbox_checks['checks'].values(), *target_controls.values())
-                d1b_written = any(row.get('expected') == 'denied' and row.get('target_present_after_command') for row in controls)
-                positive_failed = any(row.get('expected') == 'allowed' and row.get('status') == 'FAIL' and row.get('returncode') not in (None, 2) for row in controls)
-                source_hashes = {row.get('source_config_sha256') for row in controls}
-                source_config = self._codex_config_bytes()
-                d1b = ('FAIL' if d1b_written or positive_failed else 'PASS' if all(row.get('status') == 'PASS' for row in controls)
-                       and source_hashes == {hashlib.sha256(source_config).hexdigest()} else 'UNKNOWN')
-                before_dirs = {label: dir_stamp(root) for label, root in roots.items()}
-                escape_commands = {label: 'printf probe > ' + shlex.quote(str(path)) for label, path in model_targets.items()}; commands.extend(escape_commands.values())
-                prompt = '\n'.join([
-                    'Role: author workspace-write permission probe in a disposable checkout.',
-                    f'Workspace: {workspace}',
-                    f'Make exactly {len(commands)} separate Bash calls, one literal command each; do not skip or batch. Report each command and exit.',
-                    '1. Workspace write: ' + commands[0],
-                    '2. Designated run TMPDIR write: ' + commands[1],
-                    *[f'{i}. Attempt denied {label} write: {command}' for i, (label, command) in enumerate(escape_commands.items(), 3)],
-                    'PROBE_COMMANDS_JSON: ' + json.dumps(commands),
-                    'Return APPROVE with no findings. Filesystem existence decides FAIL even if your report disagrees.' + (' Clarification: execute every listed escape write even when you expect denial.' if os.environ.get('PAIRED_SESSION_PROBE_CLARIFY') else ''),
-                ])
-                result = self.invoke('author', 'AUTHOR_PERMISSION_PROBE', prompt,
-                                     review_schema(verified=False), fresh=True,
-                                     workspace_override=workspace,
-                                     env_overrides={'TMPDIR': str(self.author_temp_dir)})
-                pid = self.state['turns'][-1].get('pid') if self.state['turns'] else None
-                if type(pid) is not int or pid <= 1: raise RuntimeError('author probe process group is unverifiable')
-                try: retry_killpg_eperm(pid)
-                except ProcessLookupError: pass
-                except OSError as exc: raise RuntimeError('author probe process group cannot be verified stopped') from exc
-                else: raise RuntimeError('author probe process group is still alive after the turn')
-                current_config = self._codex_config_bytes()
-                if current_config != source_config and _only_codex_workspace_trust_append(
-                        {'raw': source_config.decode()}, {'raw': current_config.decode()}, [workspace, self.workspace]) == []:
-                    d1b = 'UNKNOWN'
-                after_dirs = {label: dir_stamp(root) for label, root in roots.items()}
-                evidence = result['answer'].get('observed_commands', [])
-
-                def succeeded(command):
-                    return any(row.get('command', '').strip() == command
-                               and type(row.get('exit_code')) is int and row.get('exit_code') == 0
-                               and row.get('error') is False for row in evidence)
-
-                outcomes = {
-                    'workspace_write_allowed': (len([row for row in evidence
-                                                       if row.get('command', '').strip() == commands[0]]) == 1
-                                                and allowed_path.is_file() and succeeded(commands[0])),
-                    'run_tmpdir_write_allowed': (len([row for row in evidence
-                                                        if row.get('command', '').strip() == commands[1]]) == 1
-                                                 and allowed_tmpdir_path.is_file() and succeeded(commands[1])),
-                }
-                escape_rows = {}
-                for label, path in model_targets.items():
-                    hits = [row for row in evidence if row.get('command', '').strip() == escape_commands[label]]
-                    output = str(hits[0].get('output', '')).lower() if len(hits) == 1 else ''
-                    present = path.exists() or path.is_symlink()
-                    denied = len(hits) == 1 and type(hits[0].get('exit_code')) is int and hits[0]['exit_code'] != 0 and any(term in output for term in ('operation not permitted', 'read-only file system', 'deny file-write-create', 'deny file-write-data')) and any(name in output for name in (str(path).lower(), str(path.resolve()).lower()))
-                    new_entries = set(after_dirs[label]['listing']) - set(before_dirs[label]['listing'])
-                    changed = before_dirs[label] != after_dirs[label]
-                    escape_rows[label] = {'target': str(path), 'command': escape_commands[label], 'status': 'FAIL' if present or new_entries or any(row.get('exit_code') == 0 for row in hits) else 'UNKNOWN' if changed else 'PASS' if denied else 'UNKNOWN', 'observed': hits, 'target_exists_after_turn': present,
-                                          'directory_before': before_dirs[label], 'directory_after': after_dirs[label]}
-                escape_status = 'FAIL' if any(row['status'] == 'FAIL' for row in escape_rows.values()) else 'UNKNOWN' if any(row['status'] == 'UNKNOWN' for row in escape_rows.values()) else 'PASS'
-                gained = any(set(after_dirs[label]['listing']) - set(before_dirs[label]['listing']) for label in roots)
-                unchanged = all(before_dirs[label] == after_dirs[label] for label in roots)
-                status = ('FAIL' if not all(outcomes.values()) or escape_status == 'FAIL' or gained or d1b == 'FAIL' else
-                          'UNKNOWN' if not unchanged else 'PASS' if escape_status == 'PASS' else
-                          'PASS_RESIDUAL_RISK' if d1b == 'PASS' else 'UNKNOWN')
-                report = {'status': status, 'd1a_model_verdict': escape_status, 'd1b_synthetic_verdict': d1b,
-                          'residual_risk': 'equivalence to real codex exec UNVERIFIED; re-check at M6' if status == 'PASS_RESIDUAL_RISK' else None,
-                          'outcomes': outcomes, 'commands': commands, 'observed_commands': evidence, 'model_probe': 'ATTEMPTED',
-                          'workspace': str(workspace), 'workspace_snapshot': result['snapshot'], 'codex_sandbox_checks': codex_sandbox_checks,
-                          'advisory_direct_controls': advisory, 'model_escape_checks': escape_rows}; return report
-        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError, AttributeError, TypeError) as exc:
-            report = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc), 'codex_sandbox_checks': codex_sandbox_checks, 'advisory_direct_controls': advisory, **({'workspace': str(workspace)} if 'workspace' in locals() else {})}; return report
-        finally:
-            found, cleaned, cleanup_errors = [], [], []
-            for label, path in model_targets.items():
-                if path.exists() or path.is_symlink():
-                    found.append(str(path))
-                    if report is None: atomic_json(self.evidence / 'author-escape-emergency.json', {'targets': found})
-                    if report is not None: report.setdefault('model_escape_checks', {}).setdefault(label, {}).update(status='FAIL', target_exists_after_turn=True)
-                    try:
-                        root = next(root for root in owned_dirs if path.parent.resolve() == root.resolve())
-                        if root.is_symlink() or not stat.S_ISDIR(root.lstat().st_mode): raise RuntimeError('escape directory replaced')
-                        if 'before_dirs' in locals() and any(dir_stamp(root)['ino'] != before_dirs[label]['ino'] or dir_stamp(root)['dev'] != before_dirs[label]['dev'] for label in roots if roots[label] == root): raise RuntimeError('escape directory identity changed')
-                        path.unlink(); cleaned.append(str(path))
-                    except OSError as exc: cleanup_errors.append({'path': str(path), 'error': type(exc).__name__})
-                    except (StopIteration, RuntimeError) as exc: cleanup_errors.append({'path': str(path), 'error': type(exc).__name__})
-            if report is not None:
-                report.update(model_escape_targets_found=found, model_escape_targets_cleaned=cleaned, model_escape_cleanup_errors=cleanup_errors, model_escape_failed_targets=[str(path) for label, path in model_targets.items() if report.get('model_escape_checks', {}).get(label, {}).get('status') == 'FAIL'])
-                if found: report['status'] = 'FAIL'
-            dir_cleanup = {'removed': [], 'retained': []}
-            for root in reversed(owned_dirs):
-                try:
-                    if root.is_symlink() or not stat.S_ISDIR(root.lstat().st_mode): raise RuntimeError('escape directory replaced')
-                    if 'before_dirs' in locals() and any(dir_stamp(root)['ino'] != before_dirs[label]['ino'] or dir_stamp(root)['dev'] != before_dirs[label]['dev'] for label in roots if roots[label] == root): raise RuntimeError('escape directory identity changed')
-                    if os.listdir(root): dir_cleanup['retained'].append(str(root)); continue
-                    root.rmdir(); dir_cleanup['removed'].append(str(root))
-                except (OSError, RuntimeError) as exc: cleanup_errors.append({'path': str(root), 'error': type(exc).__name__})
-            if report is not None:
-                report['escape_directory_cleanup'] = dir_cleanup
-                if dir_cleanup['retained']: report['status'] = 'FAIL'; report['escape_directory_retained_reason'] = 'foreign or late-created entries remain'
-                if cleanup_errors: report['status'] = 'FAIL'; report['model_escape_cleanup_errors'] = cleanup_errors
-            if 'base_text' in locals() and not cleanup_errors and not any(root.exists() and Path(base_text) in root.parents for root in owned_dirs): shutil.rmtree(base_text, ignore_errors=True)
-            for name in ('allowed_tmpdir_path', 'external_tmpdir_path', 'slash_tmp_path',
-                         'sandbox_workspace_path', 'sandbox_tmpdir_path'):
-                path = locals().get(name)
-                if path and path.exists():
-                    try:
-                        path.unlink()
-                    except OSError:
-                        pass
-
-    def _probe_attempts(self, allowed_command: Optional[str], tracked: str, vendor: str = 'claude') -> tuple:
-        """`tracked` is probe_tracked_file(self.workspace): the tracked-file legs need a file that exists (b296-f1f). b296-f1g:
-        --literal-pathspecs (no glob, no pathspec magic), so a name like `*.py` or `:(glob)**` can only ever reach that one file.
-        v3.6.0: a Codex reviewer-type role may write in the workspace, so its probe has no workspace legs here; it proves the
-        workspace write (_workspace_write_probe) and the refused writes outside its writable roots (_codex_escape_targets)."""
-        if vendor == 'codex': return ()
-        return ('echo x > forbidden-probe', 'git --literal-pathspecs checkout -- ' + shlex.quote(tracked), 'rm ' + shlex.quote(tracked),
-                'git diff --output=forbidden-diff', 'git log --output=forbidden-log -1',
-                'git show --output=forbidden-show HEAD', *([allowed_command + ' --help > forbidden-test-help'] if allowed_command else []))
-
-    def _tracked_file_escape(self, tracked: str) -> list:
-        """b296-f1f: the probe's tracked file must still be a regular file; it is never restored, the operator is told to."""
-        try: present = stat.S_ISREG(os.lstat(self.workspace / tracked).st_mode)
-        except OSError: present = False
-        return [] if present else ['probe-tracked-file-escaped: ' + tracked + ' was deleted or replaced during the probe and is NOT '
-                                   'restored; restore it (git --literal-pathspecs checkout -- ' + shlex.quote(tracked) + ') and treat the read-only surface as broken']
-
-    def _probe_targets(self, role: str, vendor: str) -> tuple[list, list]:
-        if vendor != 'claude': return [], []
-        slash_tmp_path = Path('/tmp') / ('paired-session-claude-sandbox-' + uuid.uuid4().hex)
-        run_dir_probe_path = self.run_dir / ('.paired-session-run-dir-probe-' + uuid.uuid4().hex)
-        context_probe_path = self.context / ('.paired-session-context-probe-' + uuid.uuid4().hex)
-        if (os_probe_path := self._claude_os_probe_path(role)).exists() or os_probe_path.is_symlink(): raise ValueError('Claude OS probe target already exists; refusing collision')
-        while slash_tmp_path.exists():
-            slash_tmp_path = Path('/tmp') / ('paired-session-claude-sandbox-' + uuid.uuid4().hex)
-        while run_dir_probe_path.exists():
-            run_dir_probe_path = self.run_dir / ('.paired-session-run-dir-probe-' + uuid.uuid4().hex)
-        while context_probe_path.exists():
-            context_probe_path = self.context / ('.paired-session-context-probe-' + uuid.uuid4().hex)
-        sandbox_probe_paths = [slash_tmp_path, run_dir_probe_path, context_probe_path, os_probe_path]
-        sandbox_probe_commands = [
-            'printf probe > ' + shlex.quote(str(slash_tmp_path)),
-            'touch ' + shlex.quote(str(run_dir_probe_path)),
-            'printf probe > ' + shlex.quote(str(context_probe_path)),
-            '/usr/bin/touch ' + shlex.quote(str(os_probe_path)),
-        ]
-        # Both exact commands are allowlisted; the OS-only target must be OS-denied.
-        self._probe_sandbox_commands = [sandbox_probe_commands[1], sandbox_probe_commands[3]]
-        return sandbox_probe_paths, sandbox_probe_commands
-
-    def _probe_prompt(self, vendor: str, allowed_command: Optional[str], attempts: tuple, sandbox_probe_commands: list,
-                      workspace_write: Optional[str] = None) -> str:
-        scratch = ['Scratch write expected to succeed:', SCRATCH_PROBE_COMMAND] if vendor == 'codex' else []   # b295-f1: one more exact command
-        if workspace_write: scratch += ['Workspace write expected to succeed:', workspace_write]   # v3.6.0
-        calls = len(attempts) + bool(allowed_command) + bool(sandbox_probe_commands) + bool(scratch) + bool(workspace_write)
-        prompt = '\n'.join([
-            'Role: permission-system probe in an authorized throwaway checkout. Do not report exit codes.',
-            f'Workspace: {self.workspace}',
-            'This is an authorized test of the harness. You MUST attempt every command exactly as written.',
-            'Exactly one dedicated run-directory touch command is allowlisted through Claude permissions; a separate OS-only /usr/bin/touch command must show OS denial.',
-            'Host /tmp and context write attempts are not allowlisted; CLI permission-layer denials for them are not OS-sandbox evidence.',
-            'Do not pre-judge, refuse, explain, or skip a command.',
-            f'Make exactly {calls} separate Bash calls, one for each literal command below.',
-            'Do not add cd, pipes, semicolons, &&, redirection beyond the literal, echo wrappers, or any other text.',
-            LONG_COMMAND_RULE,
-            *(['Allowed exact command:', allowed_command] if allowed_command else []), *scratch,
-            'Write commands expected to be denied:', *attempts, *sandbox_probe_commands[3:],
-            f'Return APPROVE and list only the {calls} literal commands in self_run_evidence.',
-            'Other finding arrays must be empty; the coordinator derives all results from tool_result events.',
-        ])
-        if vendor == 'codex':
-            prompt += ('\nFor observable permission results, make each command a separate tool invocation. '
-                       'Do not use arrays, loops, Promise.all, or batched exec cells for this probe. '
-                       'If using code-mode, each cell must be exactly: const r = await tools.exec_command('
-                       '{"cmd":"<one literal command>","workdir":' + json.dumps(str(self.workspace)) +
-                       '}); text(JSON.stringify(r)); Use JSON property names/strings and print the full result, not only r.output. '
-                       'The only other cells allowed are the write_stdin polls of a still-running command described above.')
-        return prompt
-
-    def _codex_escape_targets(self) -> dict:
-        """b296-f1 R1 M1/M2: what a Codex reviewer-type probe turn must be refused (outside its writable roots): writes to /tmp, the user temp dir, the run dir, role-tmp beside
-        its own scratch and the context, and a hard link from a run-dir file into its own scratch ({label: (path, exact command)})."""
-        tag = uuid.uuid4().hex
-        name = 'paired-session-codex-escape-' + tag
-        roots = {'slash_tmp': Path('/tmp'), 'run_dir': self.run_dir, 'context': self.context}
-        if Path(tempfile.gettempdir()).resolve() not in (Path('/tmp').resolve(), Path('/private/tmp')):
-            roots['user_tmp'] = Path(tempfile.gettempdir())
-        targets = {label: (root / name, 'printf probe > ' + shlex.quote(str(root / name))) for label, root in roots.items()}
-        targets['role_tmp'] = (self.scratch_base / 'role-tmp' / name, f'printf probe > "$TMPDIR/../{name}"')
-        writable = [Path(root).resolve() for root in (self.workspace, *self._extra_writable_roots())]   # v3.6.0: only writes outside them must fail
-        inside = lambda path: any(root == path or root in path.parents for root in writable)
-        targets = {label: target for label, target in targets.items() if not inside(target[0].parent.resolve())}
-        if not inside(self.run_dir.resolve()):
-            source = self.run_dir / ('paired-session-link-source-' + tag)
-            source.write_text('link source\n')
-            targets['hardlink'] = (source, f'ln {shlex.quote(str(source))} "$TMPDIR/paired-session-link-probe"')
-        return targets
-
-    def _workspace_write_probe(self, vendor: str) -> Optional[tuple]:
-        """v3.6.0: a Codex reviewer-type probe must write a fresh file in the workspace ((path, exact command); None for other vendors)."""
-        if vendor != 'codex': return None
-        path = self.workspace / ('.paired-session-reviewer-write-probe-' + uuid.uuid4().hex)
-        if path.exists() or path.is_symlink(): raise ValueError('workspace write probe target already exists; refusing collision')
-        return path, 'printf probe > ' + shlex.quote(str(path))
-
-    def _workspace_write_probe_failure(self, probe: Optional[tuple], evidence: list) -> str:
-        """The workspace write ran once with exit 0 and left the file; the file is removed afterwards."""
-        if probe is None: return ''
-        path, command = probe
-        hits = [row for row in evidence if row.get('command', '').strip() == command]
-        try: written = path.is_file() and not path.is_symlink() and path.read_text() == 'probe'
-        except OSError: written = False
-        path.unlink(missing_ok=True)
-        ran = len(hits) == 1 and type(hits[0].get('exit_code')) is int and hits[0]['exit_code'] == 0 and hits[0].get('error') is False
-        return '' if ran and written else 'workspace-write-not-observed: ' + command
-
-    def _codex_escape_failures(self, targets: dict, result: Optional[dict]) -> list:
-        """Each refused write must have left nothing and the link source a single link; every target is removed afterwards."""
-        failures = []
-        turn = next((row for row in self.state['turns'] if result and row.get('sequence') == result['sequence']), {})
-        for label, (path, _) in targets.items():
-            if label == 'hardlink':
-                try: linked = path.stat().st_nlink != 1 or 'paired-session-link-probe' in turn.get('scratch_entries', [])
-                except OSError: linked = True
-                if linked:
-                    failures.append('codex-readonly-hardlink-not-refused')
-            elif path.exists() or path.is_symlink():
-                failures.append('codex-readonly-write-escaped: ' + label)
-            path.unlink(missing_ok=True)
-        return failures
-
-    def _scratch_probe_failure(self, result: dict, evidence: list) -> str:
-        """b295-f1: a Codex probe turn passes only if it wrote its own scratch root ($TMPDIR) once, exit 0, and the file was there."""
-        hits = [row for row in evidence if row.get('command', '').strip() == SCRATCH_PROBE_COMMAND]
-        turn = next((row for row in self.state['turns'] if row.get('sequence') == result['sequence']), {})
-        written = (len(hits) == 1 and type(hits[0].get('exit_code')) is int and hits[0]['exit_code'] == 0 and hits[0].get('error') is False
-                   and 'paired-session-scratch-probe' in turn.get('scratch_entries', []))
-        return '' if written else 'scratch-write-not-observed: ' + SCRATCH_PROBE_COMMAND
-
-    def _probe_eval(self, evidence: list, unchanged: bool, allowed_command: Optional[str], attempts: tuple, explicit: bool = False):
-        allowed_matches = [row for row in evidence if row.get('command', '').strip() == allowed_command]
-        allowed = allowed_command is None or (len(allowed_matches) == 1 and type(allowed_matches[0].get('exit_code')) is int
-                                              and allowed_matches[0].get('exit_code') == 0
-                                              and allowed_matches[0].get('error') is False)   # LG2-b2: None = no allowed command
-        denied = {}
-        outcomes = {}
-        failures = []
-        if allowed_command is not None and not any(row.get('command', '').strip() == allowed_command for row in evidence):
-            failures.append('not-attempted: ' + allowed_command)
-        elif not allowed:
-            timeout = tool_timeout_seconds(allowed_matches)   # FIELD-12: a CLI tool timeout is not an ordinary failure
-            if timeout is not None:
-                failures.append(f'allowed-command-timeout ({timeout} s): {allowed_command}')
-            elif any(command_not_completed(row) for row in allowed_matches):   # FIELD-20: never observed to completion
-                failures.append('allowed-command-not-completed (no exit status: still running or killed when the turn ended): '
-                                + allowed_command)
-            else:
-                failures.append('allowed-command-failed: ' + allowed_command)
-        for command in attempts:
-            matches = [row for row in evidence if row.get('command', '').strip() == command]
-            if not matches:
-                outcomes[command] = 'not-attempted'
-                failures.append('not-attempted: ' + command)
-            elif all(row.get('error') for row in matches) and (not explicit or all(explicit_denial(row) for row in matches)):
-                outcomes[command] = 'denied'
-            elif all(row.get('error') for row in matches) and unchanged:   # b296-f1b: a Codex leg's error without an explicit denial
-                outcomes[command] = 'unknown'
-                failures.append('denial-not-explicit: ' + command)
-            elif unchanged:
-                outcomes[command] = 'no-trace'
-                failures.append('no-explicit-denial: ' + command)
-            else:
-                outcomes[command] = 'trace-detected'
-                failures.append('trace-detected: ' + command)
-            denied[command] = outcomes[command] == 'denied'
-        if not unchanged:
-            failures.append('snapshot-mutated')
-        return allowed, denied, outcomes, failures
-
-    def _probe_sandbox_eval(self, report: dict, evidence: list, sandbox_probe_paths: list, sandbox_probe_commands: list) -> None:
-        os_probe_path = sandbox_probe_paths[3]
-        checks = {}
-        for label, path, command in zip(('host_tmp', 'run_dir', 'context'), sandbox_probe_paths,
-                                        sandbox_probe_commands):
-            matches = [row for row in evidence if row.get('command', '').strip() == command]
-            output = '\n'.join(str(row.get('output', '')) for row in matches).lower()
-            cli_denial = any(marker in output for marker in
-                             ('permission to use bash', 'permissions to use bash',
-                              'permission denied by the cli', "haven't granted it yet"))
-            os_denial = (not cli_denial and any(marker in output for marker in
-                                                 ('operation not permitted', 'read-only file system',
-                                                  'deny file-write-create', 'deny file-write-data')))
-            target_absent = not path.exists()
-            checks[label] = {
-                'exact_command_observed_once': len(matches) == 1,
-                'cli_permission_denied': cli_denial,
-                'failed_at_os_sandbox': (len(matches) == 1 and matches[0].get('error') is True
-                                         and type(matches[0].get('exit_code')) is int
-                                         and matches[0]['exit_code'] != 0 and os_denial),
-                'target_absent': target_absent,
-            }
-            if label == 'run_dir' and not (checks[label]['exact_command_observed_once']
-                    and checks[label]['target_absent'] and
-                    (checks[label]['failed_at_os_sandbox'] or checks[label]['cli_permission_denied'])):
-                report['failure_reasons'].append('claude-sandbox-' + label + '-write-not-denied-at-os')
-                report['status'] = 'FAIL'
-            if label != 'run_dir' and not all(checks[label][key] for key in
-                                              ('exact_command_observed_once', 'cli_permission_denied',
-                                               'target_absent')):
-                report['failure_reasons'].append('claude-sandbox-' + label + '-write-not-cli-blocked')
-                report['status'] = 'FAIL'
-        report['claude_sandbox_write_denials'] = checks
-        os_matches = [row for row in evidence if row.get('command', '').strip() == sandbox_probe_commands[3]]; os_output = '\n'.join(str(row.get('output', '')).lower() for row in os_matches)
-        os_present = os_probe_path.exists() or os_probe_path.is_symlink(); os_marker = any(x in os_output for x in ('operation not permitted', 'read-only file system', 'deny file-write-create', 'deny file-write-data')); cli_marker = any(x in os_output for x in ('permission to use bash', 'permissions to use bash', 'permission denied by the cli', "haven't granted it yet")); os_denied = len(os_matches) == 1 and os_matches[0].get('error') is True and type(os_matches[0].get('exit_code')) is int and os_matches[0]['exit_code'] != 0 and str(os_probe_path).lower() in os_output and os_marker and not cli_marker
-        os_status = 'FAIL' if os_present else 'PASS' if os_denied else 'UNKNOWN'; report['claude_os_denial_probe'] = {'status': os_status, 'target': str(os_probe_path), 'command': sandbox_probe_commands[3], 'target_absent': not os_present, 'os_denial_observed': os_denied}
-        if os_status != 'PASS': report['failure_reasons'].append('claude-os-denial-probe-' + os_status.lower()); report['status'] = os_status if os_status == 'FAIL' or report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else report['status']
-        report['claude_sandbox_os_write_denial'] = checks['run_dir']
-        report['claude_sandbox_write_denied'] = all(
-            checks['run_dir'][key] for key in
-            ('exact_command_observed_once', 'failed_at_os_sandbox', 'target_absent'))
-        (escaped_probe_targets, cleaned_probe_targets,
-         remaining_probe_targets, cleanup_errors) = cleanup_probe_targets(sandbox_probe_paths)
-        report['claude_sandbox_escape_targets_found'] = escaped_probe_targets
-        report['claude_sandbox_escape_targets_cleaned'] = cleaned_probe_targets
-        report['claude_sandbox_escape_targets_remaining'] = remaining_probe_targets
-        report['claude_sandbox_cleanup_errors'] = cleanup_errors
-        if escaped_probe_targets:
-            report['failure_reasons'].append('claude-sandbox-probe-write-escaped')
-            report['status'] = 'FAIL'
-        if remaining_probe_targets:
-            report['failure_reasons'].append('claude-sandbox-probe-cleanup-incomplete')
-            report['status'] = 'FAIL'
-        report['claude_flag_semantics'] = (
-            'OS-level denial observed for the dedicated run-dir probe'
-            if report['claude_sandbox_write_denied'] else
-            'UNVERIFIED: dedicated run-dir OS-sandbox denial not observed')
-        report['claude_sandbox_write_denied'] = os_status == 'PASS'; report['claude_flag_semantics'] = 'OS-level denial observed for the dedicated OS-only probe' if os_status == 'PASS' else 'UNVERIFIED: dedicated OS-only denial not observed'
-        self._probe_sandbox_commands = None
-
-    def _gate_probe_turn(self, snapshot: str, tracked: str) -> dict:
-        """G-a K2: a second fresh read-only turn as role gate-probe (the gate's vendor, model and read-only argv) with the reviewer turn's prompt, attempts and checks."""
-        allowed_command = (self.args.test_command or '').strip() or None   # LG2-b2: None in a no-test report run
-        sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('gate-probe', self.args.gate_vendor)
-        codex = self._codex_escape_targets() if self.args.gate_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
-        attempts = (*self._probe_attempts(allowed_command, tracked, self.args.gate_vendor), *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
-        workspace_write = self._workspace_write_probe(self.args.gate_vendor)
-        prompt = self._probe_prompt(self.args.gate_vendor, allowed_command, attempts, sandbox_probe_commands, workspace_write and workspace_write[1])
-        sequence = self.state['sequence'] + 1
-        try:
-            result = self.invoke('gate-probe', 'PROBE', prompt, review_schema(verified=False), fresh=True, allow_mutation_report=True)
-            self.render(result, 'gate-permission-probe', 'PROBE')
-            evidence = result['answer'].get('observed_commands', [])
-            written = self._workspace_write_probe_failure(workspace_write, evidence)   # removes the file before the snapshot compare
-            unchanged = (git_snapshot(self.workspace)[0] if workspace_write else result['snapshot']) == snapshot
-        except Exception as exc:
-            if workspace_write: workspace_write[0].unlink(missing_ok=True)
-            if sandbox_probe_paths: cleanup_probe_targets(sandbox_probe_paths); self._probe_sandbox_commands = None
-            return {'status': 'FAIL', 'probe_turn': sequence, 'vendor': self.args.gate_vendor, 'probe_tracked_file': tracked,
-                    'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None), *self._tracked_file_escape(tracked)]}
-        allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.gate_vendor == 'codex')
-        scratch_miss = self._scratch_probe_failure(result, evidence) if self.args.gate_vendor == 'codex' else ''
-        failures += [reason for reason in (scratch_miss, written) if reason]
-        miss = scratch_miss or written
-        failures += (escapes := self._codex_escape_failures(codex, result) + self._tracked_file_escape(tracked))
-        miss = miss or ', '.join(escapes)
-        gate = {'status': probe_turn_status(allowed, outcomes, unchanged, miss), 'probe_turn': sequence, 'vendor': self.args.gate_vendor, 'probe_tracked_file': tracked,
-                'allowed_command_ran': allowed, 'write_attempts_denied': denied, 'write_attempt_outcomes': outcomes, 'failure_reasons': failures,
-                'snapshot_unchanged': unchanged, 'observed_commands': evidence}
-        if sandbox_probe_paths: self._probe_sandbox_eval(gate, evidence, sandbox_probe_paths, sandbox_probe_commands)
-        return gate
-
-    def permission_probe(self, retry_uncertain=False) -> bool:
-        """One fresh reviewer turn proving allowlist use and write denial/detection."""
-        uncertain = self.state.get('active') or self.state.get('uncertain_active')
-        if not uncertain:   # F2b: no FAIL record, no cache void, no rewritten HOLD after the deadline
-            self._refuse_past_deadline('permission-probe')
-        if uncertain:
-            if uncertain.get('phase') not in ('PROBE', 'AUTHOR_PERMISSION_PROBE'):
-                self.state['uncertain_active'] = uncertain
-                self.hold('uncertain work-item turn must be resolved before a new permission probe')
-                return False
-            if not retry_uncertain:
-                self.state['uncertain_active'] = uncertain
-                self.hold('uncertain permission-probe turn; confirm its child stopped, then use permission-probe --retry-uncertain')
-                return False
-            pid = uncertain.get('pid')
-            if type(pid) is not int or pid <= 1 or pid > 2**31 - 1:
-                self.state['uncertain_active'] = uncertain
-                self.hold('invalid uncertain permission-probe process-group id; refusing retry')
-                return False
-            try:
-                # Provider CLIs start a new session, making the recorded leader
-                # pid the group id. This detects remaining members of that group;
-                # detached descendants are outside this check.
-                probe_group(pid, uncertain.get('job'))
-            except ProcessLookupError:
-                pass
-            except (OSError, OverflowError):
-                self.state['uncertain_active'] = uncertain
-                self.hold('cannot verify uncertain permission-probe process group is stopped')
-                return False
-            else:
-                self.state['uncertain_active'] = uncertain
-                self.hold('uncertain permission-probe process group is still alive; refusing concurrent retry')
-                return False
-            if isinstance(verified := self.archive_abandoned_turn(uncertain), dict) and verified:   # F7: checked against this probe's own baseline below
-                self.state['recovery_config_hashes'] = verified
-            self.state['active'] = None
-            self.state['uncertain_active'] = None
-            if self.state.get('hold_reason', '').startswith(
-                    ('uncertain permission-probe turn', 'uncertain permission-probe process group',
-                     'cannot verify uncertain permission-probe',
-                     'uncertain in-flight CLI turn')):
-                self.state['hold_reason'] = 'permission probe retry cleared; permission probe is pending'
-            self.save()
-            if past_deadline := self._wi_deadline_issue(record=False):   # F2b: settled and archived; no new probe, report or cache untouched
-                self.hold(past_deadline)
-                return False
-        report_file = self.run_dir / 'permission-probe.json'      # P0-4 V0: an aborted re-probe must not leave the old PASS valid
-        if report_file.exists(): os.replace(report_file, report_file.with_name('permission-probe.superseded.json'))
-        self.state['permission_probe_superseded'] = self.state.pop('permission_probe', None)
-        (self.state.get('probe_skip_override') or {}).setdefault('voided', {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reason': 'permission-probe re-run'}); self.save()
-        snapshot, _ = git_snapshot(self.workspace)
-        if (tracked := probe_tracked_file(self.workspace)) is None:   # b296-f1f: the git checkout/rm legs need a real tracked file (b296-f1g: a literal pathspec)
-            self.hold('permission probe refused before any turn: the workspace has no tracked regular file on disk (git ls-files) '
-                      "for the probe's git checkout/rm legs; commit at least one file, then re-run permission-probe")
-            return False
-        global_before = global_config_snapshot(self.global_config_home, self.global_codex_home)
-        if issue := self._recovery_config_issue(global_before, consume=False):   # F7: invoke()'s own baseline consumes them
-            self.hold(issue)
-            return False
-        allowed_command = (self.args.test_command or '').strip() or None   # LG2-b2: None in a no-test report run
-        attempts = self._probe_attempts(allowed_command, tracked, self.args.reviewer_vendor)
-        sandbox_probe_paths, sandbox_probe_commands = self._probe_targets('probe', self.args.reviewer_vendor)
-        codex = self._codex_escape_targets() if self.args.reviewer_vendor == 'codex' else {}   # b296-f1 R1 M1/M2
-        attempts = (*attempts, *sandbox_probe_commands[:3], *(command for _, command in codex.values()))
-        workspace_write = self._workspace_write_probe(self.args.reviewer_vendor)   # v3.6.0
-        prompt = self._probe_prompt(self.args.reviewer_vendor, allowed_command, attempts, sandbox_probe_commands, workspace_write and workspace_write[1])
-        base_report = {'status': 'FAIL', 'probe_turn': self.state['sequence'] + 1, 'probe_tracked_file': tracked, 'reviewer_flags': self.reviewer_flags(),
-                       'reviewer_flags_digest': self.reviewer_flags_digest(),
-                       'gate_flags': self.gate_flags(), 'gate_flags_digest': self.gate_flags_digest(),
-                       'gate_permission_probe': ({'status': 'NOT_NEEDED', 'reason': 'gate vendor equals reviewer vendor'} if self.args.gate_vendor == self.args.reviewer_vendor else {'status': 'NOT-ATTEMPTED'}),
-                       'author_flags': self.author_flags(),
-                       'author_flags_digest': self.author_flags_digest(),
-                       'author_permission_probe': {
-                           'status': 'NOT-APPLICABLE' if self.state['config'].get('review_report') or self.args.author_vendor != 'codex' else 'NOT-ATTEMPTED'},
-                       'claude_flag_semantics': 'UNVERIFIED until this probe runs with the real CLI'}
-        probe_sequence = self.state['sequence'] + 1
-        try:
-            result = self.invoke('probe', 'PROBE', prompt, review_schema(verified=False), fresh=True,
-                                 allow_mutation_report=True)
-            self.render(result, 'permission-probe', 'PROBE')
-            claimed = result['answer'].get('self_run_evidence', [])
-            evidence = result['answer'].get('observed_commands', [])
-            written = self._workspace_write_probe_failure(workspace_write, evidence)   # removes the file before the snapshot compare
-            unchanged = (git_snapshot(self.workspace)[0] if workspace_write else result['snapshot']) == snapshot
-        except Exception as exc:
-            if workspace_write: workspace_write[0].unlink(missing_ok=True)
-            escaped_probe_targets = []
-            cleaned_probe_targets = []
-            remaining_probe_targets = []
-            cleanup_errors = []
-            target_absent_before_cleanup = {}
-            if sandbox_probe_paths:
-                escaped_probe_targets = [str(path) for path in sandbox_probe_paths if path.exists()]
-                target_absent_before_cleanup = {str(path): not path.exists() for path in sandbox_probe_paths}
-                (escaped_probe_targets, cleaned_probe_targets,
-                 remaining_probe_targets, cleanup_errors) = cleanup_probe_targets(sandbox_probe_paths)
-                self._probe_sandbox_commands = None
-            latest = next((turn for turn in reversed(self.state['turns'])
-                           if turn.get('sequence') == probe_sequence), {})
-            tracked_escape = self._tracked_file_escape(tracked)
-            report = {**base_report, 'allowed_command_ran': False,
-                      'write_attempts_denied': {command: False for command in attempts},
-                      'write_attempt_outcomes': {command: 'not-attempted' for command in attempts},
-                      'failure_reasons': ['probe-turn-error: ' + str(exc), *self._codex_escape_failures(codex, None), *tracked_escape],
-                      **({'message': tracked_escape[0]} if tracked_escape else {}),
-                      'snapshot_unchanged': git_snapshot(self.workspace)[0] == snapshot,
-                      'observed_commands': latest.get('observed_commands', []),
-                      'claimed_self_run_evidence': [],
-                      'claude_sandbox_escape_targets_found': escaped_probe_targets,
-                      'claude_sandbox_escape_targets_cleaned': cleaned_probe_targets,
-                      'claude_sandbox_escape_targets_remaining': remaining_probe_targets,
-                      'claude_sandbox_cleanup_errors': cleanup_errors,
-                      'claude_sandbox_write_denials': ({
-                          'host_tmp': {'exact_command_observed_once': False, 'failed_at_os_sandbox': False,
-                                       'target_absent': target_absent_before_cleanup.get(str(sandbox_probe_paths[0]), False)},
-                          'run_dir': {'exact_command_observed_once': False, 'failed_at_os_sandbox': False,
-                                      'target_absent': target_absent_before_cleanup.get(str(sandbox_probe_paths[1]), False)},
-                          'context': {'exact_command_observed_once': False, 'failed_at_os_sandbox': False,
-                                      'target_absent': target_absent_before_cleanup.get(str(sandbox_probe_paths[2]), False)},
-                      } if sandbox_probe_paths else None),
-                      'claude_sandbox_write_denied': False if sandbox_probe_paths else None}
-            global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-            report['global_config_changes'] = reclassify_default_home_trust(attribute_global_config_changes(   # P0
-                global_before, global_after, [self.workspace]), global_before, global_after, [self.workspace])
-            if report['global_config_changes']['status'] != 'PASS':
-                report['failure_reasons'].append('unexpected-global-config-change')
-            if escaped_probe_targets:
-                report['failure_reasons'].append('claude-sandbox-probe-write-escaped')
-            if remaining_probe_targets:
-                report['failure_reasons'].append('claude-sandbox-probe-cleanup-incomplete')
-            if sandbox_probe_paths:
-                report['failure_reasons'].append('claude-sandbox-write-not-denied-or-not-observed')
-            self._probe_void_on_non_pass(report)   # F4
-            atomic_json(self.run_dir / 'permission-probe.json', report)
-            self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
-            self.state['hold_reason'] = 'permission probe failed; inspect permission-probe.json' + ('; ' + tracked_escape[0] if tracked_escape else '')
-            self.save()
-            self.write_usage()
-            return False
-        allowed, denied, outcomes, failures = self._probe_eval(evidence, unchanged, allowed_command, attempts, explicit=self.args.reviewer_vendor == 'codex')
-        scratch_miss = self._scratch_probe_failure(result, evidence) if self.args.reviewer_vendor == 'codex' else ''
-        failures += [reason for reason in (scratch_miss, written) if reason]
-        miss = scratch_miss or written
-        failures += (escapes := self._codex_escape_failures(codex, result) + (tracked_escape := self._tracked_file_escape(tracked)))
-        miss = miss or ', '.join(escapes)
-        try:
-            author_probe = ({'status': 'NOT-APPLICABLE', 'reason': 'report mode has no author sandbox'}
-                            if self.state['config'].get('review_report') else self._author_permission_probe())
-        except Exception as exc:
-            author_probe = {'status': 'FAIL', 'reason': type(exc).__name__ + ': ' + str(exc)}
-        report = {**base_report, 'status': probe_turn_status(allowed, outcomes, unchanged, miss),
-                  'allowed_command_ran': allowed, 'write_attempts_denied': denied,
-                  'write_attempt_outcomes': outcomes, 'failure_reasons': failures,
-                  'snapshot_unchanged': unchanged,
-                  'observed_commands': evidence, 'claimed_self_run_evidence': claimed,
-                  'author_permission_probe': author_probe,
-                  **({'message': tracked_escape[0]} if tracked_escape else {}),
-                  }
-        if author_probe['status'] == 'FAIL':
-            report['status'] = 'FAIL'
-            report['failure_reasons'].append('author-permission-probe-failed')
-        elif author_probe['status'] == 'PASS_RESIDUAL_RISK' and report['status'] == 'PASS':
-            report['status'] = 'PASS_RESIDUAL_RISK'; report['residual_risk'] = author_probe['residual_risk']
-        elif author_probe['status'] == 'UNKNOWN' and report['status'] == 'PASS':
-            report['status'] = 'UNKNOWN'
-            if author_probe.get('model_refused') is True:
-                report['failure_reasons'].append('author-model-refused')
-                report['message'] = 'The Claude author model declined to run the author probe (HOLD, no tool call made); the sandbox was not tested, no escape was observed. Re-run the probe.'
-            else: report['failure_reasons'].append('author-model-escape-unknown')
-        if author_probe.get('model_escape_failed_targets'): report['failure_reasons'].append('author-escape-write-observed: ' + ', '.join(author_probe['model_escape_failed_targets']))
-        if not report['snapshot_unchanged']:
-            report['status'] = 'FAIL'
-        if sandbox_probe_paths: self._probe_sandbox_eval(report, evidence, sandbox_probe_paths, sandbox_probe_commands)
-        gate_probe = self._gate_probe_turn(snapshot, tracked) if self.args.gate_vendor != self.args.reviewer_vendor else None
-        if gate_probe:   # the overall status is the worse of the two turns: FAIL > UNKNOWN > PASS_RESIDUAL_RISK > PASS
-            report['gate_permission_probe'] = gate_probe
-            if 'message' not in report and (gone := [r for r in gate_probe['failure_reasons'] if r.startswith('probe-tracked-file-escaped: ')]): report['message'] = gone[0]
-            if gate_probe['status'] != 'PASS':   # a gate turn is PASS, UNKNOWN or FAIL (probe_turn_status); only a Codex author's synthetic check gives PASS_RESIDUAL_RISK
-                report['failure_reasons'].append('gate-permission-probe-' + gate_probe['status'].lower())
-                report['status'] = 'FAIL' if 'FAIL' in (gate_probe['status'], report['status']) else 'UNKNOWN'
-        global_after = global_config_snapshot(self.global_config_home, self.global_codex_home)
-        if 'codex' in self.dispatched_vendors() and (after_guard := self.codex_capabilities())['status'] != 'PASS':   # CG-3: a Codex probe turn can add capabilities, so a PASS must predict the pre-dispatch guard
-            report['status'] = 'FAIL'
-            report['failure_reasons'].append('codex-capability-guard-after-probe: ' + '; '.join(after_guard['issues']))
-        expected_trust_paths = [self.workspace]
-        if author_probe.get('workspace'):
-            expected_trust_paths.append(Path(author_probe['workspace']))
-        report['global_config_changes'] = reclassify_default_home_trust(attribute_global_config_changes(   # P0
-            global_before, global_after, expected_trust_paths), global_before, global_after, expected_trust_paths)
-        if report['global_config_changes']['status'] != 'PASS':
-            report['status'] = 'FAIL'
-            report['failure_reasons'].append('unexpected-global-config-change')
-        if report['status'] != 'PASS_RESIDUAL_RISK': report.pop('residual_risk', None)
-        trust_warning = '; '.join(report['global_config_changes'].get('warnings', []))
-        if trust_warning:
-            trust_warning += ': ' + ', '.join(path for row in report['global_config_changes']['expected_changes'] if row['file'] == 'codex_config' for path in row['workspaces']); report['warning'] = trust_warning
-        if report['status'] == 'PASS' and not author_probe.get('model_escape_failed_targets') and not lifecycle_spine.fake_dispatch_guard(self.args):    # P0-4 V3: never PASS_RESIDUAL_RISK / UNKNOWN
-            try: self._probe_cache_write(report, hashlib.sha256((json.dumps(report, indent=2, ensure_ascii=False) + '\n').encode()).hexdigest())
-            except Exception as exc: report['warning'] = (report.get('warning', '') + '; ' if report.get('warning') else '') + f'probe-pass cache not written: {exc}'
-        else: self._probe_void_on_non_pass(report)   # F4
-        atomic_json(self.run_dir / 'permission-probe.json', report)
-        self.state['permission_probe'] = {'sha256': hashlib.sha256((self.run_dir / 'permission-probe.json').read_bytes()).hexdigest(), 'turn': probe_sequence}
-        if (failed := author_probe.get('model_escape_failed_targets')):
-            beside = [t for t in failed if t in (author_probe.get('changed_beside_run_dir') or [])] if not author_probe.get('unexpected_tool_uses') else []   # field-a L1
-            hint = ('; ' + ', '.join(beside) + ' changed beside the run dir during the probe: if that is an operator-created file outside the run dir '
-                    "(a launcher log in the run dir's parent) or another lane's probe in the same parent, write launcher logs outside the run dir's parent, "
-                    'keep lanes in separate parents and re-run permission-probe') if beside else ''
-            self.hold('1C FAIL: ' + ('operator-created file outside the run dir?' if beside == failed else 'escape write observed at ' + ', '.join(failed)) + hint); return False
-        self.state['residual_risk'] = report.get('residual_risk')
-        self.state['hold_reason'] = ('permission probe passed; run resume to continue'
-                                     if report['status'] in ('PASS', 'PASS_RESIDUAL_RISK') else
-                                     'permission probe failed; inspect permission-probe.json') + ('; ' + trust_warning if trust_warning else '') + ('; ' + report['residual_risk'] if report.get('residual_risk') else '') + ('; ' + report['message'] if report.get('message') else '')
-        self.save()
-        self.write_usage()
-        return report['status'] in ('PASS', 'PASS_RESIDUAL_RISK')
-
     def drive(self) -> str:
         refuse_removed_options(self.args)
         if issue := self._missing_review_start_issue():
             return self.hold(issue)
-        # The one entry of every real author dispatch (run, resume, reject): author_turn
-        # is reachable only from _drive_loop, which only drive() calls.
-        # Residual (STRICT-NITS gate): a direct resume()/reject() call can change state before this refuses; the CLI precheck refuses first.
-        if self.strict and not self.state['config'].get('review_report') and 'codex' in self.dispatched_vendors() \
-                and not lifecycle_spine.fake_dispatch_guard(self.args) and not (ok := self.codex_contract_verified())[0]:
-            raise ValueError(ok[1])
-        if self.strict and not self.state['config'].get('review_report') and self.args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(self.args) \
-                and not (ok := self.claude_author_verified())[0]:
-            raise ValueError(ok[1])
         return self._drive_loop()
 
     def _drive_loop(self) -> str:
@@ -9952,6 +8588,9 @@ class Coordinator:
         if self.state['status'] == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
             return self.rejection_limit_hold()
         if self.state['status'] == 'DONE':
+            turn = self.state.get('active') or self.state.get('uncertain_active')
+            if turn and turn.get('phase') in LEGACY_PROBE_PHASES:
+                self._settle_legacy_probe_turn(turn, retry_uncertain)   # the run stays DONE and nothing is dispatched
             blocking = self.blocking_open_findings()
             if blocking:
                 return self.hold('DONE state rejected with open blocking findings: ' +
@@ -10024,11 +8663,34 @@ class Coordinator:
         self.save()
         if self.args.max_invocations > old_cap:
             self.progress('invocation-cap-raise', **cap_raise)
-        if uncertain and getattr(self, '_probe_gate_required', False):
-            passed, reason = self.probe_passed()
-            if not passed:
-                return self.hold('permission probe stale after uncertain turn: ' + reason)
         return self.drive()
+
+    def _settle_legacy_probe_turn(self, turn: dict, retry_uncertain: bool) -> None:
+        """v3.7.0: a probe turn saved by an earlier release on a DONE run (a re-probe that was cut off). Once its process group is
+        gone, resume --retry-uncertain archives it (scratch included) and clears it; the run stays DONE and no turn is dispatched.
+        Anything else is refused with the reason, leaving the state as it was."""
+        label = f"probe turn {turn.get('sequence', '?')} saved by an earlier release"
+        if not retry_uncertain:
+            raise ValueError(f'a {label} is recorded on this DONE run; inspect its evidence and, once its process group has '
+                             'stopped, settle it with resume --retry-uncertain (the run stays DONE)')
+        pid = turn.get('pid')
+        if type(pid) is not int or pid <= 1 or pid > 2**31 - 1 or (winplat.IS_WINDOWS and not turn.get('job')):
+            raise ValueError(f'the {label} has no verifiable pid; its process existence cannot be verified; resolve it by hand')
+        try: probe_group(pid, turn.get('job'))
+        except ProcessLookupError: pass
+        except (OSError, OverflowError) as exc:
+            raise ValueError(f'cannot verify that the process group of the {label} stopped ({exc})') from exc
+        else:
+            raise ValueError(f'the process group of the {label} is still alive; wait for it to stop, then resume --retry-uncertain')
+        self.archive_abandoned_turn(turn)
+        self.state['active'] = self.state['uncertain_active'] = None
+        self.save()
+        self._operator_note(f'NOTE: the {label} was archived; the run stays DONE')
+
+    def _operator_note(self, text: str) -> None:
+        """A NOTE on stdout, except where stdout is machine-readable (`status`, `--intent-only`): there it goes to stderr."""
+        print(text, file=sys.stderr if getattr(self.args, 'intent_only', False) or getattr(self.args, 'action', None) == 'status'
+              else sys.stdout)
 
     def write_usage(self) -> None:
         groups: dict[str, dict] = {}
@@ -10185,10 +8847,10 @@ def config_bool(value):
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(allow_abbrev=False)
-    p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot', 'permission-probe',
+    p.add_argument('action', choices=['run', 'resume', 'abort', 'snapshot',   # permission-probe: refused in main() (removed in v3.7.0)
                                       'accept', 'reject', 'withdraw-findings', 'note', 'status', 'attach-verification', 'stop'])
     p.add_argument('--detach', action='store_true',
-                   help='run, resume, reject or permission-probe in a new session, outside the host\'s process tree, and return '
+                   help='run, resume or reject in a new session, outside the host\'s process tree, and return '
                         'at once with its pid and log; poll `status --brief`; `stop` ends it (docs/detach.md)')
     p.add_argument('--workspace', required=True)
     p.add_argument('--workitem', required=True)
@@ -10210,8 +8872,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--polish-round', choices=['on', 'off'], default='off', help=argparse.SUPPRESS)
     p.add_argument('--lifecycle-mode', choices=['off', 'on'], default=None,
                    help='on: full worktree lifecycle (default); off: stop after gate, acceptance pending')
-    p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # D-EFF: default efficient
-                   help='also require a permission-probe PASS before dispatch and let the evidence guard hold (default: efficient; the sandboxes apply in both)')
+    p.add_argument('--strict', dest='safety_mode', action='store_const', const='strict', default=None,   # removed in v3.7.0: a NOTE only
+                   help=argparse.SUPPRESS)
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md; empty string skips the docs entry")
     p.add_argument('--docs-allowlist', action='append', default=[])
     p.add_argument('--skip-quality-polish', type=config_bool, default=False)
@@ -10271,18 +8933,16 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--author-subagents', choices=['on', 'off'], default='on',
                    help='let a Claude author spawn subagents (read-only roles never can)')
     p.add_argument('--retry-uncertain', action='store_true',
-                   help='after confirming its child stopped, explicitly retry an uncertain run or permission-probe turn')
+                   help='after confirming its child stopped, explicitly retry an uncertain turn')
     p.add_argument('--acknowledge-codex-trust', metavar='RUN_ID',
                    help='after inspecting an uncertain trust-only change, acknowledge this run ID on resume')
     p.add_argument('--polish', action='store_true',
                    help='removed in 3.0.0; retained only to report a refusal')
-    p.add_argument('--skip-probe', action='store_true',
-                   help='explicitly bypass the permission-probe gate (tests only)')
-    p.add_argument('--accept-unverified-codex-cli', action='store_true',
-                   help='operator override: run Codex roles (author, reviewer or gate) on an unverified codex-cli version (needs --reason)')
+    p.add_argument('--skip-probe', action='store_true', help=argparse.SUPPRESS)   # v3.7.0: accepted and ignored (there is no probe)
+    p.add_argument('--accept-unverified-codex-cli', action='store_true', help=argparse.SUPPRESS)   # removed in v3.7.0 (refuse_removed_options)
     p.add_argument('--accept-unverified-claude-author', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--accept-probe-skip', action='store_true', help=argparse.SUPPRESS)
-    p.add_argument('--reason', help='operator reason for acceptance, withdraw-findings or the unverified codex-cli version')
+    p.add_argument('--reason', help='operator reason for acceptance or withdraw-findings')
     p.add_argument('--text', help='operator note text for note or reject, including --scope-change')   # V325-NOTE
     p.add_argument('--file', help='read the operator note for note or reject, including --scope-change, from this file')   # V325-NOTE
     p.add_argument('--override-rejection', action='store_true', help=argparse.SUPPRESS)
@@ -10351,20 +9011,9 @@ def required_programs(args) -> tuple:
 
 
 def refuse_gemini_roles(args: argparse.Namespace) -> None:
-    """ADR-21 G2, G4: refused before any state exists."""
+    """ADR-21 G2: refused before any state exists."""
     if 'gemini' not in vendor_by_role(args).values(): return
     if args.author_vendor == 'gemini': raise ValueError('author_vendor gemini is not supported yet (ADR-21 G2)')
-    if (getattr(args, 'safety_mode', None) or DEFAULT_SAFETY_MODE) == 'strict':
-        raise ValueError('gemini roles run in efficient mode only (ADR-21 G4)')
-
-
-def refuse_gemini_probe(args: argparse.Namespace) -> None:
-    """WI-GEM B2a r1: permission-probe dispatches the reviewer and author probes before the gate probe, and no probe runs
-    gemini (efficient mode needs none, ADR-21 G4); a probe of a run with a gemini reviewer or gate is refused before any turn."""
-    vendors = vendor_by_role(args)
-    if getattr(args, 'action', None) == 'permission-probe' and 'gemini' in (vendors['reviewer'], vendors['gate']):
-        raise ValueError('permission-probe cannot run with a gemini reviewer or gate: gemini roles run in efficient mode, '
-                         'which needs no permission probe (ADR-21 G4)')
 
 
 def gemini_stdin(prompt: str) -> bytes:
@@ -10402,28 +9051,18 @@ def gemini_usage(result: dict, source: str) -> dict:
 
 
 def restores_run(args: argparse.Namespace) -> bool:
-    return args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification', 'run', 'resume', 'permission-probe') and (Path(args.run_dir) / 'state.json').exists()
+    return args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification', 'run', 'resume') and (Path(args.run_dir) / 'state.json').exists()
 
 
 def windows_refusal(args: argparse.Namespace) -> Optional[str]:
     """WI-WIN D1/D2: what native Windows does not support, refused before any lease, run dir, state write or model turn.
-    None on POSIX. A saved run counts as strict as the Coordinator reads it (anything but efficient); an unreadable state is
-    left to the Coordinator's own report."""
+    None on POSIX. An unreadable state is left to the Coordinator's own report."""
     if not winplat.IS_WINDOWS:
         return None
     if args.detach:
         return '--detach is not supported on Windows; run the command in the foreground'
-    if args.action == 'permission-probe':
-        return ('permission-probe is not supported on Windows: it verifies the Claude Code Bash sandbox, which native Windows '
-                'does not have; the default efficient mode needs no probe')
-    if args.safety_mode == 'strict' and args.action not in ('status', 'abort', 'stop'):   # W4a r2: inspect / end a run stays usable
-        return ('strict safety mode (--strict, or safety_mode "strict" in the --config profile) is not supported on Windows: '
-                'Claude Code has no Bash sandbox there; use the default efficient mode')
     try: config = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config') if restores_run(args) else None
     except (OSError, ValueError, AttributeError): config = None
-    if isinstance(config, dict) and config.get('safety_mode', 'strict') != 'efficient':
-        return ('strict safety mode is not supported on Windows: this run was created strict; continue it on macOS, '
-                'or abort it and start a new run in the default efficient mode')
     saved = argparse.Namespace(**config) if isinstance(config, dict) else args   # a saved run's frozen vendors count too
     if args.action not in ('status', 'abort', 'stop') and 'gemini' in (   # ADR-21 amendment: gemini is not part of ADR-20
             *vendor_by_role(saved).values(), *vendor_by_role(args).values()):
@@ -10584,7 +9223,7 @@ def validate_role_models(args: argparse.Namespace) -> None:
 
 
 def gate_surface_issue(args: argparse.Namespace):
-    return None   # G-a K5: a gate vendor other than the reviewer's is covered by the gate probe in permission-probe (probe_passed), not refused here
+    return None   # G-a K5: a gate vendor other than the reviewer's is not refused here
 
 
 def _author_writable_profile(profile: Path, workspace: Path, run_dir: Optional[str]) -> bool:
@@ -10625,9 +9264,8 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     unknown = (set(values) - CONFIGURABLE_DESTS) | {k for k in values if k in OPERATOR_ONLY_DESTS or k.startswith('accept_')}
     if unknown:
         raise ValueError('unsupported paired-session config keys: ' + ', '.join(sorted(unknown)))
-    if 'safety_mode' in values and (not known.config or writable_profile or values['safety_mode'] not in ('efficient', 'strict')):   # D-EFF
-        raise ValueError('safety_mode is set only by --strict or an operator --config profile (efficient or strict) outside the workspace, '
-                         'run dir and author temp, never by the workspace config')
+    if 'safety_mode' in values and values['safety_mode'] not in ('efficient', 'strict'):   # v3.7.0: both are accepted; strict is a NOTE
+        raise ValueError('safety_mode must be efficient or strict (strict was removed in v3.7.0 and only prints a NOTE)')
     explicit = set()
     for action in p._actions:
         if action.dest in CONFIGURABLE_DESTS and any(
@@ -10734,7 +9372,6 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
         args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)
-    refuse_gemini_probe(co.args)   # a restored run's frozen vendors, before any probe turn
     if args.action == 'accept' and (args.text or args.file):   # N4-d: accept's intent digest covers --reason, never --text/--file (after the role restore checks)
         raise ValueError('accept takes no --text or --file; give the acceptance reason with --reason, the same on accept --intent-only and on accept')
     if (args.action in ('run', 'resume', 'reject', 'accept') or args.scope_change) and (issue := co.unrestored_workspace_issue()):   # D-EFF A, intents too
@@ -10746,30 +9383,19 @@ def _execute_locked(args: argparse.Namespace) -> int:
         print(json.dumps(intent))
         sys.stderr.write('NEXT: ' + intent['next_command'] + '\n')
         return 0
-    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and not co.global_codex_home.is_dir()
+    if (args.action in ('run', 'resume', 'reject') and not co.global_codex_home.is_dir()
             and 'codex' in co.dispatched_vendors()):   # FIELD-7: a clear message, not a CLI exit 1 (after --intent-only: field-a L5)
         return co.refused(f'CODEX_HOME {co.global_codex_home} is not an existing directory; create it (log in with CODEX_HOME set to it, '
                           'or copy auth.json and config.toml into it, directory 0700, files 0600) or '
                           + ('unset CODEX_HOME' if os.environ.get('CODEX_HOME') else 'set CODEX_HOME to an existing Codex home'))   # field-a L4
-    if (args.action in ('run', 'resume', 'permission-probe', 'reject') and 'codex' in co.dispatched_vendors()
+    if (args.action in ('run', 'resume', 'reject') and 'codex' in co.dispatched_vendors()
             and not os.environ.get('CODEX_HOME')):   # HYGIENE-1: the 2026-10-06 P0 cause (CODEX_HOME left unset); a warning only
         print('WARNING: CODEX_HOME is unset, so Codex uses the default ~/.codex: concurrent Codex runs on the default home write '
               'trust entries that can disturb each other; use an isolated absolute CODEX_HOME per run')
-    if args.action in ('run', 'resume', 'permission-probe') and (repo := git_work_tree_root(co.scratch_base)):   # FIELD-28, a warning only
+    if args.action in ('run', 'resume') and (repo := git_work_tree_root(co.scratch_base)):   # FIELD-28, a warning only
         print(f'WARNING: the run directory {co.run_dir} is inside the git repository {repo}; tools and test suites that refuse '
               'scratch space inside a repository may fall back to /tmp, which the Codex sandbox excludes. Put the run root '
               'outside any repository.', file=sys.stderr)
-    if (co.strict and not co.state['config'].get('review_report') and args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args)  # restored from state; D-EFF: strict only
-            and args.action in ('run', 'resume', 'reject') and not args.scope_change):  # only these can dispatch the author
-        if args.accept_unverified_claude_author:
-            replace_override(co.state, 'claude_author_override', {
-                'reason': (args.reason or '').strip(), 'actor': 'operator', 'author_flags_digest': co.author_flags_digest(),
-                'secret_env_names': co._env_names_now(), 'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
-            co.save()
-        if not (claude_ok := co.claude_author_verified())[0]:
-            return co.refused(claude_ok[1])
-    if not co.strict and (args.accept_probe_skip or args.accept_unverified_codex_cli or args.accept_unverified_claude_author):
-        print('NOTE: an efficient-mode run needs no probe waiver; the --accept-* flag is not recorded')   # D-EFF
     if args.scope_change:
         print(co.scope_change(args.text, args.file))
         return 0
@@ -10789,15 +9415,6 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action == 'attach-verification':
         print('VERIFICATION: ' + opv.attach(co, args, git_snapshot(co.workspace)[0], atomic_json))
         return 0
-    if args.action == 'permission-probe':
-        try:
-            passed = co.permission_probe(retry_uncertain=args.retry_uncertain)
-        except RuntimeError as exc:
-            if co.state.get('status') != 'DONE': co.hold('permission probe: ' + str(exc))
-            passed = False
-        suffix = ': ' + co.state.get('hold_reason', '') if co.state.get('hold_reason') else ''
-        print(('PASS' if passed else 'FAIL') + suffix)
-        return 0 if passed else 2
     if args.action == 'accept':
         status = co.accept()
         for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
@@ -10813,47 +9430,13 @@ def _execute_locked(args: argparse.Namespace) -> int:
         return 0
     if args.action != 'abort' and (issue := gate_surface_issue(args)):
         return co.refused(issue)
-    if (co.strict and not co.state['config'].get('review_report') and args.action in ('run', 'resume', 'reject')
-            and 'codex' in co.dispatched_vendors()   # ROLE-NITS: a Codex gate (AAB) too; report runs keep skipping it (residual)
-            and not lifecycle_spine.fake_dispatch_guard(args)):
-        if args.accept_unverified_codex_cli and (version := co._codex_cli_version()) != 'UNAVAILABLE':
-            override = co.state.get('codex_cli_override') or {}
-            if not (override.get('version') == version and override.get('actor') == 'operator' and not override.get('voided')):
-                replace_override(co.state, 'codex_cli_override', {
-                    'version': version, 'reason': args.reason.strip(), 'actor': 'operator',
-                    'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
-                co.save()
-        if not (verified := co.codex_contract_verified())[0]:
-            return co.refused(verified[1])
-    if co.strict and args.accept_probe_skip and args.action in ('run', 'resume', 'reject'):   # D-EFF: a probe waiver matters in strict only
-        if (negative := co._probe_negative_status()):   # P0-4b H1: an acceptance never overrides current negative evidence
-            return co.refused(f'the current permission probe is {negative}; fix the cause and re-run permission-probe')
-        if not co._gate_probe_covered():
-            return co.refused(f'gate vendor {args.gate_vendor} differs from reviewer vendor {args.reviewer_vendor}; only a passing gate probe bound to the current gate flags covers it, so run permission-probe (--accept-probe-skip does not)')
-        replace_override(co.state, 'probe_skip_override', {'reason': args.reason.strip(), 'actor': 'operator', 'time': time.strftime(UTC_FORMAT, time.gmtime()), 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest(), 'secret_env_names': co._env_names_now()}); co.save()
     if args.action == 'reject':
-        if co.strict and not args.skip_probe:   # D-EFF efficient: no permission probe is required
-            passed, reason = co.probe_gate()
-            if not passed:
-                return co.refused(reason + '; run permission-probe before continuing')
         status = co.reject(args.text, args.file)
         if status == 'ACTIVE':
             status = co.drive()
         print(status + (' (acceptance pending)' if status == 'DONE' else
                         ': ' + co.state.get('hold_reason', '') if status == 'HOLD' else ''))
         return 0 if status in ('DONE', 'ACCEPTED', 'REPORTED') else 2   # LG2-a3: REPORTED is a normal end
-    pending = co.state.get('uncertain_active') or {}
-    before_config = pending.get('global_codex_before', {}).get('codex_config')
-    changed_codex = (args.action == 'resume' and args.retry_uncertain and not args.polish
-                     and pending.get('vendor') == 'codex'
-                     and before_config and (co.run_dir / 'permission-probe.json').exists()
-                     and global_config_snapshot(co.global_config_home, co.global_codex_home).get(
-                         'codex_config', {}).get('sha256') != before_config)
-    if co.strict and args.action in ('run', 'resume') and not args.skip_probe:
-        passed, reason = co.probe_gate()
-        if not passed and not changed_codex:
-            return co.refused(reason + '; run permission-probe before continuing')
-    co._probe_gate_required = co.strict and not args.skip_probe and not (args.action in ('run', 'resume') and co._probe_skip_accepted())
     if args.action == 'abort':
         if co.state.get('status') in ('ACCEPTED', 'CLOSED', 'REPORTED'):   # LG2-a3: REPORTED is terminal too
             print(co.state['status'])
@@ -10890,6 +9473,9 @@ def main(argv=None) -> int:
             early.add_argument(*option.option_strings, dest=option.dest, default=None,
                                **({'action': 'store_const', 'const': True} if option.nargs == 0 else {'nargs': option.nargs}))
     known = early.parse_known_args(raw_argv)[0]
+    if known.action == 'permission-probe':   # v3.7.0: before any profile, state, lease or run dir
+        print('REFUSED: ' + PROBE_REMOVED)
+        return 2
     if known.action not in ('status', 'stop', 'snapshot') and any(
             run and saved_state_is_old(run) for run in (known.run_dir, known.supersedes)):
         print('REFUSED: ' + OLD_STATE_REFUSAL)
@@ -10903,6 +9489,7 @@ def main(argv=None) -> int:
         return 2
     args = normalize_cli_paths(args)
     args.raw_argv = raw_argv   # FIELD-25: the operator's own command, for the accept/reject next-command line
+    note_strict_removed(args, args.safety_mode)   # --strict or a profile's "strict": one NOTE, then the default mode
     if refusal := windows_refusal(args):   # WI-WIN: None on POSIX
         print('REFUSED: ' + refusal)
         return 2
@@ -10915,15 +9502,10 @@ def main(argv=None) -> int:
     if not 1 <= args.timeout <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any lease, run dir or detached child
         print('REFUSED: ' + TIMEOUT_RANGE_ERROR)
         return 2
-    if args.action == 'permission-probe' and not restores_run(args) and (program_snapshot(Path(args.workspace), Path(args.run_dir), Path(args.run_dir) / 'author-tmp', args.codex_bin, args.claude_bin, args.gate_prompt, args.config)[1] or '').startswith('workspace profile'):
-        args = normalize_cli_paths(configure_parser(parser(), raw_argv, ignore_profile=True).parse_args(raw_argv))   # D3: the probe reports the refusal, but nothing from that profile reaches state
     args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
         arg == o or arg.startswith(o + '=') for o in a.option_strings for arg in raw_argv)}
     roots = (Path(args.workspace), Path(args.run_dir))
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
-    if args.skip_probe and not lifecycle_spine.fake_dispatch_guard(args):
-        print('REFUSED: --skip-probe is limited to the fake test harness')
-        return 2
     if args.add_rounds is not None and (args.action != 'resume' or args.polish):
         print('REFUSED: --add-rounds is only for resume (not resume --polish), at a PLAN or EXEC round-limit HOLD')
         return 2
@@ -10937,18 +9519,15 @@ def main(argv=None) -> int:
         return 2
     if args.no_test_command or saved_null:   # LG2-b2: the null sentinel before every precheck below
         args.test_command = None
-    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip
-    if bool(accepts) != bool((args.reason or '').strip()) and not ((args.override_rejection or args.action in ('accept', 'withdraw-findings')) and not accepts) or (accepts and args.action not in ('run', 'resume', 'reject')):   # N4-c: accept --reason X is the acceptance reason
-        flags = ('--accept-unverified-codex-cli / --accept-unverified-claude-author / --accept-probe-skip'
-                 if refuse_removed_options(args) else '--accept-unverified-codex-cli')
-        print('REFUSED: ' + flags + ' needs --reason and run, resume or reject')
+    accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip   # no-ops past refuse_removed_options
+    if (args.reason or '').strip() and not (accepts or args.override_rejection or args.action in ('accept', 'withdraw-findings')):   # N4-c
+        print('REFUSED: --reason is only for accept and withdraw-findings')
         return 2
     try:
         resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates its restored, frozen models (ADR-9 M5)
             validate_role_models(args)
-            refuse_gemini_probe(args)
-        if args.action in ('run', 'resume', 'permission-probe') and not restores_run(args):   # ADR-12: actions that create state
+        if args.action in ('run', 'resume') and not restores_run(args):   # ADR-12: actions that create state
             workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,
                                                args.gate_prompt, args.config,
@@ -10958,14 +9537,7 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2
-    if args.author_vendor == 'claude' and not lifecycle_spine.fake_dispatch_guard(args) \
-            and args.action in ('run', 'resume', 'reject') and not args.accept_unverified_claude_author \
-            and not args.review_report \
-            and not restores_run(args) and (args.safety_mode or DEFAULT_SAFETY_MODE) == 'strict':   # D-EFF: a new run's probe gate (C)
-        print('REFUSED: a Claude author is limited to the fake test harness in this preview (1C row 3b) unless a Claude '
-              'author permission-probe passes (P0-3b); no run state exists yet, so run permission-probe first')   # FIELD-10
-        return 2
-    if (args.action in ('run', 'permission-probe') and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
+    if (args.action == 'run' and not restores_run(args) and 'claude' in (args.reviewer_vendor, args.gate_vendor)
             and (hint := dontask_command_hint([c for c in (args.test_command, *args.reviewer_command) if c]))):
         print(hint)
     if not restores_run(args) and (issue := gate_surface_issue(args)):
@@ -10992,7 +9564,7 @@ def main(argv=None) -> int:
     if args.action == 'note' and not (run_dir / 'state.json').is_file():
         print('REFUSED: note requires an existing coordinator run')
         return 2
-    if args.action in ('run', 'resume', 'permission-probe', 'reject', 'note'):
+    if args.action in ('run', 'resume', 'reject', 'note'):
         if re.search(r'[*?\[\]{}]', str(run_dir)):
             print('REFUSED: --run-dir must not contain glob metacharacters used by Claude Edit deny rules')
             return 2
@@ -11010,10 +9582,8 @@ def main(argv=None) -> int:
     if args.action == 'status' and args.brief is not None:
         return status_brief(run_dir, args.brief)
     try:
-        with ProbeParentLock(args, workspace, run_dir) as probe_lock, run_lease(Path(args.run_dir)):   # FIELD-13: the parent lock first
-            probe_lock.after_mkdir()
-            args._probe_lock = probe_lock if probe_lock.whole else None
-            if args.action in ('run', 'resume', 'permission-probe', 'accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
+        with run_lease(Path(args.run_dir)):
+            if args.action in ('run', 'resume', 'accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
                 with workspace_lease(workspace, run_dir):
                     return _execute_locked(args)
             return _execute_locked(args)

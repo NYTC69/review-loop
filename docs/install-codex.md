@@ -11,7 +11,7 @@ top-level `README.md` Quick Start.
 
 - **macOS or native Windows** — paired-session runs on macOS and on native Windows; every entry refuses Linux
   (WSL included) and other hosts (`paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`).
-  On Windows only the default efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git
+  On Windows `--detach` is refused, Git
   for Windows (Git Bash) is required, Python is `python` or `py -3`, and the Codex skills run their commands in
   PowerShell as best effort: the Claude Code entry is the tested Windows path. Keep `CODEX_HOME`, run directories
   and workspaces out of OneDrive-synced folders.
@@ -89,7 +89,7 @@ Codex exposes four skills under `.agents/skills/`:
 Paired-session reads non-program defaults from the optional workspace
 `.review-loop/paired-session.json`. Keep role, vendor, program and test-command
 settings in an operator-owned profile outside the workspace and run directory,
-and pass it with `--config` to both probe and run. The skill uses
+and pass it with `--config` to every command. The skill uses
 `~/.config/review-loop/paired-session.json` when it exists and no other profile
 is named. This replaces the workspace profile, so copy any desired non-program
 limits into it. Coordinator state defaults to `<repo>/.review-loop/runs/<UUID>/` (gitignored).

@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import stat
 import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -286,8 +285,6 @@ class CoordinatorTextTests(unittest.TestCase):
         use_lifecycle_on(self.case, self.case)
         (self.case.test_home / '.codex/config.toml').write_text('notify = "hook"\n')
         co = self.case.coordinator('--author-vendor', 'codex')
-        # the permission-probe keeps its pinned source (CODEX_PROBE_SHA256), so its FAIL reason has no hint
-        self.assertFalse(co._author_permission_probe()['reason'].endswith(guard.CONFIG_HINT))
         with self.assertRaises(RuntimeError) as raised:
             co._invoke_once('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
         self.assertRegex(str(raised.exception), r'^notify configured in .*; use a dedicated CODEX_HOME directory')

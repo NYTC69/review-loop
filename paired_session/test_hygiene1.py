@@ -20,9 +20,8 @@ HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_p
 class HygieneTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in HELPERS})
 
-    def probe(self, *extra, unset=False):
-        command = self.command(*extra)
-        command[2] = 'permission-probe'
+    def probe(self, *extra, unset=False):   # a run that stops after PLAN (v3.7.0: permission-probe is gone)
+        command = self.command('--stop-after-plan', *extra)
         env = {key: value for key, value in os.environ.items() if not (unset and key == 'CODEX_HOME')}
         return subprocess.run(command, cwd=self.root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 

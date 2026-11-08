@@ -1,10 +1,9 @@
 """Batch b295-f1 (v2.9.5, FIELD-1): a per-dispatch scratch temp root for Codex reviewer-type roles (workspace-write since v3.6.0).
 
-These tests use fake CLIs: they prove the coordinator's argv, environment, lifecycle and probe logic, not that `codex exec` honours the
-sandbox. Only a real permission-probe shows that."""
+These tests use fake CLIs: they prove the coordinator's argv, environment and lifecycle, not that `codex exec` honours the
+sandbox."""
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -100,51 +99,52 @@ class ScratchRootTests(unittest.TestCase):
         self.assertFalse(scratch.exists())
 
 
-class ScratchProbeTests(unittest.TestCase):
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
+class LegacyProbeScratchTests(unittest.TestCase):   # v3.7.0: a probe turn saved by an earlier release still owns its scratch
+    locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in _HELPERS})
 
-    def test_the_probe_needs_the_scratch_and_workspace_writes(self):   # v3.6.0: the workspace write must succeed
-        report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual((report['status'], report['snapshot_unchanged']), ('PASS', True), report['failure_reasons'])
-        self.assertTrue(all(report['write_attempts_denied'].values()))
-        self.assertNotEqual(report['author_permission_probe']['status'], 'FAIL')           # the author escape probe does not flag role-tmp
-        self.assertEqual(report['reviewer_flags']['codex_reviewer_sandbox'], rc.codex_reviewer_sandbox_overrides())
-        self.assertFalse(list(self.h.workspace.glob('.paired-session-reviewer-write-probe-*')))   # removed after the check
-        self.h.run_dir = self.h.root / 'no-scratch'
-        with patch.dict(os.environ, {'FAKE_CODEX_SKIP_SCRATCH': '1'}):
-            report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual(report['status'], 'FAIL')
-        self.assertIn('scratch-write-not-observed: ' + rc.SCRATCH_PROBE_COMMAND, report['failure_reasons'])
-        self.h.run_dir = self.h.root / 'workspace-denied'                                   # a sandbox that refuses the workspace is caught
-        with patch.dict(os.environ, {'FAKE_CODEX_WORKSPACE_READONLY': '1'}):
-            report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual((report['status'], report['snapshot_unchanged']), ('FAIL', True))
-        self.assertTrue(any(reason.startswith('workspace-write-not-observed: printf probe > ') for reason in report['failure_reasons']),
-                        report['failure_reasons'])
+    def gone_pid(self):
+        child = subprocess.Popen(['true'], start_new_session=True)
+        child.wait()
+        return child.pid
 
-    def test_the_probe_proves_only_the_scratch_is_writable_and_a_hard_link_is_refused(self):   # R1 M1/M2
-        report = self.probe(self.co(*CODEX_ROLES))
-        commands = report['write_attempts_denied']
-        for marker in ('/tmp/paired-session-codex-escape-', '"$TMPDIR/../paired-session-codex-escape-', '/context/paired-session-codex-escape-',
-                       '/run/paired-session-codex-escape-', 'ln '):
-            self.assertTrue(any(marker in command and denied for command, denied in commands.items()), marker)
-        self.assertFalse([p for p in self.h.run_dir.rglob('paired-session-*') if 'codex-escape' in p.name or 'link-source' in p.name])
-        for label, marker in (('slash_tmp', '/tmp/paired-session-codex-escape-'), ('role_tmp', '$TMPDIR/..'), ('run_dir', '/escape-run_dir/paired-session-codex-escape-')):
-            with self.subTest(label), patch.dict(os.environ, {'FAKE_CODEX_PROBE_ESCAPE': marker}):
-                self.h.run_dir = self.h.root / ('escape-' + label)
-                report = self.probe(self.co(*CODEX_ROLES))
-                self.assertEqual(report['status'], 'FAIL')
-                self.assertIn('codex-readonly-write-escaped: ' + label, report['failure_reasons'])
-                self.assertFalse(list(Path('/tmp').glob('paired-session-codex-escape-*')) if label == 'slash_tmp' else
-                                 [p for p in self.h.run_dir.rglob('paired-session-codex-escape-*')])   # removed after the check
-        for flags in (CODEX_ROLES, ('--reviewer-vendor', 'claude', '--gate-vendor', 'codex')):        # the reviewer probe and a Codex gate probe
-            with self.subTest(flags=flags), patch.dict(os.environ, {'FAKE_CODEX_PROBE_ESCAPE': 'ln '}):
-                self.h.run_dir = self.h.root / ('link-' + flags[1])
-                report = self.probe(self.co(*flags))
-                probe = report if flags[1] == 'codex' else report['gate_permission_probe']
-                self.assertEqual((report['status'], probe['status']), ('FAIL', 'FAIL'))
-                self.assertTrue(any('hard link' in reason or 'hardlink' in reason for reason in probe['failure_reasons']), probe['failure_reasons'])
-                self.assertFalse(list(self.h.run_dir.glob('paired-session-link-source-*')))
+    def saved_probe_turn(self, co, sequence):
+        """A hard-killed probe turn as a v3.6.0 run left it: its receipt in uncertain_active and its scratch on disk."""
+        base = co.scratch_base / 'role-tmp'
+        base.mkdir(mode=0o700, exist_ok=True)
+        scratch = base / f'{sequence:03d}-probe'
+        scratch.mkdir(mode=0o700)
+        (scratch / 'leftover.txt').write_text('x')
+        receipt = {'sequence': sequence, 'role': 'probe', 'phase': 'PROBE', 'vendor': 'codex', 'pid': self.gone_pid(),
+                   'environment_overrides': {'TMPDIR': str(scratch), 'TMP': str(scratch), 'TEMP': str(scratch)}}
+        co.state.update(uncertain_active=receipt, status='HOLD', hold_reason='uncertain CLI turn')
+        co.save()
+        return scratch
+
+    def test_recovering_a_saved_probe_turn_removes_its_scratch_and_the_next_reviewer_dispatch_proceeds(self):
+        co = self.coordinator(*CODEX_ROLES)
+        scratch = self.saved_probe_turn(co, 5)
+        with patch.object(co, 'drive', return_value='HOLD'), patch('builtins.print'):
+            self.assertEqual(co.resume(retry_uncertain=True), 'HOLD')
+        self.assertFalse(scratch.exists())                                                  # archived with its scratch
+        self.assertEqual([row['sequence'] for row in co.state['abandoned_turns']], [5])
+        root = co._scratch_root('reviewer')                                                 # no leftover HOLD at the next dispatch
+        self.assertNotEqual(co.state['status'], 'HOLD', co.state.get('hold_reason'))
+        co._drop_scratch(root)
+
+    def test_a_leftover_of_an_archived_probe_turn_is_swept_by_its_recorded_pid(self):
+        co = self.coordinator(*CODEX_ROLES)
+        scratch = self.saved_probe_turn(co, 6)
+        receipt = co.state.pop('uncertain_active')
+        co.state.setdefault('abandoned_turns', []).append(receipt)   # archived by an earlier release, scratch left behind
+        co.save()
+        root = co._scratch_root('reviewer')
+        self.assertFalse(scratch.exists())                                                  # its group is gone: swept, no HOLD
+        self.assertNotIn('leftover', co.state.get('hold_reason', ''))
+        co._drop_scratch(root)
+
+
+class ReviewerFlagsTests(unittest.TestCase):
+    locals().update({name: getattr(tor.OperatorCliTests, name) for name in ('setUp', 'co')})
 
     def test_the_reviewer_sandbox_changes_the_codex_flags_digest_only(self):
         use_lifecycle_on(self, self.h)
@@ -311,146 +311,9 @@ class NoFollowCleanupTests(unittest.TestCase):                                  
         self.assertFalse({'state.json', 'progress.jsonl'} & seen)
 
 
-class ExplicitDenialTests(unittest.TestCase):                                               # b296-f1b
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
-
-    def test_only_an_explicit_sandbox_denial_counts_as_refused(self):
-        row = lambda code, output: {'error': code != 0, 'exit_code': code, 'output': output}
-        for code, output in ((1, 'ln: x: Operation not permitted'), (1, 'zsh: permission denied: x'), (2, 'Read-only file system')):
-            self.assertTrue(rc.explicit_denial(row(code, output)), output)
-        for code, output in ((127, 'zsh: command not found: ln'), (126, 'Permission denied'), (1, 'ln: invalid option'),
-                             (1, 'zsh: command not found: Operation not permitted'), (0, 'Operation not permitted'), (None, 'Operation not permitted')):
-            self.assertFalse(rc.explicit_denial(row(code, output)), (code, output))
-        for env, needle in (({'FAKE_CODEX_PROBE_NOT_FOUND': 'ln '}, 'ln '), ({'FAKE_CODEX_PROBE_OTHER_ERROR': '/tmp/paired-session-codex-escape-'}, '/tmp/'),
-                            ({'FAKE_CODEX_PROBE_OTHER_ERROR': '/context/paired-session-codex-escape-'}, '/context/')):
-            with self.subTest(env=env), patch.dict(os.environ, env):
-                self.h.run_dir = self.h.root / ('unknown-' + needle.strip(' /'))
-                report = self.probe(self.co(*CODEX_ROLES))
-                self.assertEqual(report['status'], 'UNKNOWN', report['failure_reasons'])        # 127 / another error is never PASS
-                self.assertTrue(any(reason.startswith('denial-not-explicit: ') and needle in reason for reason in report['failure_reasons']))
-        with patch.dict(os.environ, {'FAKE_CODEX_PROBE_NOT_FOUND': 'ln '}):                  # the Codex gate probe too
-            self.h.run_dir = self.h.root / 'unknown-gate'
-            report = self.probe(self.co('--reviewer-vendor', 'claude', '--gate-vendor', 'codex'))
-            self.assertEqual((report['status'], report['gate_permission_probe']['status']), ('UNKNOWN', 'UNKNOWN'))
-
-
-class ProbeTrackedFileTests(unittest.TestCase):                                              # b296-f1f
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe', 'seed', 'entries', 'forget_report', 'reuse')})
-
-    def git(self, *args):
-        return subprocess.run(['git', *args], cwd=self.h.workspace, check=True, capture_output=True, text=True).stdout
-
-    def legs(self, report, tracked):
-        return [command for command in report['write_attempts_denied'] if command.startswith(('git --literal-pathspecs checkout -- ', 'rm '))], \
-               ['git --literal-pathspecs checkout -- ' + tracked, 'rm ' + tracked]
-
-    def test_a_workspace_without_tracked_txt_probes_an_existing_tracked_file_and_passes(self):   # the field shape (P1/P2, codex-cli 0.160.0)
-        ws = self.h.workspace
-        self.git('rm', '-q', 'tracked.txt')
-        (ws / 'src').mkdir()
-        (ws / 'src' / 'app.py').write_text('x = 1\n')
-        self.git('add', 'src/app.py')
-        self.git('commit', '-qm', 'no tracked.txt')
-        for flags in (CODEX_ROLES, ('--reviewer-vendor', 'claude', '--gate-vendor', 'codex')):   # the Codex reviewer probe and a Codex gate probe
-            with self.subTest(flags=flags):
-                self.h.run_dir = self.h.root / ('field-' + flags[1])
-                report = self.probe(self.co(*flags))
-                probe = report if flags[1] == 'codex' else report['gate_permission_probe']
-                self.assertEqual((report['status'], probe['status']), ('PASS', 'PASS'), probe['failure_reasons'])
-                self.assertEqual((report['probe_tracked_file'], probe['probe_tracked_file']), ('.gitignore', '.gitignore'))   # first ls-files entry
-                self.assertEqual(self.legs(probe, '.gitignore')[0], [])                   # v3.6.0: a workspace-write Codex turn has no tracked-file legs
-                self.assertTrue(all(probe['write_attempts_denied'].values()))
-        self.assertEqual(sorted(p.name for p in ws.iterdir() if p.name != '.git'), ['.gitignore', 'src'])   # nothing created or changed
-        self.git('diff', '--exit-code')
-
-    def test_the_pick_skips_links_missing_and_unsafe_names_and_a_path_that_needs_quoting_is_quoted(self):
-        ws = self.h.workspace
-        self.git('rm', '-q', 'tracked.txt', '.gitignore')
-        (ws / '-dash.txt').write_text('d\n')
-        (ws / 'a-link').symlink_to('-dash.txt')
-        (ws / 'b-gone.txt').write_text('g\n')
-        (ws / 'c\tmid.txt').write_text('t\n')
-        (ws / 'd-real').mkdir()
-        (ws / 'd-real' / 'f.txt').write_text('f\n')
-        quoted = "e dir/it's.txt"
-        (ws / 'e dir').mkdir()
-        (ws / quoted).write_text('q\n')
-        self.git('add', '--', '-dash.txt', 'a-link', 'b-gone.txt', 'c\tmid.txt', 'd-real/f.txt', quoted)
-        self.git('commit', '-qm', 'pick')
-        (ws / 'b-gone.txt').unlink()                                                        # tracked but gone on disk
-        (ws / 'd-real').rename(ws / 'd-elsewhere')                                           # tracked path now through a symlinked directory
-        (ws / 'd-real').symlink_to('d-elsewhere')
-        self.assertEqual(rc.probe_tracked_file(ws), quoted)
-        self.git('checkout', '--', 'b-gone.txt')
-        self.assertEqual(rc.probe_tracked_file(ws), 'b-gone.txt')
-        (ws / 'b-gone.txt').write_text('uncommitted\n')                                    # R1: an unmodified file beats a quote-safe one with
-        self.assertEqual(rc.probe_tracked_file(ws), quoted)                                  # unstaged changes; a modified one is still a fallback
-        (ws / quoted).write_text('uncommitted\n')
-        self.assertEqual(rc.probe_tracked_file(ws), 'b-gone.txt')
-        self.git('checkout', '--', quoted)
-        (ws / 'b-gone.txt').unlink()
-        self.h.run_dir = self.h.root / 'quoted'
-        report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual((report['status'], report['probe_tracked_file']), ('PASS', quoted), report['failure_reasons'])
-        self.assertEqual(self.legs(report, quoted)[0], [])                                  # v3.6.0: no tracked-file legs in a Codex probe turn
-        self.assertEqual((ws / quoted).read_text(), 'q\n')
-
-    def test_a_glob_like_name_is_checked_out_literally_and_a_sibling_keeps_its_unstaged_bytes(self):   # b296-f1g
-        ws = self.h.workspace
-        self.git('rm', '-q', 'tracked.txt', '.gitignore')
-        (ws / '*.txt').write_text('glob name\n')
-        (ws / 'a.txt').write_text('a base\n')
-        self.git('--literal-pathspecs', 'add', '--', '*.txt', 'a.txt')
-        self.git('commit', '-qm', 'glob-like name')
-        self.assertEqual(rc.probe_tracked_file(ws), 'a.txt')                                 # defense in depth: a plain name is preferred
-        (ws / 'a.txt').write_text('unstaged work\n')
-        self.assertEqual(rc.probe_tracked_file(ws), '*.txt')                                 # ... but never over unstaged changes, and never refused
-        self.assertIn('a.txt', self.git('ls-files', '--', '*.txt').split())                  # as a plain pathspec, '*.txt' would reach a.txt
-        report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual((report['status'], report['probe_tracked_file']), ('PASS', '*.txt'), report['failure_reasons'])
-        self.assertEqual(self.legs(report, "'*.txt'")[0], [])                               # v3.6.0: no tracked-file legs in a Codex probe turn
-        self.assertEqual(((ws / 'a.txt').read_text(), (ws / '*.txt').read_text()), ('unstaged work\n', 'glob name\n'))
-        self.git('checkout', '--', '*.txt')                                                  # the sensitivity check: without --literal-pathspecs
-        self.assertEqual((ws / 'a.txt').read_text(), 'a base\n')                            # the same name resets the sibling
-
-    def test_a_refusal_leaves_the_shared_cache_entry_alone(self):                            # b296-f1g: no probe evidence, so no F4 void
-        co, entry = self.seed(*CODEX_ROLES)
-        before = entry.read_bytes()
-        self.git('rm', '-q', 'tracked.txt', '.gitignore')
-        self.git('commit', '-qm', 'no tracked file')
-        later = self.co(*CODEX_ROLES)                                                        # the same run dir: the same cache key
-        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
-            self.assertFalse(later.permission_probe())
-        self.assertEqual((self.entries(), entry.read_bytes()), ([entry], before))            # not voided, like an aborted probe turn
-        ok, why = self.reuse(later)
-        self.assertEqual((ok, why), (False, 'probe cache: the last permission-probe did not complete'))   # this run never revives it
-        shutil.rmtree(self.h.run_dir)                                                        # a new run with the same key reuses the flag-surface PASS
-        ok, why = self.reuse(self.co(*CODEX_ROLES))
-        self.assertEqual((ok, why), (True, ''))
-
-    def test_a_workspace_with_no_tracked_regular_file_is_refused_before_any_turn(self):
-        ws = self.h.workspace
-        self.git('rm', '-q', '--cached', 'tracked.txt')
-        (ws / 'tracked.txt').unlink()
-        (ws / '.gitignore').unlink()                                                         # the only tracked file is gone on disk
-        self.git('commit', '-qm', 'only .gitignore left')
-        co = self.co(*CODEX_ROLES)
-        sequence = co.state['sequence']
-        (co.run_dir / 'permission-probe.json').write_text('{"status": "PASS"}\n')            # an older report: superseded, not left valid
-        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
-            self.assertFalse(co.permission_probe())
-            self.assertFalse(co.probe_passed()[0])
-        self.assertEqual((co.state['sequence'], co.state['turns'], co.state['status']), (sequence, [], 'HOLD'))
-        self.assertIn('permission probe refused before any turn: the workspace has no tracked regular file', co.state['hold_reason'])
-        self.assertFalse((co.run_dir / 'permission-probe.json').exists())
-        self.assertTrue((co.run_dir / 'permission-probe.superseded.json').exists())
-        self.assertEqual(sorted(p.name for p in ws.iterdir()), ['.git'])
-
-
 class ExecProfileSelectionTests(unittest.TestCase):                                          # b296-f1e
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'probe')})
 
-    def test_codex_exec_refuses_a_permission_profile_flag_and_the_probe_fails_on_one(self):
+    def test_codex_exec_refuses_a_permission_profile_flag(self):
         profile = rc.codex_reviewer_sandbox_args()
         for flag in (['-P', 'paired_session_readonly'], ['--permission-profile', 'paired_session_readonly'], ['--permission-profile=paired_session_readonly']):
             with self.subTest(flag=flag[0]):                                                 # codex-cli 0.160.0: `codex exec` has no -P
@@ -462,10 +325,6 @@ class ExecProfileSelectionTests(unittest.TestCase):                             
                     f"  tip: to pass '{rejected}' as a value, use '-- {rejected}'\n\n"
                     "Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]\n\n"
                     "For more information, try '--help'.\n")
-        old = ['-P', 'paired_session_readonly', *profile]                                   # a -P permission profile (the v2.9.6 candidate)
-        with patch.object(rc, 'codex_reviewer_sandbox_args', return_value=old):
-            report = self.probe(self.co(*CODEX_ROLES))
-        self.assertEqual((report['status'], report['failure_reasons']), ('FAIL', ["probe-turn-error: CLI exit 2: error: unexpected argument '-P' found"]))   # R1 l1: the refusal, not a missed scratch write
 
 
 if __name__ == '__main__':

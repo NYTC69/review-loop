@@ -1,4 +1,6 @@
 """CLI-UPD: efficient release updates preserve the frozen-record contract."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -85,7 +87,7 @@ class CliUpdateTests(unittest.TestCase):
         self.assertEqual(update['new_version'], '0.101.0')
         self.assertIsNone(update['old_version'])  # replaced binary is gone
 
-    def _assert_other_change_holds(self, change):
+    def _assert_other_change_refreezes(self, change):   # v3.7.0: recorded with one NOTE instead of a HOLD that named permission-probe
         co, root, link = self.bound
         frozen = co.state['operator_programs'].copy()
         if change == 'downgrade':
@@ -106,67 +108,54 @@ class CliUpdateTests(unittest.TestCase):
                 os.environ['PATH'] += ':/extra'
             else:
                 Path(co.args.gate_prompt).write_text('changed gate')
-        _, issue = co._program_state(hold=True)
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertEqual(co.state['operator_programs'], frozen)
-        self.assertNotIn('program_updates', co.state)
-        self.assertIn('operator program or PATH changed since run start', issue)
-        self.assertIn('run `permission-probe` to re-freeze, then resume', issue)
-        self.assertNotIn('since permission probe', issue)
-
-    def _assert_strict_upgrade_holds(self, program):
-        co, root, link = self.bound
-        co.args.safety_mode = 'strict'
-        if program == 'claude':
-            upgrade(root, link)
-        else:
-            executable(Path(co.args.codex_bin), 'codex-cli 0.101.0')
-        _, issue = co._program_state(hold=True)
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertEqual(issue, f'configured operator program or PATH changed since permission probe (changed: {program}_bin)')
-        self.assertNotIn('program_updates', co.state)
-
-    def test_efficient_permission_probe_can_refreeze_an_unrelated_change(self):
-        co, root, link = self.bound
-        upgrade(root, link, install='other/claude')
-        self.assertIsNotNone(co._program_state(hold=True)[1])
-        co.args.action = 'permission-probe'
-        current, issue = co._program_state()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            current, issue = co._program_state(hold=True)
         self.assertIsNone(issue)
+        co.hold.assert_not_called()
+        self.assertNotEqual(current, frozen)
         self.assertEqual(co.state['operator_programs'], current)
-        co.args.action = 'resume'
-        self.assertIsNone(co._program_state()[1])
+        self.assertEqual(json.loads(co.state_path.read_text())['operator_programs'], current)
+        changed = sorted(k for k in set(frozen) | set(current) if frozen.get(k) != current.get(k))
+        self.assertEqual([row['changed'] for row in co.state['program_refreezes']], [changed])
+        self.assertEqual(out.getvalue().count('NOTE: operator program or PATH changed since run start (changed: '
+                                              + ', '.join(changed) + '); the run continues with the new state'), 1, out.getvalue())
+        self.assertNotIn('permission-probe', out.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as again:
+            self.assertIsNone(co._program_state(hold=True)[1])      # recorded once: no second NOTE
+        self.assertEqual(again.getvalue(), '')
 
-    def test_downgrade_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('downgrade')
+    def test_a_missing_program_still_holds(self):
+        co, _, _ = self.bound
+        Path(co.args.codex_bin).unlink()
+        _, issue = co._program_state(hold=True)
+        self.assertEqual(co.state['status'], 'HOLD')
+        self.assertIn('operator program or PATH changed since run start (changed: codex_bin', issue)
+        self.assertNotIn('program_refreezes', co.state)
 
-    def test_other_install_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('other_install')
+    def test_downgrade_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('downgrade')
 
-    def test_codex_path_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('codex_path')
+    def test_other_install_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('other_install')
 
-    def test_path_env_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('path_env')
+    def test_codex_path_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('codex_path')
 
-    def test_gate_prompt_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('gate_prompt')
+    def test_path_env_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('path_env')
 
-    def test_unknown_version_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('unknown_version')
+    def test_gate_prompt_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('gate_prompt')
 
-    def test_codex_unknown_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('codex_unknown')
+    def test_unknown_version_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('unknown_version')
 
-    def test_version_mismatch_holds_with_efficient_recovery_text(self):
-        self._assert_other_change_holds('version_mismatch')
+    def test_codex_unknown_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('codex_unknown')
 
-    def test_strict_claude_upgrade_keeps_original_hold(self):
-        self._assert_strict_upgrade_holds('claude')
-
-    def test_strict_codex_upgrade_keeps_original_hold(self):
-        self._assert_strict_upgrade_holds('codex')
-
+    def test_version_mismatch_refreezes_with_a_note(self):
+        self._assert_other_change_refreezes('version_mismatch')
 
 if __name__ == '__main__':
     unittest.main()

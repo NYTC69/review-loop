@@ -111,8 +111,7 @@ class ForwardSubagentTextTests(unittest.TestCase):
         on = self.all_claude()
         self.assertEqual(on.args.author_subagents, 'on')
         self.assertIn(FLAG, on.command('author', schema, False))
-        self.assertIn(FLAG, on.author_flags()['claude_author_surface'])   # a new permission probe runs the same argv
-        for role in ('reviewer', 'shadow', 'gate', 'probe', 'gate-probe'):
+        for role in ('reviewer', 'shadow', 'gate'):
             with self.subTest(role=role):
                 self.assertNotIn(FLAG, on._claude_command(role, schema, True))
         off = self.all_claude('--author-subagents', 'off')

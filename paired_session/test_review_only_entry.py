@@ -329,20 +329,15 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         self.assertNotIn('approved plan', prompt)
 
     # --- LG1-b, test 10: category A in both modes ---------------------------------------------------------------------------------
-    def test_a_read_only_edit_during_the_first_review_is_voided_and_restored_in_both_modes(self):
-        for strict in (True, False):
+    def test_a_read_only_edit_during_the_first_review_is_voided_and_restored_with_or_without_strict(self):
+        for strict in (True, False):   # v3.7.0: --strict is only a NOTE; the read-only guard (category A) is the same
             with self.subTest(strict=strict):
                 self.run_dir = self.root / f'void-{strict}'
                 self.change()
                 marker = self.root / f'mutated-{strict}'
                 env = {'FAKE_MUTATION': 'echo', 'FAKE_MUTATION_ONCE': str(marker)}
-                command = self.command('--review-only')
-                if not strict:   # efficient: the product default, no --strict and no --skip-probe
-                    command = [arg for arg in command if arg != '--strict']
-                    result = subprocess.run(command, cwd=self.root, env={**rc.os.environ, **env}, text=True,
-                                            capture_output=True)
-                else:
-                    result = self.run_coordinator('--review-only', env=env)
+                command = self.command('--review-only', *(['--strict'] if strict else []))
+                result = subprocess.run(command, cwd=self.root, env={**rc.os.environ, **env}, text=True, capture_output=True)
                 self.assertIn('DONE', result.stdout, result.stdout + result.stderr)
                 self.assertIn('re-dispatching the reviewer turn once', result.stdout)
                 state = self.state()
@@ -350,7 +345,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
                 self.assertTrue(void['restored'])
                 self.assertFalse((self.workspace / 'forbidden.txt').exists())
                 self.assertEqual((self.workspace / 'sum_ints.py').read_text(), SUM_INTS)   # the change under review stays
-                self.assertEqual(state['config']['safety_mode'], 'strict' if strict else 'efficient')
+                self.assertEqual(state['config']['safety_mode'], 'efficient')
 
     # --- LG1-c, tests 6 and 9: the W lifecycle and delivery -------------------------------------------------------------------
     def w_ready(self):   # SECURITY needs the legacy sensitive patterns, as in test_worktree_lifecycle

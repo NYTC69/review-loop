@@ -64,7 +64,7 @@ entry could switch earlier, after an owner go for 1D and a parity decision on po
 - E-1 as revised 2026-10-04: GitHub Actions green plus one real run through the default entry, lifecycle on, reaching
   ACCEPTED. This was the gate for switching the *default entry* (v2.10.0), not for retirement.
 - D-EFF (2026-10-04, `paired_session/docs/efficient-mode.md`): efficient is the default. Strict-only (category C)
-  conditions are not release conditions.
+  conditions are not release conditions. (Strict mode was removed in v3.7.0.)
 
 None of the amendments above changes the four retirement criteria. The owner ruling D-READY (2026-10-05, ADR-6
 "Amendments" in `DECISIONS.md`) does: it treats the gate as met on field evidence (summary above), makes M7 optional,

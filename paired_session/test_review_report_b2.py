@@ -93,18 +93,6 @@ class NoTestReportRunTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: test_command'):
             self.coordinator(*NO_TEST, action='resume')
 
-    def test_a_strict_no_test_report_probe_passes_without_an_allowed_command(self):
-        self.change()
-        result = self.cli(*NO_TEST, action='permission-probe', skip_probe=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        report = json.loads((self.run_dir / 'permission-probe.json').read_text())
-        self.assertEqual(report['status'], 'PASS', report)
-        self.assertFalse([reason for reason in report.get('failure_reasons', []) if reason.startswith('not-attempted')])
-        prompts = [path.read_text() for path in (self.run_dir / 'evidence').glob('*probe*.prompt.txt')]
-        self.assertTrue(prompts)
-        self.assertFalse([p for p in prompts if 'Allowed exact command:' in p or '--help > forbidden-test-help' in p])
-
-
 class PostStepTests(unittest.TestCase):
     def setUp(self):
         self.run_dir = Path(tempfile.mkdtemp())

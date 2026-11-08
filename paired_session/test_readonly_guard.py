@@ -282,9 +282,8 @@ class ReadOnlyTurnTests(unittest.TestCase):
     def state(self):
         return json.loads((self.h.run_dir / 'state.json').read_text())
 
-    def launch(self, env, strict):   # a real coordinator process; efficient needs neither --strict nor --skip-probe
-        if strict: return self.h.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', env=env)
-        command = [a for a in self.h.command('--shadow', 'off', '--adversarial-gate', 'off') if a != '--strict']
+    def launch(self, env, strict):   # a real coordinator process; `strict` adds --strict, which since v3.7.0 is only a NOTE
+        command = self.h.command('--shadow', 'off', '--adversarial-gate', 'off', *(['--strict'] if strict else []))
         return subprocess.run(command, cwd=self.h.root, env={**os.environ, **env}, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def voided(self):
@@ -306,7 +305,7 @@ class ReadOnlyTurnTests(unittest.TestCase):
                 prompts = sorted((self.h.run_dir / 'evidence').glob('*-reviewer.prompt.txt'))
                 self.assertTrue(any('your previous answer to this request changed the workspace' in f.read_text() for f in prompts))
                 self.assertEqual(len(list((self.h.run_dir / 'internal' / 'readonly').iterdir())), 1)   # clean turns leave no undo record
-                self.assertEqual(self.state()['config']['safety_mode'], 'strict' if strict else 'efficient')
+                self.assertEqual(self.state()['config']['safety_mode'], 'efficient')   # v3.7.0: --strict selects nothing
 
     def checkout(self, path):   # smokefix: git writes 0644 whatever the caller's umask (a 077 umask would write 0600)
         old = os.umask(0o022)

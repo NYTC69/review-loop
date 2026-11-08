@@ -151,8 +151,6 @@ class WindowsResolutionTests(unittest.TestCase):
             co = rc.Coordinator.__new__(rc.Coordinator)
             co.state = {'operator_programs': records, 'started': {'reviewer': True}, 'sessions': {'reviewer': 'session-123'}}
             co._program_state = Mock(return_value=(records, None))
-            self.assertEqual(co._codex_cli_version(), 'codex-cli 0.160.0')
-            self.assertEqual(run.call_args.args[0], pb.program_argv(codex) + ['--version'])
             rc.claude_cli_version(claude)
             self.assertEqual(run.call_args.args[0], pb.program_argv(claude) + ['--version'])
         co.args = SimpleNamespace(codex_bin='codex')
@@ -235,9 +233,7 @@ class WindowsResolutionTests(unittest.TestCase):
         size = len(subprocess.list2cmdline(argv).encode('utf-16-le')) // 2 + 1
         out = io.StringIO()
         # Exercise the real main() error boundary without dispatching a child or taking platform locks.
-        lock = SimpleNamespace(after_mkdir=lambda: None, whole=False)
-        with patch.object(rc, 'ProbeParentLock', return_value=contextlib.nullcontext(lock)), \
-                patch.object(rc, 'run_lease', return_value=contextlib.nullcontext()), \
+        with patch.object(rc, 'run_lease', return_value=contextlib.nullcontext()), \
                 patch.object(rc, '_execute_locked', side_effect=lambda args: co.command('reviewer', self.gate, True)), \
                 patch.object(rc.subprocess, 'Popen') as spawn, contextlib.redirect_stdout(out):
             code = rc.main(['status', '--workspace', str(self.workspace), '--run-dir', str(self.root / 'run'),

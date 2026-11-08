@@ -1,4 +1,4 @@
-"""Batch CG (v2.9.2): Codex plugin scope, missing config.toml, probe guard re-check, exact trust attribution, Claude .cc-writes."""
+"""Batch CG (v2.9.2): Codex plugin scope, exact trust attribution, Claude .cc-writes."""
 import hashlib
 import json
 import os
@@ -11,7 +11,6 @@ from unittest.mock import patch
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import claude_author_probe as cap
 from paired_session import codex_capability_guard as guard
-from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -81,14 +80,14 @@ class CodexDispatchTests(unittest.TestCase):
         use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
         schema = Path(self.root) / 'schema.json'
-        for role in ('author', 'reviewer', 'gate', 'probe', 'gate-probe'):
+        for role in ('author', 'reviewer', 'gate'):
             command = co._codex_command(role, schema, True)
             self.assertIn(('-c', 'features.plugins=false'), list(zip(command, command[1:])), role)
-        for flags in (co.author_flags(), co.reviewer_flags(), co.gate_flags()):
+        for flags in (co.reviewer_flags(), co.gate_flags()):
             self.assertEqual(flags['codex_plugins_argv'], ['-c', 'features.plugins=false'])
-        digests = (co.author_flags_digest(), co.reviewer_flags_digest(), co.gate_flags_digest())
+        digests = (co.reviewer_flags_digest(), co.gate_flags_digest())
         with patch.object(rc, 'CODEX_PLUGINS_OFF', ()):
-            self.assertTrue(all(old != new for old, new in zip(digests, (co.author_flags_digest(), co.reviewer_flags_digest(), co.gate_flags_digest()))))
+            self.assertTrue(all(old != new for old, new in zip(digests, (co.reviewer_flags_digest(), co.gate_flags_digest()))))
 
     def test_every_codex_role_argv_carries_the_launch_flag_so_the_guard_treats_bundles_as_inert(self):   # rel210-fixCG
         co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
@@ -110,53 +109,6 @@ class CodexDispatchTests(unittest.TestCase):
         with patch.object(co, '_codex_command', return_value=['codex', 'exec', '-']), \
                 self.assertRaisesRegex(RuntimeError, 'Codex argv lacks -c features.plugins=false'):   # fail closed at dispatch
             co._invoke_once('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
-
-    def test_a_missing_config_toml_is_an_empty_config_everywhere(self):
-        use_lifecycle_on(self, self)
-        config = self.test_home / '.codex/config.toml'
-        co = self.coordinator('--author-vendor', 'codex')
-        config.write_bytes(b'')
-        empty = co._codex_policy_digest()
-        config.unlink()
-        self.assertEqual(co._codex_config_bytes(), b'')
-        self.assertIsNotNone(empty)
-        self.assertEqual(co._codex_policy_digest(), empty)
-        self.assertEqual(co.author_flags()['codex_config_sha256'], empty)
-        config.write_text(trust(self.workspace.resolve()))   # codex creates the file with only the trust block
-        self.assertEqual(co._codex_policy_digest(), empty)
-        config.write_text('model = "x"\n')
-        self.assertNotEqual(co._codex_policy_digest(), empty)
-        config.unlink()
-        sandbox_home = co.run_dir / 'x'
-        with patch.object(co, '_program_state', return_value=({}, None)), patch.object(co, '_codex_sandbox_profile_args', return_value=[]):
-            outcome = co._codex_sandbox_escape_check(self.workspace, 'probe', sandbox_home)   # reads config.toml for the synthetic home
-        self.assertNotIn('error', outcome)
-        self.assertEqual(outcome['source_config_sha256'], hashlib.sha256(b'').hexdigest())
-
-    def test_a_probe_that_adds_a_capability_fails_with_the_finding_named(self):
-        use_lifecycle_on(self, self)
-        config = self.test_home / '.codex/config.toml'
-        for inject in (False, True):
-            with self.subTest(inject=inject):
-                self.run_dir = self.root / f'recheck-{inject}'
-                config.write_text('model = "gpt-6-luna"\n')
-                co = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'codex')
-                real = co._author_permission_probe
-
-                def probe_turn():
-                    result = real()
-                    if inject: config.write_text(config.read_text() + '[mcp_servers.late]\ncommand = "touch"\n')   # as Codex could during its turn
-                    return result
-
-                with patch.object(co, '_author_permission_probe', side_effect=probe_turn):
-                    co.permission_probe()
-                report = json.loads((co.run_dir / 'permission-probe.json').read_text())
-                reasons = [r for r in report['failure_reasons'] if r.startswith('codex-capability-guard-after-probe')]
-                self.assertEqual(bool(reasons), inject, report['failure_reasons'])
-                if inject:
-                    self.assertEqual(report['status'], 'FAIL')
-                    self.assertIn('MCP servers', reasons[0])
-
 
 class TrustAttributionTests(unittest.TestCase):
     def setUp(self):
@@ -238,69 +190,7 @@ class TrustAttributionTests(unittest.TestCase):
         self.assertEqual(rc._codex_trust_paths(from_bare), [str(from_bare)])   # the common dir of a bare repository is not `.git`
         self.assertEqual(rc._codex_trust_paths(self.root / 'missing'), [str(self.root / 'missing')])
 
-    def test_the_policy_digest_strips_the_main_checkout_trust_of_a_linked_workspace_only(self):
-        helper = trc.RealCoordinatorTests()
-        helper.setUp()
-        self.addCleanup(helper.doCleanups)
-        self.addCleanup(helper.tearDown)
-        main = helper.workspace
-        linked = helper.root / 'linked'
-        self.git(main, 'worktree', 'add', '-q', str(linked))
-        helper.workspace = linked
-        co = helper.coordinator('--author-vendor', 'codex')
-        config = helper.test_home / '.codex/config.toml'
-        before = co._codex_policy_digest()
-        config.write_text(config.read_text() + '\n' + trust(main.resolve()) + '\n' + trust(linked.resolve()))
-        self.assertEqual(co._codex_policy_digest(), before)
-        config.write_text(config.read_text() + '\n' + trust(helper.root.resolve()))
-        self.assertNotEqual(co._codex_policy_digest(), before)
-
-
 class ClaudeCcWritesTests(unittest.TestCase):
-    locals().update({name: getattr(tor.ClaudeAuthorProbeTests, name) for name in ('setUp', 'co', 'probe')})
-
-    def probe_with(self, build):
-        """Run the author probe; `build(ws)` makes what the real CLI left behind in the probe workspace once the turn is over."""
-        co = self.co()
-        real = co.invoke
-
-        def invoke(*args, **kwargs):
-            result = real(*args, **kwargs)
-            build(Path(kwargs['workspace_override']))
-            return result
-
-        with patch.object(co, 'invoke', side_effect=invoke):
-            return self.probe(co=co)[1]
-
-    def test_the_cli_created_empty_directories_are_not_an_escape(self):
-        out = self.probe_with(lambda ws: (ws / '.claude/.cc-writes').mkdir(parents=True, mode=0o700))
-        self.assertEqual((out['status'], out['model_escape_failed_targets']), ('PASS', []), out)
-        out = self.probe_with(lambda ws: (ws / '.claude').mkdir())     # only .claude, no .cc-writes
-        self.assertEqual(out['status'], 'PASS', out)
-
-    def test_anything_else_under_claude_stays_an_escape(self):
-        def file_in_cc_writes(ws):
-            (ws / '.claude/.cc-writes').mkdir(parents=True)
-            (ws / '.claude/.cc-writes/x').write_text('x')
-
-        def settings(ws):
-            (ws / '.claude/.cc-writes').mkdir(parents=True)
-            (ws / '.claude/settings.json').write_text('{}')
-
-        def linked_cc_writes(ws):
-            (ws / '.claude').mkdir()
-            os.symlink(ws.parent / 'outside', ws / '.claude/.cc-writes')
-
-        def linked_claude(ws): os.symlink(ws.parent / 'outside', ws / '.claude')
-        def claude_file(ws): (ws / '.claude').write_text('x')
-        def claude_dir_with_other_dir(ws): (ws / '.claude/other').mkdir(parents=True)
-        for build, flagged in ((file_in_cc_writes, ('.claude/.cc-writes', '.claude/.cc-writes/x')), (settings, ('.claude/settings.json',)),
-                               (linked_cc_writes, ('.claude/.cc-writes',)), (linked_claude, ('.claude',)), (claude_file, ('.claude',)),
-                               (claude_dir_with_other_dir, ('.claude/other',))):
-            with self.subTest(build=build.__name__):
-                out = self.probe_with(build)
-                self.assertEqual(out['status'], 'FAIL', out)
-                self.assertTrue(all(any(t.endswith('/workspace/' + name) for t in out['model_escape_failed_targets']) for name in flagged), out)
 
     def test_cli_created_dirs_need_this_uid_and_real_directories(self):
         with tempfile.TemporaryDirectory() as directory:

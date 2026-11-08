@@ -43,8 +43,8 @@ class HoldExitTests(unittest.TestCase):
 
     released = None   # the launcher path while the released coordinator drives the run
 
-    def command(self, *extra):   # the product default (efficient), as test_v317g1
-        command = [arg for arg in twl.trc.RealCoordinatorTests.command(self, *extra) if arg != '--strict']
+    def command(self, *extra):
+        command = twl.trc.RealCoordinatorTests.command(self, *extra)
         if self.released:
             command[1] = str(self.released)
         return command

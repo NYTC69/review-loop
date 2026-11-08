@@ -1,15 +1,13 @@
 """V325-CFG (gg-pipeline WI-266h, v3.2.4): a 598 s Claude gate turn held "claude turn changed global config: claude_settings"
 because the owner's interactive Claude Code session added an "env" entry to ~/.claude/settings.json meanwhile; `resume` re-ran
 the gate from scratch. Efficient mode now keeps a read-only Claude turn (reviewer, shadow, gate) whose only finding is that
-change, records it and prints a NOTE; author turns, strict mode and any other finding still hold, with a hint that the change
+change, records it and prints a NOTE; author turns and any other finding still hold, with a hint that the change
 may come from another process."""
 import hashlib
 import json
 import os
 import subprocess
-import sys
 import unittest
-from unittest.mock import patch
 
 from paired_session import test_real_coordinator as trc
 
@@ -31,19 +29,13 @@ class ConcurrentSettingsChangeTests(unittest.TestCase):
         self.h.setUp()
         self.addCleanup(self.h.doCleanups)
         self.addCleanup(self.h.tearDown)
-        for module in {id(m): m for m in (rc, sys.modules.get('paired_session.coordinator')) if m}.values():
-            pin = patch.object(module, 'DEFAULT_SAFETY_MODE', 'efficient')   # the product default, which the harness pins to strict
-            pin.start()
-            self.addCleanup(pin.stop)
         self.settings = self.h.test_home / '.claude' / 'settings.json'
         self.old_settings = self.settings.read_text()
 
-    def launch(self, match, *extra, strict=False, env=None):
+    def launch(self, match, *extra, env=None):
         source = self.h.root / f'settings-{self.h.run_dir.name}.json'
         source.write_text(NEW_SETTINGS)
-        command = [a for a in self.h.command('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude',
-                                             '--shadow', 'off', *extra) if strict or a != '--strict']
-        if strict: command.append('--skip-probe')
+        command = self.h.command('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude', '--shadow', 'off', *extra)
         result = subprocess.run(command, cwd=self.h.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={
             **os.environ, 'FAKE_CLAUDE_SETTINGS_WRITE': str(source), 'FAKE_CLAUDE_SETTINGS_MATCH': match, **(env or {})})
         state = json.loads((self.h.run_dir / 'state.json').read_text())
@@ -72,12 +64,6 @@ class ConcurrentSettingsChangeTests(unittest.TestCase):
         self.assertEqual(state['hold_reason'], HOLD + rc.GLOBAL_CONFIG_HINT)
         self.assertIn('may come from another process on this machine', state['hold_reason'])
         self.assertNotIn('concurrent_settings_change', self.turns(state, 'author')[0]['global_config_changes'])
-
-    def test_strict_mode_still_holds_a_gate_turn(self):
-        result, state = self.launch(GATE, '--adversarial-gate', 'on', strict=True)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertEqual(state['hold_reason'], HOLD + rc.GLOBAL_CONFIG_HINT)
-        self.assertNotIn('NOTE: ~/.claude/settings.json', result.stdout)
 
     def test_a_settings_change_with_another_finding_still_holds(self):
         queue = self.h.root / 'plugins-queue.json'   # a registry change that is not a normal plugin update, in the same turn

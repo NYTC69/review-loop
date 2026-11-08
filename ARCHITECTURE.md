@@ -23,7 +23,7 @@ user-facing description is README.md.
   `delivery-scope.md`, `loading-special-cases.md`.
 - `bin/paired-session`: the CLI entry point.
 - `paired_session/coordinator.py`: the CLI (`run`, `resume`, `accept`, `reject`, `note`, `status`, `abort`, `stop`,
-  `permission-probe`, …), the state machine, role dispatch, the finding ledger, budgets and acceptance. Helpers beside
+  …), the state machine, role dispatch, the finding ledger, budgets and acceptance. Helpers beside
   it include `worktree_lifecycle.py` (stage prompts, specialists, writers, the delivery report), `lifecycle_spine.py`
   (stage receipts), `review_report.py` (report mode and the delivery-report sections), `review_post.py` (the opt-in PR
   post), `docs_policy.py`, `evidence_guard.py`, `leak_scan.py` (the every-route credential scan of the change),

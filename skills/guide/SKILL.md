@@ -33,7 +33,7 @@ review-loop entry (resolves `entry`, runs the stage A checks)
 | Command | What it does |
 |---|---|
 | `/review-loop <work item>` | The default entry: fresh work → paired-session; existing code → paired-session `run --review-only`; an existing plan → paired-session with the plan as the work item (Entry below) |
-| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator directly: independent PLAN review (strict mode first needs a permission-probe PASS), EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security with lifecycle on. Lifecycle off stops after the gate; acceptance returns the uncommitted tree. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
+| `/review-loop:paired-session <work item> [--plan-only]` | Runs the paired-session coordinator directly: independent PLAN review, EXEC implementation and review, adversarial gate, then finish, quality polish, docs and security with lifecycle on. Lifecycle off stops after the gate; acceptance returns the uncommitted tree. It ends at DONE (or HOLD); the agent accepts or rejects a DONE run only on your explicit decision. `--plan-only` stops after the approved plan |
 | `/review-loop:review-pr [PR number\|PR URL\|ref] [aspects]` | Paired-session report mode (below) |
 | `/review-loop:code-quality-loop [max-rounds]` | A review-only paired-session run on the uncommitted change (with lifecycle on, one fix round for the non-blocking findings, quality writers on; `accept` normally commits locally unless `auto_commit: false`; lifecycle off stops after the gate and acceptance returns the uncommitted tree); `--legacy`, `--reorganize` and `entry: legacy` are refused (legacy removed in v2.13.0) |
 | `/review-loop:reorganize` | Reorganizes code file structure without changing behaviour (standalone) |
@@ -63,12 +63,10 @@ Once the coordinator has started, a refusal or HOLD is reported. Roles come from
 operator profile you name or `~/.config/review-loop/paired-session.json`;
 without one, Codex is the author and gate and Claude the reviewer.
 Gemini (Antigravity CLI `agy`) is an optional third vendor for the reviewer and the gate (README.md, Configuration).
-Runs are `efficient` by default: every sandbox applies, but no permission-probe
-PASS is required; `--strict` or `"safety_mode": "strict"` in the operator
-profile adds the probe gate. In both modes a reviewer turn that changes the
+Every run uses one mode: every sandbox applies and no permission probe exists (`permission-probe` and strict mode
+were removed in v3.7.0; `--strict` only prints a NOTE). A reviewer turn that changes the
 workspace is voided and restored, and an author commit is a HOLD.
-Platforms: macOS and native Windows (Linux and WSL are refused). On Windows only efficient mode runs (`--strict`,
-`permission-probe` and `--detach` are refused), Claude roles run without the Claude Code Bash sandbox, Git for
+Platforms: macOS and native Windows (Linux and WSL are refused). On Windows `--detach` is refused, Claude roles run without the Claude Code Bash sandbox, Git for
 Windows (Git Bash) is required, and run directories and workspaces stay out of OneDrive-synced folders.
 On Codex, ask "use paired-session for this task".
 Details: `docs/paired-session-migration.md`.
@@ -172,8 +170,8 @@ GitHub: https://github.com/NYTC69/review-loop
 - **A headless (`claude -p`) run stops when the turn ends.** `-p` exits at the end of its turn and kills the
   background coordinator. Use an interactive session; on macOS a headless session can start the run with
   `--detach` (it returns at once with its pid and log; `stop` ends it).
-- **`--strict`, `permission-probe` or `--detach` is refused on Windows.** Native Windows supports efficient mode
-  only, so a headless session is not supported there. Drop the flag and use an interactive session.
+- **`--detach` is refused on Windows.** A headless session is not supported there. Drop the flag and use an
+  interactive session.
 - **An entry refuses with `paired-session needs macOS or native Windows`.** Linux (WSL included) is not supported.
   Run from macOS or native Windows.
 - **A slash command does nothing in Codex (`Unrecognized command`).** Codex matches skills by their description,

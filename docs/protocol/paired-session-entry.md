@@ -47,9 +47,7 @@ review-loop entry has already checked both on a handoff).
 `agy` (`gemini_bin`) is needed only when a role runs gemini (ADR-21); on Windows the coordinator refuses a gemini role.
 On Windows, invoke Python snippets and scripts with `python -X utf8` (or `py -3 -X utf8`) so piped paths and content use UTF-8.
 
-On Windows only the default efficient mode runs: the coordinator refuses
-`--strict` (or `"safety_mode": "strict"` in the profile), `permission-probe` and
-`--detach`, so never choose them there, and report such a refusal verbatim. Git
+On Windows the coordinator refuses `--detach`, so never choose it there, and report such a refusal verbatim. Git
 for Windows (its Git Bash) is required, and the run directory and the workspace
 must not be in a OneDrive-synced folder.
 Identify the intended Git worktree. Use a dedicated task worktree; preserve
@@ -141,10 +139,8 @@ Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
 never interpolate user text as shell code. Write launcher logs under the run
-root's `logs/`, not next to the run dir (a strict probe counts a write beside
-the run dir as an author escape). Read a launcher log only when a coordinator
-command ends without its final line (DONE, HOLD, REFUSED, ACCEPTED, REPORTED or
-a probe PASS/FAIL), for example after a crash or a traceback: then read its last
+root's `logs/`, not next to the run dir. Read a launcher log only when a coordinator
+command ends without its final line (DONE, HOLD, REFUSED, ACCEPTED or REPORTED), for example after a crash or a traceback: then read its last
 lines for the error. Otherwise read `RUN_DIR/state.json` or `status --brief`, and
 never stream a whole log into the conversation.
 
@@ -172,8 +168,8 @@ create or switch to a dedicated worktree, and skip the Stage A dedicated-worktre
   of the change>`, see Work item), then states the review goal (one line such as
   "Review the change for correctness" is enough) and carries no review history
   (ledger ids or earlier findings).
-- Pass `--review-only` (and `--base`) to `permission-probe` and `run`
-  identically, with the lifecycle flag of any new run (Safety mode and the first commands). Later commands read
+- Pass `--review-only` (and `--base`) to `run`, with the lifecycle flag of any new run (The first command).
+  Later commands read
   the entry and base from the saved state; never pass a different `--base`.
 - `run` refuses before creating any state when the change is empty, the index
   has unmerged entries or partially staged paths, the base is not an ancestor of
@@ -203,7 +199,7 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
 - Budget: pass `--max-invocations 45` unless the operator profile sets `max_invocations` (under the
   default 25 the writers are usually `skipped:budget`; 45 is a cap that leaves room for the non-blocking fix round
   and the writers on a typical run). Rounds: a handed-over N wins over `soft_limit_exec`;
-  pass one `--max-exec-rounds` value, the same to `permission-probe` and `run`.
+  pass one `--max-exec-rounds` value to `run`.
 - Commit: `auto_commit: false` in `.review-loop/config.md` is handed over as `--auto-commit false`; pass
   it. Otherwise the review-only default applies (`auto_commit: true` unless the profile says false; no
   warning for `auto_commit` on this handoff). With lifecycle on, `accept` normally makes one local commit and never pushes. Lifecycle off returns the uncommitted tree.
@@ -253,7 +249,7 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
 - `WORKITEM.md` states the review goal and the pins (target repository, PR URL and number, head OID,
   pinned base OID, merge base), and no review history. Write the materializer's JSON object, unchanged, to
   `RUN_DIR/pr-pins.json`.
-- `run` (and in strict mode `permission-probe`) gets `--review-only --review-report --lifecycle-mode on
+- `run` gets `--review-only --review-report --lifecycle-mode on
   --auto-commit false`, `--workspace` the clone (or the current worktree), `--base <merge_base>` and
   `--review-pr-pins RUN_DIR/pr-pins.json` for a materialized input (the run freezes them for the report
   and the post), `--no-test-command` and `--aspects` as above. Never `--adversarial-gate off`.
@@ -279,54 +275,40 @@ change and writes a report; it never fixes, commits, pushes or posts on its own.
   permissions profile (follow-up). An operator who wants the credential deny on every role uses Claude
   read-only roles (operator profile).
 
-## Safety mode and the first commands
+## The first command
 
-For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value.
+For review-pr report mode, always pass `--lifecycle-mode on` to `run`. This overrides a profile's off value.
 For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`.
-When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile. Never pass
-`--skip-probe` or `--accept-unverified-codex-cli` on your own initiative.
-For entries other than review-pr, when the user selects the stop-after-gate route, pass `--lifecycle-mode off` in both commands.
-The removed `--adversarial-gate off`, `--override-rejection`,
-`--accept-unverified-claude-author` and `--accept-probe-skip` options are refused.
-Use the enabled gate, `resume --add-rounds N` or `note --scope-change` at HOLD, and permission-probe for strict runs.
+When a profile sets it, omit the flag (or pass the profile's value). The CLI value overrides the profile.
+Do not pass `--skip-probe`, `--strict` or any `--accept-*` waiver: since v3.7.0 they do nothing or are refused.
+For entries other than review-pr, when the user selects the stop-after-gate route, pass `--lifecycle-mode off`.
+The removed `--adversarial-gate off`, `--override-rejection`, `--accept-unverified-claude-author`,
+`--accept-probe-skip` and `--accept-unverified-codex-cli` options are refused.
+Use the enabled gate, and `resume --add-rounds N` or `note --scope-change` at HOLD.
 `--lifecycle-mode off` is the supported stop-after-gate route: PLAN -> EXEC -> GATE -> DONE (acceptance pending). The operator then handles FINISH, POLISH-Q, docs, security review and merging. Accept never commits on this route: it hands back the uncommitted tree. New runs default to `on` (the full lifecycle); CLI, operator/workspace profiles and Python entry points may select `off`, and saved off runs resume, accept, reject, note and abort normally.
-`--strict` comes only from the user or the operator profile (`safety_mode`),
-and goes to `permission-probe` and `run` alike:
-both modes keep every sandbox; the default `efficient` mode does not require
-the probe PASS and its evidence guard only logs, while `--strict` restores
-both (`paired_session/docs/efficient-mode.md`; on Windows the Claude roles run without the Claude Code Bash
-sandbox, which native Windows lacks, and strict is refused). An efficient run needs no probe waiver. The run is strict when the user asked for
-`--strict` or the operator profile sets `"safety_mode": "strict"`; read the
-profile before choosing the flow.
-- Default (efficient): no permission probe; the first coordinator command is
-  `run`. If `run` ends before `RUN_DIR/state.json` exists, report its output
-  verbatim as a refusal (a host setup step's stage A exit stays a stage A
-  failure).
-- Strict: `permission-probe` first (same arguments, without
-  `--stop-after-plan`), then `run` as a separate command. Exit 0 from the probe
-  means PASS or PASS_RESIDUAL_RISK; any other result is a HOLD: report it and
-  stop. On exit 0, read `RUN_DIR/permission-probe.json` and tell the user if
-  the status is PASS_RESIDUAL_RISK.
+Every run uses one mode (`paired_session/docs/efficient-mode.md`): every sandbox applies, no permission probe is
+needed and the evidence guard only logs. `permission-probe` and strict mode were removed in v3.7.0: `permission-probe`
+is refused, and `--strict` or `"safety_mode": "strict"` in a profile only prints a NOTE (on Windows the Claude roles
+run without the Claude Code Bash sandbox, which native Windows lacks). The first coordinator command is `run`. If
+`run` ends before `RUN_DIR/state.json` exists, report its output verbatim as a refusal (a host setup step's stage A
+exit stays a stage A failure).
 
 Add the same `--config` and mapped one-run options to every call. Plan only (the Claude skill's
-`--plan-only`, or a request on either host to stop after the plan): add `--stop-after-plan` only to `run`,
-never to `permission-probe`; the run HOLDs after PLAN approval (`PLAN approved; stopped by
+`--plan-only`, or a request on either host to stop after the plan): add `--stop-after-plan` only to `run`;
+the run HOLDs after PLAN approval (`PLAN approved; stopped by
 --stop-after-plan; resume enters EXEC`) with the approved plan in `RUN_DIR/plan.md`: show it, and `resume`
 only on the user's request. Every command that can
-dispatch model turns (`permission-probe`, `run`, `resume`, `reject --expect`)
+dispatch model turns (`run`, `resume`, `reject --expect`)
 uses the host skill's long-command form. Wait for each such command to finish
 before starting the next; do not start a second run while one is active.
 
 ## Start line and lifecycle-mode backstop
 
-Once `RUN_DIR/state.json` exists (strict: after the probe, before `run`), read
+Once `RUN_DIR/state.json` exists, read
 its frozen `config` and print one start line from it: author, reviewer and gate
 vendor and model; plan and exec rounds, invocations and timeout; docs file and
 skip-quality-polish; and which values came from `.review-loop/config.md`.
 For review-pr, the selected mode is always `on`. Other entries use the profile's `lifecycle_mode`, or `on` by default; the user may select `off`.
-In strict mode, if `config.lifecycle_mode` differs from the selected mode, run `abort` with the run's
-saved options and report a plugin version mismatch instead of starting the run.
-
 While the run is active, do not call plain `status`: it needs the run lease
 and, while the run holds it, prints
 `HOLD: another coordinator currently owns this run` although the run is not on
@@ -338,21 +320,17 @@ a plugin version mismatch.
 
 ## Existing runs and HOLD
 
-Later commands on an existing run (`resume`, `permission-probe
---retry-uncertain`, `abort`, `reject`, `accept`, `note`,
+Later commands on an existing run (`resume`, `abort`, `reject`, `accept`, `note`,
 `attach-verification`, `withdraw-findings`) pass the saved `state.json` `config.lifecycle_mode`
 value and the run's original workspace, work item, run directory, profile and
 options, never the current default. Saved off runs use this release normally.
 Report DONE/HOLD and the run directory. On
 HOLD, inspect its state, findings, and receipts before resuming. If `uncertain_active` is
-present, do not rerun the probe or resume automatically: check its pid and
-receipts; if the child is still alive, wait for it to stop. If its phase is
-`PROBE` or `AUTHOR_PERMISSION_PROBE`, ask before rerunning the disposable probe
-with `permission-probe --retry-uncertain`. For a product-work turn, ask before
-`resume --retry-uncertain` because this may replay a model turn. After
-recovering an interrupted probe, use `resume` on the existing run directory;
-do not use `run` again or start a new work item. In strict mode, re-run the
-permission probe first if it is missing or no longer matches.
+present, do not resume automatically: check its pid and
+receipts; if the child is still alive, wait for it to stop. Ask before
+`resume --retry-uncertain` because this may replay a model turn (a `PROBE` or
+`AUTHOR_PERMISSION_PROBE` turn saved by an earlier release is settled the same way and replays nothing). Use
+`resume` on the existing run directory; do not use `run` again or start a new work item.
 
 For coordinator HOLD, acceptance, rejection and round-limit rules, use
 [the operator reference](../../paired_session/README.md#acceptance-rejection-and-round-limits).

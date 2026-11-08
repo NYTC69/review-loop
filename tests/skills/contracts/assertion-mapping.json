@@ -131,11 +131,7 @@
     "paired_session_skill_lifecycle_mode_on": [
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
-      },
-      {
-        "path": "skills/paired-session/SKILL.md",
-        "needle": "bin/paired-session\" permission-probe \\ --workspace \"$WORKSPACE\" --workitem \"$WORKITEM\" --run-dir \"$RUN_DIR\" \\ --test-command \"$TEST_COMMAND\" --lifecycle-mode on"
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run`. This overrides a profile's off value."
       },
       {
         "path": "skills/paired-session/SKILL.md",
@@ -147,7 +143,7 @@
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "Strict: replace `run` in the first invocation with `permission-probe` (same arguments, without `--stop-after-plan`)"
+        "needle": "There is no probe step: `permission-probe` and strict mode were removed in v3.7.0 (`--strict` only prints a NOTE)."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
@@ -155,23 +151,23 @@
       },
       {
         "path": "skills/paired-session/SKILL.md",
-        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands."
+        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value)."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value) in both commands."
+        "needle": "For other entries, pass `--lifecycle-mode on` only when no operator/workspace profile sets `lifecycle_mode`. When a profile sets it, omit the flag (or pass the profile's value)."
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "When a profile sets it, omit the flag (or pass the profile's value) in both commands. The CLI value overrides the profile."
+        "needle": "When a profile sets it, omit the flag (or pass the profile's value). The CLI value overrides the profile."
       },
       {
         "path": "skills/paired-session/SKILL.md",
-        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run`. This overrides a profile's off value."
       },
       {
         "path": ".agents/skills/paired-session/SKILL.md",
-        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run` and, in strict mode, to `permission-probe`. This overrides a profile's off value."
+        "needle": "For review-pr report mode, always pass `--lifecycle-mode on` to `run`. This overrides a profile's off value."
       }
     ],
     "paired_session_skill_saved_lifecycle_mode": [
@@ -187,11 +183,11 @@
     "paired_session_skill_no_operator_waivers": [
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "Never pass `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative."
+        "needle": "Do not pass `--skip-probe`, `--strict` or any `--accept-*` waiver: since v3.7.0 they do nothing or are refused."
       },
       {
         "path": "docs/protocol/paired-session-entry.md",
-        "needle": "Never pass `--skip-probe` or `--accept-unverified-codex-cli` on your own initiative."
+        "needle": "Do not pass `--skip-probe`, `--strict` or any `--accept-*` waiver: since v3.7.0 they do nothing or are refused."
       }
     ],
     "guide_entry_key_and_commands": [

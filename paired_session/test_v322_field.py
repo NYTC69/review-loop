@@ -9,10 +9,10 @@ rc = trc.rc
 PREFIX = 'next author turn is unavailable; note remains undelivered; '
 WORKITEM_RECOVERY = ("this run's frozen work item cannot change. Edit the work-item file {} "
                      'to describe the point in words (no finding ids), then use note --scope-change --text "..." '
-                     'and run the printed Probe: and Start: commands (a successor with a fresh PLAN), '
+                     'and run the printed Start: command (a successor with a fresh PLAN), '
                      'or abort and start a new run')
 PLAN_RECOVERY = ('resume does not rewrite the approved plan. Use note --scope-change --text "..." '
-                 '(no finding ids) and run the printed Probe: and Start: commands for a successor '
+                 '(no finding ids) and run the printed Start: command for a successor '
                  'with a fresh PLAN, or abort and start a new run')
 
 
@@ -64,7 +64,7 @@ class FieldMessageTests(unittest.TestCase):
         restored.state['status'] = 'HOLD'
         restored.args.action = 'note'
         commands = restored.scope_change('Describe the implementation point without finding ids.', None)
-        self.assertIn('Probe: ', commands)
+        self.assertNotIn('Probe: ', commands)   # v3.7.0: the successor starts with run only
         self.assertIn('Start: ', commands)
         task = (restored.evidence / 'successor-workitem.md').read_text()
         self.assertIn(self.workitem.read_text(), task)
@@ -101,8 +101,8 @@ class FieldMessageTests(unittest.TestCase):
         co = self.coordinator()
         co.state.update(status='HOLD', phase='EXEC', next='author')
         for key in ('active', 'uncertain_active'):
-            for phase, command in (('EXEC', 'resume'), ('PROBE', 'permission-probe'),
-                                   ('AUTHOR_PERMISSION_PROBE', 'permission-probe')):
+            for phase, command in (('EXEC', 'resume'), ('PROBE', 'resume'),   # v3.7.0: a probe turn saved by v3.6.0 settles on resume
+                                   ('AUTHOR_PERMISSION_PROBE', 'resume')):
                 with self.subTest(key=key, phase=phase):
                     co.state.update(active=None, uncertain_active=None)
                     co.state[key] = {'phase': phase, 'role': 'author'}

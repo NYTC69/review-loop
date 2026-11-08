@@ -324,7 +324,7 @@
       "id": "codex_entry_hold_never_falls_back_to_legacy",
       "kind": "contains",
       "path": ".agents/skills/review-loop/references/entry.md",
-      "needle": "A paired-session probe/run HOLD is reported and never falls back to legacy."
+      "needle": "A paired-session run HOLD is reported and never falls back to legacy."
     },
     {
       "id": "review_only_routes_to_paired_session",
@@ -363,22 +363,22 @@
       "needle": "Route only a task-related\n  change: if a path is unrelated to the request, ask whether to review it too"
     },
     {
-      "id": "review_only_probe_and_run_get_the_same_flags",
+      "id": "review_only_run_gets_the_review_flags",
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
-      "needle": "Pass `--review-only` (and `--base`) to `permission-probe` and `run`\n  identically"
+      "needle": "Pass `--review-only` (and `--base`) to `run`, with the lifecycle flag of any new run (The first command)."
     },
     {
       "id": "claude_paired_session_review_only_flags",
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
-      "needle": "add `--review-only` (and `--base \"$BASE\"`\nonly when the user named a base) to both blocks."
+      "needle": "add `--review-only` (and `--base \"$BASE\"`\nonly when the user named a base) to the block."
     },
     {
       "id": "codex_paired_session_review_only_flags",
       "kind": "contains",
       "path": ".agents/skills/paired-session/SKILL.md",
-      "needle": "add `--review-only` (and\n`--base \"$BASE\"` only when the user named a base) to both invocations."
+      "needle": "add `--review-only` (and\n`--base \"$BASE\"` only when the user named a base) to the invocation."
     },
     {
       "id": "legacy_execute_review_only_mapping_documented",
@@ -645,7 +645,7 @@
       "id": "paired_session_skill_cql_review_only_flags",
       "kind": "contains",
       "path": "skills/paired-session/SKILL.md",
-      "needle": "the shared contract's Code-quality-loop entry. In both blocks add `--review-only` and the options it names"
+      "needle": "the shared contract's Code-quality-loop entry. In the block add `--review-only` and the options it names"
     },
     {
       "id": "paired_session_skill_cql_explicit_test_command",
@@ -836,7 +836,7 @@
       "id": "pse_plan_only_maps_to_stop_after_plan",
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
-      "needle": "add `--stop-after-plan` only to `run`,\nnever to `permission-probe`"
+      "needle": "add `--stop-after-plan` only to `run`;\nthe run HOLDs after PLAN approval"
     },
     {
       "id": "review_loop_review_only_hands_over_auto_commit_false",

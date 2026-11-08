@@ -15,9 +15,8 @@ It accepts only on your explicit acceptance.
 A request to review existing code hands off the same way as `run --review-only`, and an existing
 plan becomes the work item (PLAN drafts and reviews it again). `entry: legacy`, asking for "the legacy
 review-loop workflow" and resuming a legacy session are refused, and a failed check before the
-coordinator starts refuses instead of falling back. Runs are `efficient` by
-default (every sandbox, no permission-probe PASS required); `--strict` or
-`"safety_mode": "strict"` in the operator profile adds the probe gate.
+coordinator starts refuses instead of falling back. Every run uses one mode (every sandbox, no permission probe:
+`permission-probe` and strict mode were removed in v3.7.0; `--strict` only prints a NOTE).
 The legacy workflow was removed in v2.13.0 (routing) and v2.13.1 (the Codex plan and execute skills, the
 Codex Stage 1 workflow and its agents). Legacy session files under `.review-loop/sessions/` are left on
 disk and never read.
@@ -49,7 +48,7 @@ Not on Codex:
 - Codex loads the skills from the installed plugin (`codex plugin add review-loop@review-loop-marketplace`,
   see `docs/install-codex.md`), not from the workspace.
 - macOS and native Windows: every entry refuses another host (`paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported`).
-  On Windows only efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git for Windows
+  On Windows `--detach` is refused, Git for Windows
   (Git Bash) is required, and run directories and workspaces stay out of OneDrive-synced folders. On Windows the
   Codex skills run their commands in PowerShell as best effort; the Claude Code entry is the tested Windows path.
 - **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
@@ -73,7 +72,7 @@ Not on Codex:
 - **A slash command does nothing (`Unrecognized command`).** Slash commands such as `/review-loop:paired-session`
   are Claude Code only; Codex matches skills by their description, in natural language only. Ask in plain words,
   for example "run review-loop on this branch", "review PR 123" or "use paired-session for this task".
-- **`--strict`, `permission-probe` or `--detach` is refused on Windows.** Native Windows supports efficient mode
-  only, so a headless session is not supported there. Drop the flag and use an interactive session.
+- **`--detach` is refused on Windows.** A headless session is not supported there. Drop the flag and use an
+  interactive session.
 - **An entry refuses with `paired-session needs macOS or native Windows`.** Linux (WSL included) is not supported.
   Run from macOS or native Windows.

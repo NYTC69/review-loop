@@ -15,6 +15,11 @@ from paired_session import test_real_coordinator as trc
 rc = trc.rc
 
 
+def would_hold(state, text):
+    """v3.7.0: the evidence guard only logs; a turn records what it would have held on."""
+    return any(text in t.get('evidence_guard', {}).get('would_hold', '') for t in state['turns'])
+
+
 class EvidenceGuardWiringTests(unittest.TestCase):
     def setUp(self):
         self.h = trc.RealCoordinatorTests()
@@ -51,8 +56,8 @@ class EvidenceGuardWiringTests(unittest.TestCase):
                 self.assertEqual(self.access(command), reason)
         result = self.h.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                         env={'FAKE_SENSITIVE_READ': str(self.evidence / 'secret.json')})
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('accessed isolated evidence directory', json.loads((self.h.run_dir / 'state.json').read_text())['hold_reason'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)   # v3.7.0: logged, never held
+        self.assertTrue(would_hold(json.loads((self.h.run_dir / 'state.json').read_text()), 'accessed isolated evidence directory'))
 
     def test_an_unparseable_form_behaves_exactly_as_today_and_is_counted(self):
         commands = ['cat "$(resolve)"', 'cat "$(resolve)" evidence/a.txt', f'cat {self.evidence}/x; echo $(date)', 'for f in *; do cat $f; done',
@@ -84,9 +89,9 @@ class EvidenceGuardWiringTests(unittest.TestCase):
 
     def test_a_codex_native_command_has_no_known_cwd(self):   # its event carries no workdir: relative operands fall back
         result = self.h.run_coordinator('--shadow', 'off', '--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol', '--test-command', 'ls evidence/')
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)   # v3.7.0: logged, never held
         state = json.loads((self.h.run_dir / 'state.json').read_text())
-        self.assertIn('gate accessed isolated evidence directory', state['hold_reason'])
+        self.assertTrue(would_hold(state, 'gate accessed isolated evidence directory'))
         self.assertEqual([t['evidence_guard']['fallbacks'] for t in state['turns'] if t.get('role') == 'reviewer' and 'evidence_guard' in t][-1:], [0])
 
     T0 = '2026-09-21T00:00:01Z'
@@ -180,9 +185,9 @@ class EvidenceGuardWiringTests(unittest.TestCase):
         (inside / 'config.toml').write_text((self.h.test_home / '.codex' / 'config.toml').read_text())
         result = self.h.run_coordinator('--shadow', 'off', '--gate-vendor', 'codex', '--gate-model', 'gpt-6.1-sol', '--test-command', 'ls evidence/',
                                         env={'FAKE_CODEX_ROLLOUT_CWD': '1', 'CODEX_HOME': str(inside)})
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)   # v3.7.0: logged, never held
         self.assertTrue(sorted((inside / 'sessions').glob('rollout-*.jsonl')))   # the record exists, and is not trusted
-        self.assertIn('gate accessed isolated evidence directory', json.loads((self.h.run_dir / 'state.json').read_text())['hold_reason'])
+        self.assertTrue(would_hold(json.loads((self.h.run_dir / 'state.json').read_text()), 'gate accessed isolated evidence directory'))
 
     def test_the_receipt_records_the_fallbacks(self):
         result = self.h.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--test-command', 'python3 -m unittest $(true)')

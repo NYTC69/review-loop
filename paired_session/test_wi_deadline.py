@@ -103,7 +103,7 @@ class WiDeadlineTests(unittest.TestCase):
         self.assertEqual(rescoped.returncode, 0, rescoped.stdout + rescoped.stderr)
         self.assertEqual(json.loads(state_path.read_text())['status'], 'ABORTED')
 
-    def test_an_uncertain_probe_turn_past_the_deadline_is_settled_without_a_new_probe(self):
+    def test_a_saved_uncertain_probe_turn_past_the_deadline_is_settled_by_resume(self):   # v3.7.0: a turn saved by v3.6.0
         done = self.run_coordinator('--wi-deadline', '100000', '--stop-after-plan')
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
         state_path, report = self.run_dir / 'state.json', self.run_dir / 'permission-probe.json'
@@ -115,7 +115,7 @@ class WiDeadlineTests(unittest.TestCase):
         state_path.write_text(json.dumps(state))
         had_report = report.exists()
         command = self.command('--retry-uncertain')
-        command[2] = 'permission-probe'
+        command[2] = 'resume'
         held = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
         after = json.loads(state_path.read_text())
         self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
@@ -137,7 +137,7 @@ class WiDeadlineTests(unittest.TestCase):
         self.assertEqual((held.returncode, state['hold_reason']), (2, 'EXEC round limit reached'), held.stdout + held.stderr)
         state['started_at'] -= 100001
         state_path.write_text(json.dumps(state))
-        for action in ('resume', 'permission-probe'):
+        for action in ('resume',):
             command = self.command(*flags, '--skip-probe')
             command[2] = action
             refused = subprocess.run(command, cwd=self.root, text=True, capture_output=True)

@@ -1,4 +1,4 @@
-"""Batch RF (v2.9.2 release fixes): cross-vendor probe skip, Claude plugin auto-update, APPROVE with open blocking findings, TOML-aware trust attribution."""
+"""Batch RF (v2.9.2 release fixes): Claude plugin auto-update, APPROVE with open blocking findings, TOML-aware trust attribution."""
 import hashlib
 import json
 import os
@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
-from paired_session import test_operator_roles as tor
 from paired_session import test_real_coordinator as trc
 
 rc = trc.rc
@@ -19,53 +18,6 @@ _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_
 
 def trust(path):
     return '[projects.' + json.dumps(str(path)) + ']\ntrust_level = "trusted"\n'
-
-
-class CrossVendorProbeSkipTests(unittest.TestCase):
-    locals().update({name: getattr(tor.ProbeSkipTests, name) for name in ('setUp', 'co', 'cli', 'state', 'probe', 'entries')})
-    SKIP = ('--accept-probe-skip', '--reason', 'checked by hand')
-
-    def write_report(self, co, gate_probe):
-        report = {'status': 'PASS', 'reviewer_flags_digest': co.reviewer_flags_digest(), 'author_flags_digest': co.author_flags_digest(),
-                  'gate_flags_digest': co.gate_flags_digest(), 'gate_permission_probe': gate_probe,
-                  'author_permission_probe': {'status': 'PASS', 'd1a_model_verdict': 'UNKNOWN', 'd1b_synthetic_verdict': 'PASS'},
-                  'global_config_changes': {'status': 'PASS'}}
-        (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
-
-    def test_a_cross_vendor_skip_is_refused_without_a_bound_passing_gate_probe(self):
-        refused = self.cli('run', '--gate-vendor', 'codex', *self.SKIP)
-        self.assertEqual(refused.returncode, 2, refused.stdout)
-        self.assertIn('REFUSED: gate vendor codex differs from reviewer vendor claude', refused.stdout)
-        self.assertIn('permission-probe', refused.stdout)
-        self.assertNotIn('probe_skip_override', self.state())
-
-    def test_a_same_vendor_skip_is_unchanged(self):
-        accepted = self.cli('run', *self.SKIP)
-        self.assertEqual(accepted.returncode, 0, accepted.stdout)
-        self.assertEqual(self.state()['probe_skip_override']['actor'], 'operator')
-
-    def test_a_cross_vendor_run_with_a_passing_gate_probe_is_unaffected(self):
-        co = self.co('--gate-vendor', 'codex')
-        self.write_report(co, {'status': 'PASS'})
-        accepted = self.cli('run', '--gate-vendor', 'codex', *self.SKIP)
-        self.assertEqual(accepted.returncode, 0, accepted.stdout)
-        self.assertIn('probe_skip_override', self.state())
-
-    def test_a_saved_acceptance_and_a_gate_probe_for_other_flags_do_not_cover_a_cross_vendor_gate(self):
-        co = self.co('--gate-vendor', 'codex')
-        co.state['probe_skip_override'] = {'actor': 'operator', 'reason': 'x', 'reviewer_flags_digest': co.reviewer_flags_digest(),
-                                           'author_flags_digest': co.author_flags_digest(), 'gate_flags_digest': co.gate_flags_digest()}
-        with patch.object(rc.lifecycle_spine, 'fake_dispatch_guard', return_value=False):
-            self.assertFalse(co._probe_skip_accepted())               # saved state alone, no probe
-            self.write_report(co, {'status': 'PASS'})
-            self.assertTrue(co._probe_skip_accepted())
-            self.write_report(co, {'status': 'FAIL'})
-            self.assertFalse(co._probe_skip_accepted())
-            self.write_report(co, {'status': 'PASS'})
-            report = json.loads((co.run_dir / 'permission-probe.json').read_text())
-            report['gate_flags_digest'] = '0' * 64                    # a gate probe bound to other flags
-            (co.run_dir / 'permission-probe.json').write_text(json.dumps(report))
-            self.assertFalse(co._probe_skip_accepted())
 
 
 class ClaudeAutoUpdateTests(unittest.TestCase):
@@ -92,10 +44,9 @@ class ClaudeAutoUpdateTests(unittest.TestCase):
         use_lifecycle_on(self, self)
         co = self.coordinator('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude')
         self.assertEqual(co.reviewer_flags()['claude_child_env'], rc.CLAUDE_CHILD_ENV)
-        self.assertEqual(co.author_flags()['claude_child_env'], rc.CLAUDE_CHILD_ENV)
-        digests = (co.author_flags_digest(), co.reviewer_flags_digest(), co.gate_flags_digest())
+        digests = (co.reviewer_flags_digest(), co.gate_flags_digest())   # v3.7.0: the author flags digest went with the probe
         with patch.object(rc, 'CLAUDE_CHILD_ENV', {}):
-            self.assertTrue(all(old != new for old, new in zip(digests, (co.author_flags_digest(), co.reviewer_flags_digest(), co.gate_flags_digest()))))
+            self.assertTrue(all(old != new for old, new in zip(digests, (co.reviewer_flags_digest(), co.gate_flags_digest()))))
         self.run_dir = self.root / 'codex-only'
         codex = self.coordinator('--author-vendor', 'codex', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex')
         self.assertNotIn('claude_child_env', codex.reviewer_flags())

@@ -32,7 +32,7 @@ class CodexDefaultModelTests(unittest.TestCase):
         return state_path
 
     def test_a_cli_below_the_minimum_is_refused_before_any_state(self):
-        for action in ('run', 'permission-probe'):
+        for action in ('run',):
             with self.subTest(action=action):
                 refused = self.cli(action, 'codex-cli 0.159.1')
                 self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)

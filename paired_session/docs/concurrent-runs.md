@@ -17,7 +17,7 @@ archives an inherited legacy baseline into its own `internal/history-start.tar`,
 the legacy parent's original tree.
 
 Use a separate, absolute `CODEX_HOME` for each concurrently active lane/run.
-Keep each lane's home stable across its permission probe, run and supported
+Keep each lane's home stable across its run and supported
 resume. Do not share that home with another active run or interactive Codex
 session that can change its configuration. The default home (`~/.codex`, used
 when `CODEX_HOME` is unset) counts as a shared home: while any lane runs with a
@@ -40,11 +40,11 @@ the current expected workspace(s). A second workspace's addition can remain afte
 that subtraction and be classified as `unexpected-content-change`. For a Codex
 author, the other lane's trust block also changes this lane's
 `author_flags_digest` (its `codex_config_sha256` removes only this lane's own
-trust blocks), so the permission-probe PASS no longer matches the run. This is a
-safety check, not permission to accept arbitrary concurrent changes.
-Since FIELD-22 a turn's check (not the permission probe) also accepts the exact trust block of another live
+trust blocks). This is a safety check, not permission to accept arbitrary
+concurrent changes.
+Since FIELD-22 a turn's check also accepts the exact trust block of another live
 paired-session run's workspace, named by its workspace lease (pid alive, state ACTIVE). Separate homes are still
-the recommendation: the author flags digest and the probe are unchanged.
+the recommendation: the author flags digest is unchanged.
 
 Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
 `attribute_global_config_changes`, and `_invoke_once` in `../coordinator.py`.
@@ -60,25 +60,22 @@ Source anchors: `global_config_snapshot`, `_only_codex_workspace_trust_append`,
    home as a shortcut. This guide does not authorize account access or prescribe
    credential contents.
 3. Select that same home in the environment of the lane's coordinator invocation
-   for the existing permission-probe, run and resume workflow. The coordinator
-   resolves `CODEX_HOME` at startup and passes it to Codex children (the Codex
-   author sandbox check instead uses a temporary home under the external private scratch root
-   holding a copy of its `config.toml`). An unset value falls back
+   for the existing run and resume workflow. The coordinator
+   resolves `CODEX_HOME` at startup and passes it to Codex children. An unset value falls back
    to the shared default home. A relative path is rejected, and when any role
-   is Codex a home that is not an existing directory is refused before the
-   probe or any dispatch.
-4. Preserve the installed CLI/model defaults and all capability, program-binding,
-   permission and probe checks. Perform the required preflight for each lane;
-   do not copy a PASS receipt or override a failure because another lane passed.
-   Existing cache validation remains authoritative.
+   is Codex a home that is not an existing directory is refused before any
+   dispatch.
+4. Preserve the installed CLI/model defaults and all capability, program-binding
+   and permission checks. Perform the required preflight for each lane;
+   do not copy a receipt or override a failure because another lane passed.
 5. Record the non-secret lane-to-home/run/worktree mapping in operator notes.
    Keep those paths and configuration stable while the lane is active. If a run
    already HOLDed, retain its receipts and use the documented recovery process;
    do not edit trust entries, switch its home mid-run, or rewrite evidence to
    manufacture a clean baseline.
 
-These are preparation instructions only. No setup, login, trust mutation or
-native probe is performed by reading this document.
+These are preparation instructions only. No setup, login or trust mutation
+is performed by reading this document.
 
 ## Residual shared state and limits
 
@@ -86,81 +83,31 @@ native probe is performed by reading this document.
   `~/.codex/config.toml`. Other activity changing that file can still invalidate
   applicable checks. Do not disable monitoring to suppress it.
 - The coordinator still records user-level Claude settings and installed-plugin
-  metadata under the same OS home. `CODEX_HOME` does not isolate Claude. Probe and
-  per-vendor turn attribution have their existing scopes; do not assume every
+  metadata under the same OS home. `CODEX_HOME` does not isolate Claude. Per-vendor
+  turn attribution has its existing scope; do not assume every
   captured file is handled identically in every phase.
 - Capability checks still inspect system/managed Codex policy and applicable
   workspace configuration. Separate homes do not override `/etc` policy or macOS
   managed preferences and do not make an unapproved permission profile safe.
-- Probe-pass storage remains under the user's shared cache
-  (`~/.cache/review-loop/probe-pass`) with its existing identity checks; its key
-  covers the probe surface version, the reviewer, author and gate flag digests
-  and, when a role is Claude, the Claude CLI version. The `CODEX_HOME` path is not
-  an input, but for a Codex author the author flags digest covers the selected
-  home's `config.toml` contents (minus this workspace's trust blocks). Host
+- For a Codex author the author flags digest covers the selected home's
+  `config.toml` contents (minus this workspace's trust blocks). Host
   processes, filesystem aliases, workspace leases, network limits and
   provider-side account limits are not isolated by this variable.
 - Hooks/plugins restrictions, `--ignore-rules`, approval policy, sandbox boundaries
   and evidence validation remain unchanged. Never add broad permissions or waive
   a failing guard to make concurrent work proceed.
 
-Source anchors: `Coordinator.__init__`, `probe_passed`, `_probe_cache_key`,
+Source anchors: `Coordinator.__init__`,
 `_invoke_once` in `../coordinator.py`, and `inspect` in
 `../codex_capability_guard.py`.
 
 ## Concurrent permission probes (FIELD-13)
 
-New runs put the Claude author probe tree and OS-denial targets in the per-run
-private scratch root outside every repo. Role TMPDIRs and disposable probe homes
-also live there. Saved runs without `scratch_root` keep their original layout
-on resume. The following FIELD-13 parent-listing description applies to that
-legacy layout; new runs compare the external scratch parent as well as the real run directory's parent. Keep
+v3.7.0 removed the permission probe, the Claude author probe tree and the
+per-parent probe lock (`ProbeParentLock`), so concurrent commands no longer
+compare listings of the run dir's parent and no longer wait for a probe lock.
+The FIELD-13 design is kept as a record in `field13-concurrent-probes.md`. Keep
 launcher logs under `<repo>/.review-loop/logs/`, separate from `runs/`.
-
-The Claude author probe (`_claude_author_probe` in `../coordinator.py`) creates its
-probe tree `paired-session-claude-probe-tree-*` beside the run dir, in the run dir's
-parent. It judges writes outside its own tree by comparing listings (`listing` in
-`../claude_author_probe.py`) of every entry in that parent except its own tree and
-its own run dir, plus every `/tmp/paired-session-author-probe-*` name. Entries in the
-parent are listed without descending into them and with directory mtimes ignored,
-so writes inside another run dir are not seen; an entry that is created, removed,
-replaced or (for a file) modified there is.
-
-Since v2.9.7 concurrent commands do not fail each other through this listing as
-long as all of them run v2.9.7 or later (design: `field13-concurrent-probes.md`):
-- The tree name is outside the `/tmp` probe glob, so a run dir directly in `/tmp`
-  no longer exposes its tree to every probe on the host.
-- `main` takes one lock per run-dir parent (`ProbeParentLock`, under
-  `/tmp/paired-session-probe-locks-<uid>/`) before the run lease. A `permission-probe`
-  whose saved or given author vendor is Claude holds it for the whole command; any
-  command on a run dir that does not exist yet holds it until the run dir is made
-  (when the parent is missing too, on the nearest existing ancestor). Another such
-  command in the same parent waits, printing `waiting for the probe lock ...` on
-  stderr, and after its bound ends with `REFUSED: another command holds the probe
-  lock ...` before it writes state or supersedes a report (and before it creates
-  its run dir, unless the parent was missing too: then an empty run dir stays).
-- The lock never excuses a listing difference. A probe whose lock file is unlinked
-  or replaced during its window fails with `probe-lock-tampered`.
-
-Still not covered, so still a FAIL beside the run dir: an operator file in the
-parent that changes during the window (for example a launcher log), a command on an
-existing run dir that writes beside it (only fresh run dirs and Claude-author
-permission probes take the lock; the fake-lifecycle test harness makes
-`paired-session-tree-*` and `paired-session-git-*` scratch there), a coordinator
-older than v2.9.7, and a run dir whose parent is `/tmp`, the home directory or the
-temporary directory: a Codex author probe makes scratch directories there
-(`ps-escape-*` in `/tmp`, `.paired-session-escape-*` in the home directory,
-`paired-session-external-*` in the temporary directory), and any other activity
-there counts too. On macOS any process of this user that can read the lock file
-can delay probes in that parent by holding an `flock` on it (availability only).
-Keep launcher logs and other operator files out of the run dir's parent.
-
-Two other names are not concurrency noise. A `.paired-session-os-probe-*` entry in
-the parent is a Claude reviewer or gate OS-denial target (`_claude_os_probe_path`),
-and a `/tmp/paired-session-author-probe-*.txt` file is an author probe's `/tmp`
-escape target (Claude or Codex); both exist only when that write got past the
-sandbox. If either appears in a report, treat it as a possible escape by the other
-run and check both runs' probe reports.
 
 ## Validation boundary
 

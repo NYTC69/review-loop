@@ -28,14 +28,14 @@ base). `auto_commit: false` in `.review-loop/config.md` is handed over as `--aut
   `review-loop: the legacy workflow was removed in v2.13.0; legacy sessions cannot be resumed: start a new run with the session's plan or work item` and end.
 To hand off, print `review-loop: paired-session entry (entry set in .review-loop/config.md)` when the key is set, or
 `review-loop: paired-session entry (the default entry)` when it is absent, invoke the `paired-session` skill, and end
-this workflow (no session file, lock or stage of its own). A paired-session probe/run HOLD is
+this workflow (no session file, lock or stage of its own). A paired-session run HOLD is
 reported to the user and never falls back to legacy.
 
 **Stage A checks (before the first `bin/paired-session` command).** Read-only, the same whether the key is set or
 absent; nothing falls back (there is no legacy route). A failed check refuses: print
 `review-loop: paired-session entry refused (<reason>)` and end this workflow (except where a row says otherwise).
 - Host: `uname -s` is neither `Darwin` (macOS) nor native Windows Git Bash (starts with `MINGW64_NT-` or `MSYS_NT-`) → `review-loop: paired-session needs macOS or native Windows; Linux (WSL included) and other hosts are not supported` (no reason wrapper).
-  On Windows only the default efficient mode runs (`--strict`, `permission-probe` and `--detach` are refused), Git for
+  On Windows `--detach` is refused, Git for
   Windows is required, and run directories and workspaces stay out of OneDrive-synced folders.
 - CLIs: both `codex` and `claude` must be on PATH (`command -v`), whatever vendors the
   resolved roles use: the coordinator binds both binaries at run start; a missing one is refused

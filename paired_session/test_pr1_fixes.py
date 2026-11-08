@@ -443,23 +443,5 @@ class WorkspaceProfileBeforeStateTests(Fixture):
             rc.Coordinator(self.args('resume'))
         self.assertEqual(json.loads(state_path.read_text())['config'], config)
 
-    def test_permission_probe_reports_a_workspace_profile_but_freezes_nothing_from_it(self):
-        baseline = rc.resolve_role_model_defaults(self.args())
-        self.write_profile({'reviewer_model': 'gpt-6-astra'})
-        command = self.h.command()
-        command[2] = 'permission-probe'
-        result = subprocess.run(command, cwd=self.h.root, text=True, capture_output=True)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        report = json.loads((self.h.run_dir / 'permission-probe.json').read_text())
-        self.assertIn('workspace profile cannot select operator programs', json.dumps(report['failure_reasons']))
-        state_path = self.h.run_dir / 'state.json'
-        self.assertEqual(json.loads(state_path.read_text())['config']['reviewer_model'], baseline.reviewer_model)
-        for action in ('run', 'resume'):                                           # still refused while the profile exists
-            self.assertEqual(self.main(action).returncode, 2, action)
-        (self.h.workspace / '.review-loop' / 'paired-session.json').unlink()
-        rc.Coordinator(self.args('resume'))                                        # the frozen command-line/default values, never the profile's
-        self.assertEqual(json.loads(state_path.read_text())['config']['reviewer_model'], baseline.reviewer_model)
-
-
 if __name__ == '__main__':
     unittest.main()
