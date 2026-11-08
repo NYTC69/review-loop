@@ -3126,8 +3126,8 @@ sys.exit(result.returncode)
                 self.assertIs(settings['sandbox']['allowUnsandboxedCommands'], False)
                 self.assertIs(settings['sandbox']['autoAllowBashIfSandboxed'], False)
                 self.assertEqual(settings['sandbox']['excludedCommands'], [])
-                self.assertIs(settings['sandbox']['network']['strictAllowlist'], True)
-                self.assertEqual(settings['sandbox']['network']['allowedDomains'], [])
+                self.assertIs(settings['sandbox']['network']['strictAllowlist'], False)   # v3.6.0: network on
+                self.assertEqual(settings['sandbox']['network']['allowedDomains'], ['*'])
                 self.assertIs(settings['sandbox']['network']['allowLocalBinding'], False)
                 self.assertEqual(settings['sandbox']['credentials']['envVars'], sorted(
                     settings['sandbox']['credentials']['envVars'], key=lambda row: row['name']))
@@ -3153,7 +3153,7 @@ sys.exit(result.returncode)
         self.assertIs(author_settings['sandbox']['enabled'], True)
         self.assertIs(author_settings['sandbox']['failIfUnavailable'], True)
         self.assertIs(author_settings['sandbox']['allowUnsandboxedCommands'], False)
-        self.assertEqual(author_settings['sandbox']['network']['allowedDomains'], [])
+        self.assertEqual(author_settings['sandbox']['network']['allowedDomains'], ['*'])   # v3.6.0: network on
         self.assertEqual(author_settings['sandbox']['filesystem']['denyWrite'], [str(author_co.run_dir)])
         self.assertEqual(author_settings['permissions']['deny'], [
             f'Edit(//{author_co.run_dir.as_posix().lstrip("/")}/**)'])

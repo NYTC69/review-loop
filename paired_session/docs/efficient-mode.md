@@ -34,7 +34,7 @@ Every role keeps today's flags in both modes. Nothing in this change touches `_c
 
 | Role | Claude | Codex |
 |---|---|---|
-| Author | `--permission-mode acceptEdits`; path-scoped `--allowedTools Edit(//<workspace>/**)`; the `--disallowedTools` deny rules for the context, the probe cache and `~/.claude` `~/.codex` `~/.ssh` `~/.aws`; `--settings` with the Bash OS sandbox: `denyWrite` the run dir, the credential env-var and file deny lists, no network | `-c approval_policy="never" -c sandbox_mode="workspace-write"`, writable roots = author-tmp and `extra_writable_roots`, network on (v3.6.0), `exclude_slash_tmp`, `TMPDIR=author-tmp`, `--ignore-rules` |
+| Author | `--permission-mode acceptEdits`; path-scoped `--allowedTools Edit(//<workspace>/**)`; the `--disallowedTools` deny rules for the context, the probe cache and `~/.claude` `~/.codex` `~/.ssh` `~/.aws`; `--settings` with the Bash OS sandbox: `denyWrite` the run dir, the credential env-var and file deny lists, network on (v3.6.0) | `-c approval_policy="never" -c sandbox_mode="workspace-write"`, writable roots = author-tmp and `extra_writable_roots`, network on (v3.6.0), `exclude_slash_tmp`, `TMPDIR=author-tmp`, `--ignore-rules` |
 | Reviewer, gate, shadow, probe | `--restricted --permission-mode dontAsk --tools Read,Grep,Glob,Bash`, exact `Bash(<cmd>)` allow rules, Edit and Write denied, the same OS sandbox | v3.6.0: the author's shape, `-c sandbox_mode="workspace-write"`, writable roots = the workspace, the dispatch's own `$TMPDIR` scratch root and `extra_writable_roots`, network on, `exclude_slash_tmp`; `--ignore-rules` (the guard in §4a still undoes tracked and non-ignored changes) |
 
 What these flags deliver:

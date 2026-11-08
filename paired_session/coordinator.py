@@ -3467,7 +3467,7 @@ class Coordinator:
                 'allowUnsandboxedCommands': False,
                 'autoAllowBashIfSandboxed': False,
                 'excludedCommands': [],
-                'network': {'strictAllowlist': True, 'allowedDomains': [], 'allowLocalBinding': False},
+                'network': {'strictAllowlist': False, 'allowedDomains': ['*'], 'allowLocalBinding': False},   # v3.6.0 (owner 2026-11-08): network on
                 'credentials': {
                     'envVars': [{'name': name, 'mode': 'deny'} for name in sorted(secret_names)],
                     'files': [{'path': path, 'mode': 'deny'} for path in credential_paths],

@@ -575,8 +575,8 @@ author): `denyWrite: run_dir` takes precedence over `allowWrite`, so a run-dir
 root cannot be writable for them.
 
 Claude roles use one inline strict sandbox settings object, deny secret-like
-environment variables and common credential files, block network access and
-local network binding, and require the exact Bash allowlist. The reviewer
+environment variables and common credential files, allow network access (since
+v3.6.0, owner 2026-11-08) but block local network binding, and require the exact Bash allowlist. The reviewer
 permission probe gives exactly one unique run-directory `touch` command a narrow
 CLI allowlist entry. That command may be denied by either the CLI permission
 layer or the OS sandbox; its result alone cannot establish the OS boundary.
@@ -964,8 +964,8 @@ cannot do there:
 - Postgres `initdb` fails (`shmget` returns EPERM), so a test database cannot be
   created inside the sandbox.
 - Unix-socket connections to a server running outside the sandbox fail; they
-  work only with network access enabled, which the author policy keeps off
-  (before v3.6.0; network is on since then, so this may work now).
+  need network access enabled (on since v3.6.0; untested whether they now work under
+  the nested sandbox).
 - iOS builds and the simulator are unavailable: the Swift macro plugin server
   answers "malformed response" under the nested sandbox, and the connection to
   CoreSimulatorService is refused.
