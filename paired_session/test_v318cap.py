@@ -163,7 +163,8 @@ class DispatchBudgetTests(unittest.TestCase):
         resumed = rc.Coordinator(args)
         self.assertIsNone(resumed._program_state()[1])
         self.assertEqual({key: resumed.state[key] for key in frozen}, frozen)
-        self.assertEqual(resumed._role_dispatch_manifest(), frozen['role_dispatch_manifest'])
+        # v3.6.0 (owner 2026-11-08) opened the sandbox and network on purpose: the released manifest differs only by that rewrite
+        self.assertEqual(resumed._role_dispatch_manifest(), rc.v360_sandbox_migration(frozen['role_dispatch_manifest']))
         actual, env, _ = self.dispatch(resumed, 'gate')
         self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '13800000')
         self.assertIn('gets 13800000 for a long command.', actual)

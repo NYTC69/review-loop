@@ -220,6 +220,37 @@ class ProbeTests(unittest.TestCase):
 
 
 
+class UpgradeMigrationTests(Harness):
+    """Gate R4: a run frozen by v3.5.x (network off, Codex reviewer read-only profile) still resumes on v3.6.0; nothing else may differ."""
+
+    def v353(self, manifest):
+        old = json.loads(json.dumps(manifest))
+        for flags in old['role_flags'].values():
+            if isinstance(flags.get('sandbox'), dict) and 'sandbox_workspace_write.network_access' in flags['sandbox']:
+                flags['sandbox']['sandbox_workspace_write.network_access'] = False
+            if 'codex_reviewer_sandbox' in flags:
+                del flags['codex_reviewer_sandbox']
+                flags['sandbox'], flags['codex_readonly_profile'] = 'read-only', ['--config', 'default_permissions="paired_session_readonly"']
+            for settings in (flags.get('sandbox'), flags.get('claude_bash_sandbox')):
+                if isinstance(settings, dict) and isinstance(settings.get('sandbox'), dict):
+                    settings['sandbox']['network'] = dict(rc.V353_CLAUDE_NETWORK)
+        old['role_flags_sha256'] = 'v353'
+        return old
+
+    def test_a_v353_manifest_migrates_to_the_current_one_and_any_other_change_does_not(self):
+        for vendors in (ALL_CODEX, ('--author-vendor', 'claude', '--reviewer-vendor', 'codex', '--gate-vendor', 'claude')):
+            with self.subTest(vendors=vendors):
+                self.h.run_dir = self.h.root / ('run-' + vendors[1] + vendors[3])
+                current = self.profiled([], 'run', *vendors)._role_dispatch_manifest()
+                old = self.v353(current)
+                self.assertNotEqual(old, current)
+                self.assertEqual(rc.v360_sandbox_migration(old), current)
+                other = json.loads(json.dumps(old))
+                other['role_flags']['author']['model'] = 'another-model'
+                self.assertNotEqual(rc.v360_sandbox_migration(other), current)
+        self.assertIsNone(rc.v360_sandbox_migration(current))   # a v3.6.0 manifest has nothing to rewrite
+
+
 class ClaudeAuthorProbeRootsTests(unittest.TestCase):
     """Gate R2 note: with extra_writable_roots set, the Claude author probe still passes and binds the real rules (allowWrite is
     part of the probed --settings)."""

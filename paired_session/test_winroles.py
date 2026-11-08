@@ -85,7 +85,8 @@ class SettingsTests(unittest.TestCase):
 
 @unittest.skipIf(winplat.IS_WINDOWS, 'POSIX pin')
 class PosixPinTests(unittest.TestCase):
-    """The values below were computed from HEAD 8cc7116 (before W4a) with the same fixture; macOS must not move."""
+    """The values below were computed from HEAD 8cc7116 (before W4a) with the same fixture; macOS must not move. v3.6.0 (owner
+    2026-11-08) moved them on purpose: the Claude Bash sandbox network is open (allowedDomains ["*"]), so the settings and digests changed."""
 
     def test_settings_rules_and_flag_digests_are_unchanged(self):
         co = fixture_coordinator()
@@ -93,14 +94,14 @@ class PosixPinTests(unittest.TestCase):
             for role in ('author', 'reviewer', 'gate'):
                 settings = co._claude_sandbox_settings(role)
                 self.assertTrue(settings['sandbox']['enabled'] and settings['sandbox']['failIfUnavailable'])
-                self.assertEqual(settings_sha(settings), 'e8970399290271eac97f84761803d385276e5dee6128716c07be94a88a66220f')
+                self.assertEqual(settings_sha(settings), '1d036927d78166173a3f65b6106c80a067addff2ecefb914b59e52e25fd30599')
             self.assertEqual(co._claude_author_edit_rules(), (
                 ['Edit(//nonexistent-wiwin-fixture/work space/repo/**)'],
                 ['Edit(//nonexistent-wiwin-fixture/runs/run-1/context/**)',
                  'Edit(//nonexistent-wiwin-fixture/home/.cache/review-loop/probe-pass/**)',
                  'Edit(~/.claude/**)', 'Edit(~/.codex/**)', 'Edit(~/.ssh/**)', 'Edit(~/.aws/**)']))
-            self.assertEqual(co.reviewer_flags_digest(), '683d6b9dca40ab85194e2bc3b42e026dfba5605fd7118744528594dea6acf6de')
-            self.assertEqual(co.gate_flags_digest(), 'ec716e4f9628a65bc7d174c1eabfbf6443932f9fca99aeae34a7c52ca19d471e')
+            self.assertEqual(co.reviewer_flags_digest(), 'e642e48233dc5acee2ef0ebfd0c4f32300eb63efd66a4110de60089ae5ab3fda')
+            self.assertEqual(co.gate_flags_digest(), '782bca6029febc110f742a0c9025fadfc36d45eaa9dbec7ab4ecf38cb2fcc017')
 
     def test_no_refusal_on_posix(self):
         for args in (SimpleNamespace(detach=True, action='run', safety_mode='strict', run_dir='/nonexistent'),

@@ -1116,6 +1116,32 @@ def validate_extra_writable_roots(values, run_dir: Path) -> list[str]:
     return roots
 
 
+V353_CLAUDE_NETWORK = {'strictAllowlist': True, 'allowedDomains': [], 'allowLocalBinding': False}
+
+
+def v360_sandbox_migration(manifest: dict) -> Optional[dict]:
+    """v3.6.0: a frozen role manifest saved by v3.5.x with the sandbox values this release opened, rewritten to the v3.6.0
+    values (Codex author network on, the Codex reviewer read-only profile replaced by the workspace-write shape, Claude Bash
+    network on); None when nothing matched. The caller accepts it only when the rewrite equals the current manifest."""
+    migrated, changed = copy.deepcopy(manifest), False
+    for flags in migrated.get('role_flags', {}).values():
+        if not isinstance(flags, dict):
+            continue
+        sandbox = flags.get('sandbox')
+        if isinstance(sandbox, dict) and sandbox.get('sandbox_workspace_write.network_access') is False:   # the Codex author
+            sandbox['sandbox_workspace_write.network_access'], changed = True, True
+        if 'codex_readonly_profile' in flags and flags.get('sandbox') == 'read-only':   # a Codex reviewer-type role
+            del flags['codex_readonly_profile']
+            flags['sandbox'], flags['codex_reviewer_sandbox'], changed = 'workspace-write', codex_reviewer_sandbox_overrides(), True
+        for settings in (sandbox, flags.get('claude_bash_sandbox')):
+            if isinstance(settings, dict) and isinstance(settings.get('sandbox'), dict) and settings['sandbox'].get('network') == V353_CLAUDE_NETWORK:
+                settings['sandbox']['network'], changed = {'strictAllowlist': False, 'allowedDomains': ['*'], 'allowLocalBinding': False}, True
+    if not changed:
+        return None
+    migrated['role_flags_sha256'] = hashlib.sha256(json.dumps(migrated['role_flags'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return migrated
+
+
 def scratch_listing(root: Path) -> tuple[list, list]:
     """Names under a scratch root (links not followed, at most 200) and the regular files there with more than one link."""
     names, linked = [], []
@@ -3114,6 +3140,14 @@ class Coordinator:
         current = self._role_dispatch_manifest()
         digest = hashlib.sha256(json.dumps(current, sort_keys=True,
                                            separators=(',', ':')).encode()).hexdigest()
+        saved = self.state.get('role_dispatch_manifest')
+        if (current != saved and saved and self.state.get('role_dispatch_manifest_version') == 1
+                and hashlib.sha256(json.dumps(saved, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                == self.state.get('role_dispatch_manifest_sha256') and v360_sandbox_migration(saved) == current):
+            # v3.6.0 upgrade: a run saved by v3.5.x resumes with the opened sandbox and network; nothing else may differ
+            print('NOTE: this run was started by an earlier release; it resumes with the v3.6.0 sandbox (Codex reviewers write the '
+                  'workspace, network on); run permission-probe again if the run asks for it')
+            self.state['role_dispatch_manifest'], self.state['role_dispatch_manifest_sha256'] = current, digest
         if (current != self.state.get('role_dispatch_manifest') or
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
