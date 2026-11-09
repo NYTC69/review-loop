@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.8.0：入口说明按路线加载
+
+11-05 批准的 P3-1。以前每次进入 paired-session 都要读完整份入口说明 `paired-session-entry.md`（约 4,800 词），其中 Review-only、Code-quality-loop、Review-PR 三节只在对应路线上才用到，普通 run 也要读。
+
+**改动**
+- `docs/protocol/loading.json`：`entry-paired-session` 只含公共部分（约 2,840 词）；新增 `entry-paired-session-review-only`（约 3,280 词）、`entry-paired-session-code-quality-loop`（只有 Claude，约 3,830 词）和 `entry-paired-session-review-pr`（约 4,070 词），各自包含公共部分、Review-only 节和本路线那一节，顺序保证"上面的 review-only 入口"仍然成立。加载器不变。
+- 两边的 paired-session 说明：交接时已知路线（`--review-only`、`--code-quality-loop`、`--review-pr`）就直接加载该路线的 stage；加载后才知道路线时再补加载，并用 `--loaded` 跳过已读部分。compaction 后重新加载同一个 stage；有命令在跑时照旧直接读整份文件。
+- 缺节、改名或 stage 名不对仍然是 stage A 失败，不会悄悄跳过。
+- `docs/protocol/loading.md` 的 stage 表和 CLAUDE.md 的说明已更新。coordinator 代码和冻结的角色清单不变，正在跑的 run 直接 resume。
+
+**检查**：Sol 审查 APPROVE；CI 42552125086 全绿；真实 run（Opus 无界面会话，只到加载入口说明）：review-pr 请求只加载 `entry-paired-session-review-pr`，普通请求只加载公共部分。
+
 ### v3.7.2：现场问题修复（poker-tools、range-build-tool）
 
 现场问题（poker-tools run 68b7f49e，range-build-tool run 53038f20）：下面每一项都曾让 run 停下或需要操作员手工处理，按 2026-11-08 的规则（好用优先，默认 agent 不会恶意改动）它们并不保护什么。
