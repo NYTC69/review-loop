@@ -203,15 +203,15 @@ class ResumeTestCommandTests(unittest.TestCase):
                       "'no-such-test-tool-v372 run' is not used on resume", out.getvalue())
         self.assertNotIn('REFUSED', out.getvalue())
 
-    def test_an_explicit_different_value_is_refused_naming_both(self):
+    def test_an_explicit_different_value_is_refused_naming_both(self):   # an executable every host has: the preflight passes
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = rc.main(self.resume_argv('--test-command', 'pytest -q'))
+            code = rc.main(self.resume_argv('--test-command', 'python3 -m pytest -q'))
         self.assertEqual(code, 2, out.getvalue())
-        self.assertIn("REFUSED: resume configuration differs: test_command (saved: 'python3 -m unittest'; given: 'pytest -q'); "
+        self.assertIn("REFUSED: resume configuration differs: test_command (saved: 'python3 -m unittest'; given: 'python3 -m pytest -q'); "
                       'omit --test-command to use the saved value, or start a new run', out.getvalue())
-        with self.assertRaisesRegex(ValueError, r"test_command \(saved: 'python3 -m unittest'; given: 'pytest -q'\)"):
-            self.coordinator('--test-command', 'pytest -q')
+        with self.assertRaisesRegex(ValueError, r"test_command \(saved: 'python3 -m unittest'; given: 'python3 -m pytest -q'\)"):
+            self.coordinator('--test-command', 'python3 -m pytest -q')
 
 
 if __name__ == '__main__':

@@ -7,6 +7,8 @@
 
 ## P2 — normal
 
+- Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line. (added 2026-11-09)
+- Gate note (v3.7.2 Opus gate): a note queued for a reused DOCS writer can reach DONE undelivered; `status` at DONE should list it ("undelivered note N001: use reject"). (added 2026-11-09)
 - Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings. (added 2026-11-08)
 - Field (poker-tools, v3.6.0): PostgreSQL initdb inside a Claude role's Bash sandbox: shmget is allowed but shmctl(IPC_RMID) is denied, so every failed run leaks one SysV segment; the 32-slot table (kern.sysv.shmmni) fills and blocks initdb host-wide. `excludedCommands` does not escape the sandbox in headless runs (tested 11-08, also with allowUnsandboxedCommands). The routes (host verification with `attach-verification`, or a Codex reviewer) and the cleanup (`ipcrm` of NATTCH-0 segments) are documented since v3.7.2 (paired_session/README.md troubleshooting); the sandbox itself is unchanged. (added 2026-11-08)
 - Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1. (added 2026-11-08)

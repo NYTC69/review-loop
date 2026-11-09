@@ -12,7 +12,9 @@
 - README 增加排障条目：macOS 上在 Claude 角色的 Bash 沙箱里起 PostgreSQL，initdb 能建 SysV 共享内存但删不掉，每次失败漏一个段，32 个槽（`kern.sysv.shmmni`）满后整机 initdb 失败。做法：在主机上跑并 `attach-verification`，或用 Codex 审查方；清理：确认没有 postgres 在跑后 `ipcs -m`，再对 NATTCH 为 0 的段 `ipcrm -m <id>`。`operator_verification.py` 的模块说明补上 FINISH（v3.7.1 起）和 DOCS 的记录沿用。
 - 冻结的角色清单不变，正在跑的 v3.7.x run 直接 resume 就能用上。
 
-**按意图更新的测试断言**（原来钉的是旧的作废或拒绝）：`test_readonly_guard` 的忽略文件作废、`.cc-writes` 加其他写入仍 HOLD 两条；`test_rvw` 里"Claude 角色仍作废"一段；`test_field23_repo_text_scan` 的 gate 等待拒绝（改为 SECURITY 等待和 lifecycle 关闭的 gate 等待仍拒绝）和轮数上限拒绝；`test_v322_field` 的轮数上限拒绝。
+**按意图更新的测试断言**（原来钉的是旧的作废或拒绝）：`test_readonly_guard` 的忽略文件作废、`.cc-writes` 加其他写入仍 HOLD 两条；`test_rvw` 里"Claude 角色仍作废"一段；`test_field23_repo_text_scan` 的 gate 等待拒绝（改为 SECURITY 等待和 lifecycle 关闭的 gate 等待仍拒绝）和轮数上限拒绝；`test_v322_field` 的轮数上限拒绝；`test_v324_test` 的轮数上限 note 拒绝（改为排队）。
+
+**检查**：paired-session run 8ebf3e07（Opus 作者，Sol 审查和 gate）EXEC r3 APPROVE，gate 第一次 NEEDS-ATTENTION（F003：resume 的命令检查早于恢复，已修），第二次 APPROVE；Opus 终审 APPROVE；真实 run（macOS，全 Claude 角色）：审查方和 gate 写被忽略的 `build/` 时都保留（`readonly_ignored_kept`），不带 `--test-command` 的 resume 用了保存的命令。
 
 ### v3.7.1：FINISH 能看到操作员的验证记录
 
