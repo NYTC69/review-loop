@@ -2,9 +2,11 @@
 
 The operator attaches a check it ran outside the author sandbox (command, cwd, exit code, log copy, note). The record is
 bound to the workspace snapshot digest, voided for good once the tree differs or its log copy changes, and shown (without
-the note) to the EXEC reviewer, shadow and gate prompts only for that exact tree. It is prompt evidence, with one
-exception: a current record for the exact reviewed tree whose command is the configured test command and whose exit code
-is 0 settles the EXEC and DOCS configured-test checks for that tree (`passing_test_record`)."""
+the note) to the EXEC reviewer, shadow and gate prompts and, since v3.7.1, the FINISH prompt, only for that exact tree.
+One change does not void it (v3.7.2): a DOCS writer change limited to DOCS allowlist paths re-binds a current record to the
+new tree (`carry_docs_only`); the record lists the carry-over in `carried` and its prompt entry says so. It is prompt
+evidence, with one exception: a current record for the exact reviewed tree whose command is the configured test command
+and whose exit code is 0 settles the EXEC and DOCS configured-test checks for that tree (`passing_test_record`)."""
 import copy
 import hashlib
 import os
@@ -43,7 +45,9 @@ def _entry(row: dict, data: bytes) -> str:
     return '\n'.join([f"- {row['id']} ({row['actor']}, {row['time']}): command `{' '.join(row['command'].split())}` in {row['cwd']}; "
                       f"exit code {row['exit_code']}; log sha256 {row['log_sha256']} ({row['log_bytes']} bytes)",   # the note stays in state and evidence
                       f'  Log tail (last {len(tail)} of {len(text)} characters):',
-                      *('    | ' + line for line in tail.splitlines())])
+                      *('    | ' + line for line in tail.splitlines()),
+                      *(f"  Carried over from tree {row_carry['from_tree'][:12]}: only DOCS allowlist paths changed by the docs "
+                        f"writer: {', '.join(row_carry['paths'])}" for row_carry in row.get('carried', []))])
 
 
 def _block(tree_sha256: str, entries: list) -> str:
@@ -73,6 +77,24 @@ def void_stale(co, tree_sha256, write_json) -> None:
         row.update(status='voided', voided={'time': datetime.now().astimezone().isoformat(), 'reason': why, 'tree_seen': tree_sha256})
         write_json(co.evidence / f"operator-verification-{row['id']}.json", row)
         co.save()
+
+
+def carry_docs_only(co, from_trees, to_tree: str, paths: list, sequence: int, write_json) -> list:
+    """v3.7.2: the DOCS writer changed only DOCS allowlist paths (`paths`, checked by the caller); every current, intact record
+    bound to one of `from_trees` is re-bound to `to_tree` and the carry-over is noted in it. Returns the carried ids."""
+    carried = []
+    for row in co.state.get('operator_verifications', []):
+        if row['status'] != 'current' or row['tree_sha256'] not in from_trees or row['tree_sha256'] == to_tree or not _intact(row):
+            continue
+        row.setdefault('carried', []).append({'from_tree': row['tree_sha256'], 'to_tree': to_tree, 'paths': list(paths)[:50],
+                                              'by': 'docs-writer', 'sequence': sequence,
+                                              'time': datetime.now().astimezone().isoformat()})
+        row['tree_sha256'] = to_tree
+        write_json(co.evidence / f"operator-verification-{row['id']}.json", row)
+        carried.append(row['id'])
+    if carried:
+        co.save()
+    return carried
 
 
 def prompt_block(co, tree_sha256: str, write_json, role: str = '') -> str:

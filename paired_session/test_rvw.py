@@ -193,9 +193,12 @@ class GuardTests(Harness):
                 self.assertIn('answer', turn)
                 self.assertIn('reviewer edit', (self.h.workspace / name).read_text())
         self.assertEqual(env_file.read_text(), 'SECRET=1\nreviewer edit\n')
-        self.h.run_dir = self.h.root / 'ignored-claude'                                       # Claude roles are unchanged: still void
-        with self.assertRaisesRegex(RuntimeError, 'reviewer changed ignored files in the workspace'):
-            self.review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.env'}, '--reviewer-vendor', 'claude')
+        self.h.run_dir = self.h.root / 'ignored-claude'                                       # v3.7.2: Claude roles keep it too
+        co, result = self.review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.env'}, '--reviewer-vendor', 'claude')
+        [turn] = [t for t in co.state['turns'] if t.get('role') == 'reviewer']
+        self.assertEqual(turn.get('readonly_ignored_kept'), ['.env'])
+        self.assertNotIn('voided', turn)
+        self.assertEqual(env_file.read_text(), 'SECRET=1\nreviewer edit\nreviewer edit\n')
         subprocess.run(['git', 'status', '--short'], cwd=self.h.workspace, check=True, capture_output=True)
 
 

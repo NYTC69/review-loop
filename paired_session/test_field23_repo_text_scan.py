@@ -327,18 +327,28 @@ class NoteWhileAwaitingReviewerTests(unittest.TestCase):
             co.note('clarify', None)
         self.assertNotIn('operator_notes', co.state)
 
-    def test_other_waiting_roles_refuse_and_say_how_to_record_the_change(self):
+    def test_other_waiting_roles_refuse_and_say_how_to_record_the_change(self):   # v3.7.2: SECURITY, and gate with lifecycle off
+        for lifecycle, waiting in ((False, 'gate'), (True, 'security')):
+            with self.subTest(lifecycle=lifecycle, waiting=waiting):
+                self.h.run_dir = self.h.root / f'wait-{waiting}'
+                if lifecycle: use_lifecycle_on(self, self.h)
+                co = self.held('EXEC', waiting)
+                with self.assertRaisesRegex(ValueError, rf'waiting for {waiting}; no author turn is due.*note --scope-change'):
+                    co.note('clarify', None)
+                self.assertNotIn('operator_notes', co.state)
+
+    def test_a_lifecycle_gate_wait_queues_the_note(self):   # v3.7.2 (was refused): it reaches the EXEC author or the finisher
         use_lifecycle_on(self, self.h)
         co = self.held('EXEC', 'gate')
-        with self.assertRaisesRegex(ValueError, r'waiting for gate; no author turn is due.*note --scope-change'):
-            co.note('clarify', None)
-        self.assertNotIn('operator_notes', co.state)
+        self.assertEqual(co.note('clarify', None), 'N001')
+        self.assertTrue(co.state['operator_notes'][0]['deliver_to'].startswith(
+            'the next EXEC author turn (after a request for changes), or the FINISH writer if it approves'))
 
-    def test_no_author_round_left_refuses_as_before(self):
+    def test_no_author_round_left_queues_the_note_for_after_add_rounds(self):   # v3.7.2 (was refused)
         use_lifecycle_on(self, self.h)
         co = self.held('EXEC', 'reviewer', exec_rounds=10 ** 6)
-        with self.assertRaisesRegex(ValueError, 'next author turn is unavailable'):
-            co.note('clarify', None)
+        self.assertEqual(co.note('clarify', None), 'N001')
+        self.assertIn('after resume --add-rounds N at this EXEC round-limit HOLD', co.state['operator_notes'][0]['deliver_to'])
 
 
 if __name__ == '__main__':

@@ -79,16 +79,18 @@ class FieldMessageTests(unittest.TestCase):
         self.assertEqual(co.state, before)
         self.assertFalse(list(co.evidence.glob('operator-note-*')))
 
-    def test_round_limit_reasons_for_both_author_phases(self):
+    def test_round_limit_holds_queue_the_note_for_both_author_phases(self):   # v3.7.2 (was refused)
         co = self.coordinator()
         for phase in ('PLAN', 'EXEC'):
             with self.subTest(phase=phase):
                 co.state.update(status='HOLD', phase=phase, next='author', plan_rounds=0, exec_rounds=0)
                 co.state[phase.lower() + '_rounds'] = (co.plan_round_limit() if phase == 'PLAN'
                                                        else co.exec_round_limit())
-                self.assert_note_refusal(co,
-                    phase + ' round limit reached; at the round-limit HOLD use resume --add-rounds N (1-10), '
-                    'then add the note at the next eligible PLAN/EXEC HOLD, or note --scope-change')
+                note_id = co.note('Please clarify the behavior.', None)
+                row = co.state['operator_notes'][-1]
+                self.assertEqual((row['id'], row['status'], row['target_phase']), (note_id, 'pending', phase))
+                self.assertTrue(row['deliver_to'].startswith(
+                    f'the next {phase} author turn after resume --add-rounds N at this {phase} round-limit HOLD'))
 
     def test_invocation_budget_reason(self):
         co = self.coordinator()

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from paired_session import coordinator as rc
+from paired_session import test_real_coordinator as trc
 
 
 def executable(path, version):
@@ -156,6 +157,62 @@ class CliUpdateTests(unittest.TestCase):
 
     def test_version_mismatch_refreezes_with_a_note(self):
         self._assert_other_change_refreezes('version_mismatch')
+
+class ResumeTestCommandTests(unittest.TestCase):
+    """v3.7.2 (field: range-build-tool): resume without --test-command uses the saved command; only an explicitly
+    different value is refused, and the refusal names the saved and the given value."""
+    def setUp(self):
+        self.h = trc.RealCoordinatorTests()
+        self.h.setUp()
+        self.addCleanup(self.h.doCleanups)
+        self.addCleanup(self.h.tearDown)
+        self.argv = self.h.command()[2:]   # --test-command 'python3 -m unittest'
+        rc.Coordinator(rc.configure_parser(rc.parser(), self.argv).parse_args(self.argv))   # an idle ACTIVE run
+
+    def resume_argv(self, *test_command):
+        at = self.argv.index('--test-command')
+        return ['resume', *self.argv[1:at], *self.argv[at + 2:], *test_command]
+
+    def coordinator(self, *test_command):
+        argv = self.resume_argv(*test_command)
+        return rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
+
+    def test_resume_without_the_flag_uses_the_saved_command(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            co = self.coordinator()
+        self.assertEqual(co.args.test_command, 'python3 -m unittest')
+        self.assertIn("NOTE: using the saved test command 'python3 -m unittest'", out.getvalue())
+
+    def test_an_explicit_equal_value_resumes(self):
+        self.assertEqual(self.coordinator('--test-command', 'python3 -m unittest').args.test_command, 'python3 -m unittest')
+
+    def test_main_resume_without_the_flag_skips_the_preflight_of_a_missing_configured_executable(self):
+        profile = self.h.root / 'operator.json'   # the configured value names an executable that is not installed
+        profile.write_text(json.dumps({'test_command': 'no-such-test-tool-v372 run'}))
+        seen = {}
+
+        def execute(args):   # stop after main()'s preflight: the resumed run gets the saved command
+            seen['test_command'] = args.test_command
+            return 0
+        out = io.StringIO()
+        with patch.object(rc, '_execute_locked', side_effect=execute), contextlib.redirect_stdout(out):
+            code = rc.main(self.resume_argv('--config', str(profile)))
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(seen['test_command'], 'python3 -m unittest')
+        self.assertIn("NOTE: using the saved test command 'python3 -m unittest'; the configured value "
+                      "'no-such-test-tool-v372 run' is not used on resume", out.getvalue())
+        self.assertNotIn('REFUSED', out.getvalue())
+
+    def test_an_explicit_different_value_is_refused_naming_both(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = rc.main(self.resume_argv('--test-command', 'pytest -q'))
+        self.assertEqual(code, 2, out.getvalue())
+        self.assertIn("REFUSED: resume configuration differs: test_command (saved: 'python3 -m unittest'; given: 'pytest -q'); "
+                      'omit --test-command to use the saved value, or start a new run', out.getvalue())
+        with self.assertRaisesRegex(ValueError, r"test_command \(saved: 'python3 -m unittest'; given: 'pytest -q'\)"):
+            self.coordinator('--test-command', 'pytest -q')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -285,10 +285,9 @@ class FailedTestApprovalTests(unittest.TestCase):
         self.assertEqual(co.state['hold_reason'], 'EXEC round limit reached')
         self.assertEqual(co.state['round_limit_hold']['hold_reason'], 'EXEC round limit reached')
         self.assertEqual(co.blocking_open_findings()[0]['source'], 'test-failure')
-        with self.assertRaises(ValueError) as caught:
-            co.note('Repair the failing tests.', None)
-        self.assertIn('resume --add-rounds N (1-10)', str(caught.exception))
-        self.assertIn('note --scope-change', str(caught.exception))
+        self.assertEqual(co.note('Repair the failing tests.', None), 'N001')   # v3.7.2: queued (was refused) for after add-rounds
+        self.assertIn('after resume --add-rounds N at this EXEC round-limit HOLD', co.state['operator_notes'][0]['deliver_to'])
+        self.assertTrue(co.at_round_limit_hold())                               # the HOLD and its exits are unchanged
 
     def test_failure_detection_excludes_timeout_and_zero_exit_failure_text(self):
         command = 'python3 -m unittest'

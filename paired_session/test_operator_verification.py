@@ -1,11 +1,13 @@
 """Batch OPV (v2.9.5): operator-run verification evidence bound to the exact workspace tree."""
 import hashlib
 import json
+from pathlib import Path
 import types
 import unittest
 
 from paired_session import operator_verification as opv
 from paired_session import test_real_coordinator as trc
+from paired_session import test_worktree_lifecycle as twl
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli',
@@ -152,6 +154,72 @@ class OperatorVerificationTests(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
         self.assertIn('REFUSED: attach-verification needs', done.stdout)
         self.assertEqual(self.attach_cli(log=(path, 'f' * 64)).returncode, 2)
+
+class DocsCarryOverTests(unittest.TestCase):
+    """v3.7.2 (field: range-build-tool V002-V004): a DOCS writer change limited to DOCS allowlist paths keeps the operator's
+    record current, so a DOCS reviewer whose sandbox cannot run the configured test does not HOLD; any other change voids it."""
+    locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in twl._HELPERS})
+    setUp = twl.WorktreeLifecycleActivationTests.setUp
+
+    def state(self):
+        return json.loads((self.run_dir / 'state.json').read_text())
+
+    def held_at_docs_with_a_record(self):
+        held = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_DOCS_HOLD': '1'})   # the writer holds without a change
+        self.assertIn('HOLD: docs writer: Fake docs writer held.', held.stdout, held.stdout + held.stderr)
+        tree = rc.git_snapshot(self.workspace)[0]
+        self.assertEqual(tree, self.state()['lifecycle']['candidate_oid'])
+        log = self.root / 'host-test.log'
+        log.write_text('Ran 12 tests\nOK\n')
+        attached = self.run_operator_action('attach-verification', '--lifecycle-mode', 'on', '--command', 'python3 -m unittest',
+                                            '--exit-code', '0', '--log', str(log), '--log-sha256',
+                                            hashlib.sha256(log.read_bytes()).hexdigest(), '--note', 'ran on the host')
+        self.assertIn(f'VERIFICATION: V001 bound to tree {tree}', attached.stdout, attached.stdout + attached.stderr)
+        return tree
+
+    def test_a_docs_only_write_carries_the_record_and_settles_the_docs_test_check(self):
+        old = self.held_at_docs_with_a_record()
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_NO_TEST_ONCE': str(self.root / 'no-test')}
+        done = self.run_operator_action('resume', '--lifecycle-mode', 'on', env=env)
+        self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+        self.assertIn('NOTE: operator verification V001 carried over to the DOCS tree (docs-only change: CHANGELOG.md)', done.stdout)
+        state, tree = self.state(), rc.git_snapshot(self.workspace)[0]
+        docs = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS' and row['status'] == 'READY'][-1]
+        self.assertEqual((docs['opv_carried'], docs['review']['operator_test_evidence'], docs['review']['observed_test']),
+                         (['V001'], 'V001', None))
+        [row] = state['operator_verifications']
+        self.assertEqual((row['status'], row['tree_sha256']), ('current', tree))
+        [carry] = row['carried']
+        self.assertEqual((carry['from_tree'], carry['to_tree'], carry['paths'], carry['by']), (old, tree, ['CHANGELOG.md'], 'docs-writer'))
+        prompt = (self.run_dir / 'evidence' / f"{docs['review']['sequence']:03d}-docs-reviewer.prompt.txt").read_text()
+        self.assertIn(f'Carried over from tree {old[:12]}: only DOCS allowlist paths changed by the docs writer: CHANGELOG.md',
+                      prompt)
+
+    def test_a_docs_write_outside_the_allowlist_voids_the_record(self):
+        self.held_at_docs_with_a_record()
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'code-once')}
+        self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        [row] = self.state()['operator_verifications']
+        self.assertEqual((row['status'], row['voided']['reason']), ('voided', 'tree changed'))
+        self.assertNotIn('carried', row)
+
+    def test_carry_docs_only_moves_only_intact_records_bound_to_the_trees_it_left(self):
+        co = self.coordinator()
+        tree = rc.git_snapshot(self.workspace)[0]
+        log = self.root / 'host.log'
+        log.write_text('OK\n')
+        args = types.SimpleNamespace(command='python3 -m unittest', cwd=None, exit_code=0, log=str(log),
+                                     log_sha256=hashlib.sha256(b'OK\n').hexdigest(), note='host run')
+        opv.attach(co, args, tree, rc.atomic_json)
+        self.assertEqual(opv.carry_docs_only(co, {'another-tree'}, 'new-tree', ['CHANGELOG.md'], 5, rc.atomic_json), [])
+        row = co.state['operator_verifications'][0]
+        evidence = Path(row['log_evidence'])
+        evidence.write_text('changed\n')                                        # a changed log copy is never carried
+        self.assertEqual(opv.carry_docs_only(co, {tree}, 'new-tree', ['CHANGELOG.md'], 5, rc.atomic_json), [])
+        evidence.write_text('OK\n')
+        self.assertEqual(opv.carry_docs_only(co, {tree}, 'new-tree', ['CHANGELOG.md'], 5, rc.atomic_json), ['V001'])
+        self.assertEqual((row['tree_sha256'], row['carried'][0]['sequence']), ('new-tree', 5))
+        self.assertEqual(json.loads((co.evidence / 'operator-verification-V001.json').read_text()), row)
 
 
 if __name__ == '__main__':

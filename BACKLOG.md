@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-08
+**Last updated**: 2026-11-09
 
 ## P0 — blocker / must-do-now
 
@@ -7,13 +7,9 @@
 
 ## P2 — normal
 
-- Field (range-build-tool, v3.5.3 run 53038f20): `resume` without `--test-command` is refused with "resume configuration differs: test_command" although the run started with that command (the profile default seems to differ); use the saved value or say which value differs. Same shape as `abort --run-dir` alone. (added 2026-11-08)
-- Field (range-build-tool, v3.5.3): `note` is refused at the EXEC round-limit HOLD ("next author turn is unavailable") and at the POLISH-Q HOLD, so the operator cannot pass a decision to the author before `resume --add-rounds`; queue the note for the next author turn. (added 2026-11-08)
 - Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings. (added 2026-11-08)
-- Field (poker-tools, v3.6.0): PostgreSQL initdb inside a Claude role's Bash sandbox: shmget is allowed but shmctl(IPC_RMID) is denied, so every failed run leaks one SysV segment; the 32-slot table (kern.sysv.shmmni) fills and blocks initdb host-wide. `excludedCommands` does not escape the sandbox in headless runs (tested 11-08, also with allowUnsandboxedCommands). Options: route DB-backed test commands to a Codex role or host verification; document the cleanup (`ipcrm` of NATTCH-0 segments). (added 2026-11-08)
+- Field (poker-tools, v3.6.0): PostgreSQL initdb inside a Claude role's Bash sandbox: shmget is allowed but shmctl(IPC_RMID) is denied, so every failed run leaks one SysV segment; the 32-slot table (kern.sysv.shmmni) fills and blocks initdb host-wide. `excludedCommands` does not escape the sandbox in headless runs (tested 11-08, also with allowUnsandboxedCommands). The routes (host verification with `attach-verification`, or a Codex reviewer) and the cleanup (`ipcrm` of NATTCH-0 segments) are documented since v3.7.2 (paired_session/README.md troubleshooting); the sandbox itself is unchanged. (added 2026-11-08)
 - Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1. (added 2026-11-08)
-- Field (poker-tools, v3.6.0): `note` is refused while waiting for FINISH; queue it for the next turn (same shape as the range-build-tool note item). (added 2026-11-08)
-- Field (poker-tools, v3.6.0): a Claude read-only role's ignored-path change (`.cloud` mtime) voids the gate turn; exempt ignored paths for Claude roles as v3.6.0 does for Codex reviewers (core goal: usability, agents assumed non-malicious). (added 2026-11-08)
 - Supervisor note (WI-NOPROBE run, 2026-11-08): a large change needed more than the default 2-hour author turn (EXEC r1 timed out at 7200 s; resumed with `--exec-turn-timeout 14400`); consider a longer default or a hint in the timeout HOLD. (added 2026-11-09)
 - Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match. (added 2026-11-09)
 

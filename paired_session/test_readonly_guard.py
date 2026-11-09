@@ -491,20 +491,49 @@ class ReadOnlyTurnTests(unittest.TestCase):
             co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
         return co, str(raised.exception)
 
-    def test_a_review_that_edits_an_ignored_file_is_void_and_holds(self):   # eff-e
+    def plan_review_kept(self, env, *flags):
+        co = self.h.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest', *flags)
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        with patch.dict(os.environ, env):
+            co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
+        [turn] = [t for t in co.state['turns'] if t.get('role') == 'reviewer']   # no re-dispatch
+        return co, turn
+
+    def test_a_claude_review_that_edits_an_ignored_file_keeps_it_and_stands(self):   # v3.7.2 (was void and HOLD since eff-e)
         with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle:
             handle.write('.env\n')
-        for vendor in ('claude',):   # v3.6.0: a workspace-write Codex reviewer may write ignored paths (test_rvw)
-            with self.subTest(vendor=vendor):
-                self.h.run_dir = self.h.root / f'run-ignored-{vendor}'
-                (self.h.workspace / '.env').write_text('SECRET=1\n')
-                co, message = self.plan_review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.env'}, '--reviewer-vendor', vendor)
-                self.assertIn('reviewer changed ignored files in the workspace', message)
-                self.assertIn('.env', message)
-                [turn] = [t for t in co.state['turns'] if t.get('role') == 'reviewer']   # no re-dispatch
-                self.assertEqual(turn['voided']['ignored_changed'], ['.env'])
-                self.assertNotIn('answer', turn)                                          # the verdict is void
-                self.assertEqual((self.h.workspace / '.env').read_text(), 'SECRET=1\nreviewer edit\n')   # untouched by the coordinator
+        (self.h.workspace / '.env').write_text('SECRET=1\n')
+        co, turn = self.plan_review_kept({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.env'}, '--reviewer-vendor', 'claude')
+        self.assertEqual(turn['readonly_ignored_kept'], ['.env'])
+        self.assertNotIn('voided', turn)
+        self.assertIn('answer', turn)                                                     # the verdict stands
+        self.assertEqual((self.h.workspace / '.env').read_text(), 'SECRET=1\nreviewer edit\n')   # untouched by the coordinator
+
+    def test_a_claude_review_that_only_touches_an_ignored_cluster_dir_stands(self):   # v3.7.2 field: the gate's temp cluster dir
+        with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle:
+            handle.write('.cloud/\n')
+        cluster = self.h.workspace / '.cloud'
+        cluster.mkdir()
+        co, turn = self.plan_review_kept({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.cloud/pg'}, '--reviewer-vendor', 'claude')
+        self.assertEqual(turn['readonly_ignored_kept'], ['.cloud'])
+        self.assertNotIn('voided', turn)
+        self.assertIn('answer', turn)
+
+    def test_a_claude_review_that_edits_a_tracked_file_is_still_undone_and_re_dispatched(self):   # v3.7.2: unchanged
+        tracked = self.h.workspace / 'tracked.txt'
+        before = tracked.read_text()
+        co = self.h.coordinator('--timeout', tsc.scaled_arg(10), '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                                '--test-command', 'python3 -m unittest', '--reviewer-vendor', 'claude')
+        (co.context / 'plan.md').write_text('Plan: inspect existing tracked source.')
+        with patch.dict(os.environ, {'FAKE_MUTATION': 'checkout', 'FAKE_MUTATION_ONCE': str(self.h.root / 'marker')}), \
+                patch('builtins.print'):
+            co.invoke('reviewer', 'PLAN', co._review_prompt('reviewer', 'snapshot'), rc.review_schema())
+        turns = [t for t in co.state['turns'] if t.get('role') == 'reviewer']
+        self.assertEqual(len(turns), 2)
+        self.assertTrue(turns[0]['voided']['restored'])
+        self.assertNotIn('voided', turns[1])
+        self.assertEqual(tracked.read_text(), before)
 
     def ignored_claude(self):
         with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle: handle.write('.claude/\n')
@@ -521,20 +550,19 @@ class ReadOnlyTurnTests(unittest.TestCase):
         self.assertEqual(list((claude / '.cc-writes').iterdir()), [])
         self.assertEqual(self.voided(), [])
 
-    def test_claude_reviewer_cc_writes_with_other_writes_still_holds(self):
+    def test_claude_reviewer_cc_writes_with_other_writes_is_kept(self):   # v3.7.2 (was a HOLD): ignored paths are free
         self.ignored_claude()
         for name in ('settings.local.json', 'new-file', '.cc-writes/extra'):
             with self.subTest(name=name):
                 writes = self.h.workspace / '.claude' / '.cc-writes'
-                if writes.exists(): writes.rmdir()
+                if writes.exists(): shutil.rmtree(writes)
                 self.h.run_dir = self.h.root / ('run-cc-' + name.replace('/', '-'))
-                co, message = self.plan_review({'FAKE_PLAN_REVIEWER_CC_WRITES': '1',
-                                               'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.claude/' + name},
-                                              '--reviewer-vendor', 'claude')
-                self.assertIn('reviewer changed ignored files in the workspace', message)
-                [turn] = [t for t in co.state['turns'] if t.get('role') == 'reviewer']
-                self.assertEqual(turn['voided']['ignored_changed'], ['.claude'])
-                self.assertNotIn('answer', turn)
+                co, turn = self.plan_review_kept({'FAKE_PLAN_REVIEWER_CC_WRITES': '1',
+                                                  'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': '.claude/' + name},
+                                                 '--reviewer-vendor', 'claude')
+                self.assertEqual(turn['readonly_ignored_kept'], ['.claude'])
+                self.assertNotIn('voided', turn)
+                self.assertIn('answer', turn)
 
     def test_a_review_that_breaks_the_index_is_unverifiable_and_blocks_resume(self):   # eff-e
         co, message = self.plan_review({'FAKE_PLAN_REVIEWER_CORRUPT_INDEX': '1'})

@@ -435,7 +435,8 @@ in is writable, `.git` stays read-only), `$TMPDIR` writable
 may therefore write build output and caches. The post-turn guard still undoes a
 change to HEAD, the branch, the index, a tracked file or a non-ignored untracked
 file and re-dispatches once; ignored paths stay free (recorded in the receipt
-as `readonly_ignored_kept`). TMPDIR/TMP/TEMP are set to a fresh 0700
+as `readonly_ignored_kept`; since v3.7.2 for Claude reviewer-type roles too, so a turn that only changed a git-ignored
+path, such as a test's temp cluster dir, stands). TMPDIR/TMP/TEMP are set to a fresh 0700
 `<scratch_root>/role-tmp/<seq>-<role>` outside any repo for that one dispatch
 (legacy runs without `scratch_root` retain `<run_dir>/role-tmp/<seq>-<role>`), so a `tmp_path`-style
 test has a usable temp dir. The coordinator lists that root in the turn's
@@ -719,7 +720,12 @@ An idle `HOLD` run accepts an in-scope clarification with `note --text '...'`
 or `note --file /path/to/note` when an author turn is available in PLAN or EXEC.
 An EXEC HOLD waiting for its reviewer also accepts a note for the next author
 turn; review roles never receive it. A newer note replaces a pending one.
-Notes are refused at PLAN-reviewer or gate waits, round-limit HOLDs, and DONE
+Since v3.7.2 a note is also queued at a round-limit HOLD (it reaches the author turn after `resume --add-rounds N`)
+and, with lifecycle on, while the run waits for the gate, FINISH, DOCS or a POLISH-Q step: it reaches the next newly
+dispatched author-role turn (EXEC author, FINISH writer, DOCS writer or POLISH-Q writer). A recorded writer turn that
+resume reuses is not dispatched again and takes no note. `note` prints which turn will receive it, and `status` shows
+it while it is undelivered. Notes are refused while a turn is active or uncertain, when the invocation budget is
+exhausted, at a PLAN-reviewer wait, at a SECURITY wait, at a gate wait with lifecycle off, and at DONE
 (use `reject`). A note file must be outside the workspace and run directory.
 The note cannot authorize new scope. For a scope
 change, use `note --scope-change --text/--file` on an idle active or ordinary
@@ -768,6 +774,10 @@ whose command is the configured test command and whose exit code is 0 counts as
 a successful run of that command in EXEC and in the DOCS review, so an approval
 whose own sandboxed run of it failed is not sent back as a test failure or held
 (the turn receipt or DOCS review names the record in `operator_test_evidence`).
+
+One change keeps a current record (v3.7.2): a DOCS writer change limited to DOCS allowlist paths re-binds it to the new
+tree; the record lists the carry-over in `carried`, the DOCS receipt in `opv_carried`, and its prompt entry says so.
+Any other change voids it.
 
 Each run records an item UUID. A scope-change successor inherits it and copies
 the parent's OPEN blocking findings into its protected successor spec and state,
@@ -860,6 +870,19 @@ A work item that needs one of these will stall or fail in the author turn. Optio
 
 Do not loosen the sandbox to make such an item pass; the safety rows in `docs/1c-safety-controls.md`
 describe the sandbox as configured.
+
+### Troubleshooting: a test that starts a database in a Claude role's Bash sandbox (macOS)
+
+On macOS, PostgreSQL `initdb` inside a Claude role's Bash sandbox can create SysV shared memory but cannot remove it, so
+each failed start leaks one segment. Once the 32-slot table (`kern.sysv.shmmni`) is full, `initdb` fails host-wide,
+also outside the run. Routes:
+
+1. Run the DB-backed test on the host and attach its log with `attach-verification` (see above); a passing record of
+   the configured test settles the EXEC, FINISH and DOCS test checks for that exact tree.
+2. Use a Codex reviewer (`--reviewer-vendor codex`) for that item.
+
+Cleanup: first check that no postgres is running (`pgrep -l postgres`), then list the segments with `ipcs -m` and remove
+each one whose NATTCH is 0 with `ipcrm -m <id>`.
 
 ### Removed: the fake lifecycle
 

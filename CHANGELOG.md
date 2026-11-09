@@ -1,5 +1,19 @@
 # Changelog
 
+### v3.7.2：现场问题修复（poker-tools、range-build-tool）
+
+现场问题（poker-tools run 68b7f49e，range-build-tool run 53038f20）：下面每一项都曾让 run 停下或需要操作员手工处理，按 2026-11-08 的规则（好用优先，默认 agent 不会恶意改动）它们并不保护什么。
+
+**改动**
+- Claude 审查类角色（reviewer、shadow、gate、阶段审查和 specialist）只改了 git 忽略路径时，这一轮不再作废（现场：gate 的临时集群目录 `.cloud`，gate 因此作废三次）。和 v3.6.0 起的 Codex 审查类角色一样，保留的路径记在回执的 `readonly_ignored_kept`。改了被跟踪文件或未忽略的文件，照旧撤销并重派一次。Gemini 角色不变。
+- DOCS writer 只改了 DOCS allowlist 里的路径（比如新增 CHANGELOG.md）时，操作员验证记录不再作废，而是重新绑定到新的目录树，并记在记录的 `carried`、DOCS 回执的 `opv_carried` 和提示里。DOCS 审查方沙箱跑不了测试时，不再因为"没看到配置的测试成功运行"而 HOLD（现场：V002–V004 连续三次）。其他任何改动照旧作废记录。
+- `note` 在轮数上限 HOLD，以及 lifecycle 模式下等待 gate、FINISH、DOCS 或 POLISH-Q 步骤时，不再拒绝，而是排队给下一个新派发的作者类 turn（EXEC 作者、FINISH writer、DOCS writer、POLISH-Q writer）；resume 复用已记录的 writer turn 时不会再派发，note 继续等待。`note` 输出会写明谁会收到，`status` 也会显示。turn 进行中或状态不明、调用预算用完、PLAN 审查等待、SECURITY 等待、lifecycle 关闭时的 gate 等待、DONE（用 `reject`）仍然拒绝。
+- `resume` 不带 `--test-command` 时使用保存的测试命令（不同的默认值或 profile 值只打一条 NOTE）；只有明确给出不同的值才拒绝，拒绝信息写明保存值和给出值。
+- README 增加排障条目：macOS 上在 Claude 角色的 Bash 沙箱里起 PostgreSQL，initdb 能建 SysV 共享内存但删不掉，每次失败漏一个段，32 个槽（`kern.sysv.shmmni`）满后整机 initdb 失败。做法：在主机上跑并 `attach-verification`，或用 Codex 审查方；清理：确认没有 postgres 在跑后 `ipcs -m`，再对 NATTCH 为 0 的段 `ipcrm -m <id>`。`operator_verification.py` 的模块说明补上 FINISH（v3.7.1 起）和 DOCS 的记录沿用。
+- 冻结的角色清单不变，正在跑的 v3.7.x run 直接 resume 就能用上。
+
+**按意图更新的测试断言**（原来钉的是旧的作废或拒绝）：`test_readonly_guard` 的忽略文件作废、`.cc-writes` 加其他写入仍 HOLD 两条；`test_rvw` 里"Claude 角色仍作废"一段；`test_field23_repo_text_scan` 的 gate 等待拒绝（改为 SECURITY 等待和 lifecycle 关闭的 gate 等待仍拒绝）和轮数上限拒绝；`test_v322_field` 的轮数上限拒绝。
+
 ### v3.7.1：FINISH 能看到操作员的验证记录
 
 现场问题（poker-tools，run 68b7f49e）：EXEC 和 gate 都通过了，到 FINISH 时 finisher 在自己的 Claude 沙箱里跑配置的测试，PostgreSQL 的 initdb 起不来，于是 HOLD；而操作员在主机上对同一个目录树跑通的记录（V001）只给审查方、shadow 和 gate 看，finisher 看不到，resume 只会重复同一个 HOLD。

@@ -1004,6 +1004,8 @@ def reclassify_default_home_trust(changes: dict, before: dict, after: dict, work
     return changes
 
 
+NOTE_LIFECYCLE_WAITS = ('gate', 'finish', 'docs', 'polish-q', 'polish-fix', 'polish-recheck', 'polish-simplify', 'polish-tests')   # v3.7.2
+NOTE_WRITER_PHASES = ('FINISH', 'DOCS', 'POLISH-Q')   # v3.7.2: lifecycle writer stages a queued note reaches
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate')   # b295-f1 FIELD-1: Codex reviewer-type roles get a per-dispatch temp root
 LEGACY_PROBE_ROLES = ('probe', 'gate-probe')   # v3.7.0: removed roles; a turn saved by an earlier release may still own a scratch
 LEGACY_PROBE_PHASES = ('PROBE', 'AUTHOR_PERMISSION_PROBE')
@@ -1237,6 +1239,11 @@ def dontask_command_hint(commands) -> str:
             'command substitution, pipes, `;`, `&&`, redirection or loops in ' + '; '.join(repr(command) for command in shaped) +
             ' can be refused before it runs. Put it in a script and configure `/bin/bash /absolute/path/to/script.sh`.' +
             (' On Windows, use `bash ./script.sh`.' if winplat.IS_WINDOWS else '')) if shaped else ''
+
+
+def saved_test_command_note(saved, configured) -> str:
+    """v3.7.2: a resume without --test-command uses the saved command."""
+    return f'NOTE: using the saved test command {saved!r}; the configured value {configured!r} is not used on resume'
 
 
 def resolve_test_executable(workspace: Path, command: str) -> str:
@@ -3234,6 +3241,7 @@ class Coordinator:
         if profile_roots != recorded_roots and (getattr(self.args, 'extra_writable_roots', None) or recorded_roots):
             print('NOTE: extra_writable_roots is fixed at run start; using the recorded list (start a new run to change it)')
         self.args.extra_writable_roots = list(recorded_roots)
+        self._resume_test_command()
         current_config = self._config()
         raised = {'timeout': getattr(self.args, 'resume_timeout', None) is not None,
                   'max_invocations': invocation_cap_override, 'exec_turn_timeout': exec_timeout_override}
@@ -3260,6 +3268,24 @@ class Coordinator:
             self._refreeze_bundled_gate_prompt()
         if refreeze_commands and self.args.action != 'abort':
             self._refreeze_reviewer_commands(current_config['workitem_reviewer_commands'])
+
+    def _resume_test_command(self) -> None:
+        """v3.7.2: a resume without --test-command (or --no-test-command) uses the saved command; only an explicitly
+        different value is refused, naming both."""
+        if 'test_command' not in self.state['config']:
+            return
+        saved = self.state['config']['test_command']
+        given = getattr(self.args, 'test_command_given', None)
+        if given is None:   # a Coordinator built without main(): a default is not an explicit command
+            given = bool(getattr(self.args, 'no_test_command', False)) or not isinstance(self.args.test_command, DefaultTestCommand)
+        current = self.args.test_command
+        if not given:
+            if current != saved and self.args.action == 'resume':
+                print(saved_test_command_note(saved, current))
+            self.args.test_command = saved
+        elif current != saved:
+            raise ValueError(f'resume configuration differs: test_command (saved: {saved!r}; given: {current!r}); omit '
+                             '--test-command to use the saved value, or start a new run')
 
     def _refreeze_reviewer_commands(self, current: list) -> None:
         """v3.7.0, lifecycle off: the work item's reviewer-commands block changed; the run records the new block and goes on."""
@@ -3813,7 +3839,10 @@ class Coordinator:
         if rows := (self.state.get('acceptance') or {}).get('uncommitted'):   # FIELD-25
             lines.append(f'Uncommitted after acceptance ({uncommitted_cause(self.state)}): ' + ', '.join(rows))
         if self.state.get('pending_operator_note_id'):
-            lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id'])
+            pending = next((row for row in self.state.get('operator_notes', [])
+                            if row['id'] == self.state['pending_operator_note_id']), {})
+            lines.append('Operator note: undelivered ' + self.state['pending_operator_note_id']
+                         + (f" (for {pending['deliver_to']})" if pending.get('deliver_to') else ''))
         if self.state.get('hold_reason'):
             lines.append('Hold reason: ' + self.state['hold_reason'])
         atomic_text(self.run_dir / 'review-comparison.md', '\n'.join(lines) + '\n')
@@ -4013,7 +4042,8 @@ class Coordinator:
             raise ValueError('run is waiting for reviewer in PLAN, and an approval moves it to EXEC, where a PLAN note is never '
                              'delivered. To put an operator change on record: resume with --stop-after-plan and add the note '
                              'at the EXEC HOLD, or note --scope-change (abort; the successor run carries the note)')
-        if waiting not in ('author', 'reviewer'):
+        lifecycle = worktree_lifecycle.is_worktree(self.state)
+        if waiting not in (('author', 'reviewer', *NOTE_LIFECYCLE_WAITS) if lifecycle else ('author', 'reviewer')):
             raise ValueError(f'run is waiting for {waiting}; no author turn is due, so a note would not be delivered. To put '
                              'an operator change on record: note --scope-change (abort; the successor run carries the note); '
                              'resume only if the change needs no record')
@@ -4031,10 +4061,6 @@ class Coordinator:
         elif self.state['invocations_used'] >= self.args.max_invocations:
             unavailable = ('invocation budget exhausted; use resume --max-invocations N with a higher cap, '
                            'then add the note at the next eligible PLAN/EXEC HOLD')
-        elif ((phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
-              (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit())):
-            unavailable = (f'{phase} round limit reached; at the round-limit HOLD use resume --add-rounds N (1-10), '
-                           'then add the note at the next eligible PLAN/EXEC HOLD, or note --scope-change')
         if unavailable:
             raise ValueError('next author turn is unavailable; note remains undelivered; ' + unavailable)
         if bool(text) == bool(file):
@@ -4054,6 +4080,9 @@ class Coordinator:
         except UnicodeDecodeError as exc: raise ValueError('note must be UTF-8') from exc
         if not raw or len(raw) > 16384 or not decoded.strip():
             raise ValueError('note must be nonempty UTF-8 and at most 16384 bytes')
+        at_limit = ((phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
+                    (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit()))
+        deliver_to = self._note_recipient(waiting, phase, lifecycle, at_limit)
         notes = self.state.setdefault('operator_notes', [])
         note_id = f'N{len(notes) + 1:03d}'
         previous = next((row for row in notes if row['id'] == self.state.get('pending_operator_note_id')), None)
@@ -4064,11 +4093,30 @@ class Coordinator:
                'target_phase': phase, 'sha256': hashlib.sha256(raw).hexdigest(), 'evidence': str(path),
                'status': 'pending', 'replaces_id': previous['id'] if previous else None,
                'replaces_sha256': previous['sha256'] if previous else None,
-               **({'while_next': waiting} if waiting != 'author' else {})}
+               **({'while_next': waiting} if waiting != 'author' else {}),
+               'deliver_to': deliver_to, **({'any_author_turn': True} if lifecycle else {})}
         notes.append(row); self.state['pending_operator_note_id'] = note_id
         self.state.pop('terminal_hold_kind', None)
         self.save(); self.write_comparison()
         return note_id
+
+    @staticmethod
+    def _note_recipient(waiting: str, phase: str, lifecycle: bool, at_limit: bool) -> str:
+        """v3.7.2: which turn a queued note reaches; the note goes to the next newly dispatched author-role turn (a recorded
+        writer turn reused on resume is not dispatched again and takes no note)."""
+        if waiting in ('reviewer', 'gate'):
+            target = f'the next {phase} author turn (after a request for changes)' + (', or the FINISH writer if it approves'
+                                                                                       if lifecycle and phase == 'EXEC' else '')
+        else:
+            target = {'finish': 'the FINISH writer', 'docs': 'the DOCS writer',
+                      'polish-fix': 'the POLISH-Q fix author turn',
+                      'polish-simplify': 'the POLISH-Q simplifier', 'polish-tests': 'the POLISH-Q test writer',
+                      'polish-q': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn',
+                      'polish-recheck': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn'}.get(
+                          waiting, f'the next {phase} author turn')
+        if at_limit and waiting in ('author', 'reviewer', 'gate', 'polish-fix'):
+            target += f' after resume --add-rounds N at this {phase} round-limit HOLD'
+        return target + ', if one is newly dispatched (a recorded turn reused on resume takes no note)'
 
     def accept(self) -> str:
         refuse_removed_options(self.args)
@@ -6198,7 +6246,8 @@ class Coordinator:
                     except Exception: pass   # the turn's failure is the error to report; void_stale marks the row before it writes, so only a failed evidence write can leave it current on disk until the next save
                 raise
             if role not in ('reviewer', 'shadow', 'gate'):
-                if role == 'author' and workspace_override is None:   # a probe or candidate turn in another tree leaves the workspace alone
+                if role == 'author' and workspace_override is None and phase != 'DOCS':   # a probe or candidate turn in another tree leaves the workspace alone
+                    # v3.7.2: worktree_docs_turn carries a record over a docs-only change or voids it; a later call with the new tree voids it too
                     self._void_opv_observed(seq0)
                     opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
                 return result
@@ -6233,8 +6282,9 @@ class Coordinator:
             self._verify_frozen_role_dispatch()
         rejection = None
         operator_note = next((row for row in self.state.get('operator_notes', [])
-                              if role == 'author' and phase in ('PLAN', 'EXEC') and not fresh and
-                              row['id'] == self.state.get('pending_operator_note_id')), None)
+                              if role == 'author' and row['id'] == self.state.get('pending_operator_note_id') and
+                              ((phase in ('PLAN', 'EXEC') and not fresh) or   # v3.7.2: a queued note also reaches a lifecycle writer
+                               (row.get('any_author_turn') and workspace_override is None and phase in NOTE_WRITER_PHASES))), None)
         if role == 'author' and phase == 'EXEC':
             rejection = next((row for row in self.state.get('rejections', [])
                               if row.get('id') == self.state.get('pending_rejection_id') and
@@ -6244,7 +6294,7 @@ class Coordinator:
                            'Address this in-scope acceptance feedback; do not expand scope.\n'
                            f"[{rejection['id']} sha256={rejection['sha256']}]\n{rejection['text']}")
         if operator_note:
-            if operator_note['target_phase'] != phase:
+            if operator_note['target_phase'] != phase and phase not in NOTE_WRITER_PHASES:
                 raise RuntimeError('undelivered operator note targets another phase')
             try: note_bytes = Path(operator_note['evidence']).read_bytes()
             except OSError as exc: raise RuntimeError('operator note evidence is missing') from exc
@@ -6491,7 +6541,7 @@ class Coordinator:
                 voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
             if recorded and (note := recorded.get('ignored_note')): receipt['readonly_ignored'] = note
             touched = readonly_guard.ignored_changes(snapshot_workspace, recorded) if recorded and not snapshot_failure else []
-            if touched and receipt['vendor'] == 'codex' and role != 'author':   # v3.6.0: ignored paths are free for a workspace-write reviewer
+            if touched and receipt['vendor'] in ('codex', 'claude') and role != 'author':   # v3.6.0 Codex, v3.7.2 Claude: ignored paths are free for a reviewer-type role
                 receipt['readonly_ignored_kept'], touched = touched[:50], []
             if touched: receipt['voided'] = {**receipt.get('voided', {}), 'ignored_changed': touched[:50]}   # eff-e: no ignored content is kept
             if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR'):   # b295-f1: listed in the receipt before it is removed
@@ -6663,9 +6713,10 @@ class Coordinator:
         if operator_note and answer.get('status') == 'READY':
             operator_note.update(status='delivered', delivered_sequence=seq)
             self.state.pop('pending_operator_note_id', None)
-            self.state['pending_author_result_sequence'] = seq
-            self.state['gate_ran'] = False
-            self.state['force_gate_after_reject'] = True
+            if phase in ('PLAN', 'EXEC'):   # a lifecycle writer keeps its own stage flow
+                self.state['pending_author_result_sequence'] = seq
+                self.state['gate_ran'] = False
+                self.state['force_gate_after_reject'] = True
         self.save()
         return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role,
                 'open_finding_ids': receipt.get('open_finding_ids', [])}
@@ -6849,6 +6900,14 @@ class Coordinator:
         reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
                             *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
                               if denied else [])]) or None
+        if changed and not denied and not outside:   # v3.7.2: a docs-only change keeps the operator's records for the tree it left
+            writer = next((turn for turn in self.state['turns'] if turn.get('sequence') == result['sequence']), {})
+            from_trees = {request['candidate_oid'], *([writer['snapshot_before']] if writer.get('snapshot_before') else [])}
+            if carried := opv.carry_docs_only(self, from_trees, tree, changed, result['sequence'], atomic_json):
+                receipt['opv_carried'] = carried
+                print(f"NOTE: operator verification {', '.join(carried)} carried over to the DOCS tree "
+                      f"(docs-only change: {', '.join(changed[:10])})")
+        opv.void_stale(self, tree, atomic_json)   # any other change voids them, as after every author turn
         owned = self._docs_owned()
         replay = bool(outside)
         if not reason and not replay and (changed or owned):   # every DOCS-written doc gets a fresh docs review
@@ -9419,7 +9478,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         print(status + (' (acceptance pending)' if status == 'DONE' else ': ' + co.state.get('hold_reason', '')))
         return 0
     if args.action == 'note':
-        print('NOTE: ' + co.note(args.text, args.file))
+        note_id = co.note(args.text, args.file)
+        print(f"NOTE: {note_id} queued; it will be delivered to {co.state['operator_notes'][-1]['deliver_to']}")
         return 0
     if args.action == 'attach-verification':
         print('VERIFICATION: ' + opv.attach(co, args, git_snapshot(co.workspace)[0], atomic_json))
@@ -9513,6 +9573,8 @@ def main(argv=None) -> int:
     if not 1 <= args.timeout <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any lease, run dir or detached child
         print('REFUSED: ' + TIMEOUT_RANGE_ERROR)
         return 2
+    args.test_command_given = bool(args.no_test_command) or any(   # v3.7.2: resume without it uses the saved command
+        a == '--test-command' or a.startswith('--test-command=') for a in raw_argv)
     args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
         arg == o or arg.startswith(o + '=') for o in a.option_strings for arg in raw_argv)}
     roots = (Path(args.workspace), Path(args.run_dir))
@@ -9530,6 +9592,13 @@ def main(argv=None) -> int:
         return 2
     if args.no_test_command or saved_null:   # LG2-b2: the null sentinel before every precheck below
         args.test_command = None
+    elif restores_run(args) and not args.test_command_given:   # v3.7.2: the saved command, before the command preflight below
+        try: saved_config = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')).get('config')
+        except (OSError, ValueError, AttributeError): saved_config = None   # the Coordinator reports an unreadable state itself
+        if isinstance(saved_config, dict) and 'test_command' in saved_config:
+            if saved_config['test_command'] != args.test_command and args.action == 'resume':
+                print(saved_test_command_note(saved_config['test_command'], args.test_command))
+            args.test_command = saved_config['test_command']
     accepts = args.accept_unverified_codex_cli or args.accept_unverified_claude_author or args.accept_probe_skip   # no-ops past refuse_removed_options (the codex-cli one prints CODEX_CLI_WAIVER_NOTE)
     if (args.reason or '').strip() and not (accepts or args.override_rejection or args.action in ('accept', 'withdraw-findings')):   # N4-c
         print('REFUSED: --reason is only for accept and withdraw-findings')
