@@ -13,7 +13,7 @@ Only coordinator writes ledger, receipt status and severity. Each finding stores
 | Persistent EXEC reviewer | Same frozen reviewer identity | Fresh current-OID review of its own finding text + ID; author claim or silence is insufficient |
 | Fresh shadow | Same shadow role identity in a new fresh call | Blind initial scan, then own-finding reconciliation; blocking shadow CRITICAL/MAJOR/security cannot be ignored |
 | Gate | Normal EXEC reviewer after explicit transfer | Complete six-field rubric; incomplete gate finding is `awaiting-revalidation`, still blocking until normal reviewer re-asserts with rubric or explicitly drops it |
-| POLISH-Q specialist, docs or security reviewer | Same role-kind identity at its stage | Fresh current-OID re-review of only its own open texts/IDs; `security=true` remains blocking at any nominal severity |
+| POLISH-Q specialist, docs or security reviewer | Same role-kind identity at its stage | Fresh current-OID re-review of only its own open texts/IDs; `security=true` blocks only at CRITICAL/MAJOR/SECURITY (v3.8.1) |
 | Coordinator test/lint/build/preflight check | Coordinator observation, no model owner | Matching current-OID check succeeds; no reviewer prose can declare it fixed |
 
 Only that owner may close/downgrade/drop an AI finding. Gate transfer retains source/severity; normal-reviewer rubric revalidation spends its own round. Operator resolution may reassign owner with provenance and mandatory fresh review, or abort/eligible scope-change; it cannot close/downgrade/hide. Finisher fixes code, never ledger (R12-4 R2 M4).
@@ -28,7 +28,7 @@ Reserved-DOCS write changes OID, not EXEC convergence. Doc 2a scoped proof retai
 
 ## Successor and resume contract
 
-Scope-change ABORT supersedes the run, not its open findings. Before successor role dispatch, carry every CRITICAL/MAJOR/SECURITY or `security=true` blocker in the same item ledger with ID/text/severity/source and successor mapping. Even if new scope removes affected code, only mapped owner can confirm on current OID. Same identity first performs a blind pass, then separate own-finding reconciliation. Changed/unmapped identity HOLDs for recorded operator reassignment and fresh review. PLAN/EXEC approval never erases blockers; DELIVERY waits. A run/mapping cap leaves abort legal (R16-2 R2 M1).
+Scope-change ABORT supersedes the run, not its open findings. Before successor role dispatch, carry every CRITICAL/MAJOR/SECURITY blocker in the same item ledger with ID/text/severity/source and successor mapping. Even if new scope removes affected code, only mapped owner can confirm on current OID. Same identity first performs a blind pass, then separate own-finding reconciliation. Changed/unmapped identity HOLDs for recorded operator reassignment and fresh review. PLAN/EXEC approval never erases blockers; DELIVERY waits. A run/mapping cap leaves abort legal (R16-2 R2 M1).
 
 This E2E-only handoff strengthens `scope-change.md`'s current “reported/new ledger” rule. Lifecycle activation refuses until successor creation persists the shared item UUID and open blockers before role dispatch; today's 2C command is unchanged.
 

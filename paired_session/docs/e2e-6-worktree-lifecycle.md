@@ -85,7 +85,7 @@ the set: like code, a DOCS write to them replays EXEC review and gate.
 earlier replay (`docs_owned`), a fresh docs reviewer (reviewer role, EXEC reviewer protocol) reviews the
 full diff and must run the configured test command. A missing observed test, a HOLD or a REVISE without
 findings HOLDs before the DOCS receipt, so resume reuses the recorded writer and reviews again. A blocking
-finding (the ledger rule: CRITICAL/MAJOR or a security flag) routes to an EXEC replay: the findings (source
+finding (the ledger rule: CRITICAL/MAJOR/SECURITY; since v3.8.1 a security flag does not raise MINOR/LOW) routes to an EXEC replay: the findings (source
 `docs-reviewer`, no owner) go to the persistent EXEC reviewer, whose author may fix them in DOCS-owned
 entries, then a new gate, FINISH, POLISH-Q and DOCS. A REVISE with only MINOR findings is advisory, and
 APPROVE advances to SECURITY, unless any blocking finding is still open. `BUDGET_CAPS['DOCS']` (7) bounds

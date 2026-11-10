@@ -6841,7 +6841,7 @@ class Coordinator:
         advisory = self.state.get('advisory_fix') or {}
         if life.get('writer_replay') or (advisory.get('state') == 'ran' and advisory.get('epoch') == life.get('epoch')):
             return 'reviewer'   # the advisory fix round and a writer replay keep their own chain back to POLISH-Q
-        approved =self._approval_manifest(life.get('exec_convergence'))
+        approved = self._approval_manifest(life.get('exec_convergence'))
         if approved is None:
             return 'reviewer'
         tree, manifest = git_snapshot(self.workspace)
@@ -8239,18 +8239,25 @@ class Coordinator:
         return counts
 
     def _out_of_delta(self, file, delta: list[str]) -> bool:
-        """v3.8.1: a finding's file (':line' suffix and './' stripped) outside the pass's delta; an empty file is in it."""
-        path = re.sub(r':\d+(?:-\d+)?$', '', str(file or '').strip())
-        if not path:
+        """v3.8.1: a finding's file outside the pass's delta; an empty file is in it. The value may name several paths
+        or carry suffixes ('a.py:12:5', 'a.py, b.py', 'a.py (foo)'): it is in the delta when any of its path tokens is."""
+        raw = str(file or '').strip()
+        if not raw:
             return False
-        if os.path.isabs(path):
-            try:
-                path = Path(path).relative_to(self.workspace).as_posix()
-            except ValueError:
+        for token in [raw, *re.split(r'[\s,;()]+', raw)]:
+            path = re.sub(r'(?::\d+)+(?:-\d+)?$', '', token.strip())
+            if not path:
+                continue
+            if os.path.isabs(path):
+                try:
+                    path = Path(path).relative_to(self.workspace).as_posix()
+                except ValueError:
+                    continue
+            while path.startswith('./'):
+                path = path[2:]
+            if path in delta:
                 return False
-        while path.startswith('./'):
-            path = path[2:]
-        return path not in delta
+        return True
 
     def _specialist_turn(self, name: str, paths: list[str], tree: str, delta_paths: Optional[list[str]] = None) -> dict:
         life = self.state['lifecycle']

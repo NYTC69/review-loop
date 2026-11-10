@@ -57,7 +57,7 @@ advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left.
 In a quality-writer replay an eligible advisory-only REVISE takes this exit at
 any round, without consuming or resetting an attempt, and the writer change is kept.
 The final PLAN/EXEC round keeps the same advisory exit without requiring an
-attempt. Advisory-only means MINOR/LOW findings without a security flag,
+attempt. Advisory-only means MINOR/LOW findings (a security flag no longer raises them, v3.8.1),
 and/or only earlier non-blocking rows reported `still_open`, with no blocking
 row open. Those rows remain open and labeled advisory in the ledger and report
 until a later reviewer confirms they are fixed or withdraws them with evidence.

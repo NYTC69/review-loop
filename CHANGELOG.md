@@ -14,9 +14,11 @@
 - 安全标记不再提升严重度（Yuan 2026-11-10 决定）：带安全标记的发现只有 CRITICAL、MAJOR 或 SECURITY 才阻塞；MINOR/LOW 照常列出（SECURITY 阶段仍看得到），但在所有地方都不阻塞（账本阻塞判断、继任 run 的 item blocker、shadow 和 reviewer 的新阻塞、docs 审查、advisory 判断、advisory fix 轮），`withdraw-findings` 也接受它们。SECURITY 审查方的 MINOR 发现不再让 SECURITY HOLD，未关闭时列在交付报告的「未关闭的发现」里；提示改为「CRITICAL、MAJOR 和 SECURITY 发现阻止交付，MINOR 或 LOW 的安全问题按 MINOR 报告，列出但不阻止交付」。审查提示里的严重度和账本说明同步修改。解读说明：带安全标记的 gate MEDIUM/LOW 行按 gate 的规则算 advisory。
 - POLISH-Q specialist 的提示多一句：长文件按行段分批读（一次几百行），先读 delta.patch 里改动的部分，再读它依赖的代码；工具输出被截断时接着读剩下的范围，不要停下或 HOLD（现场：poker-tools run d90d8a3d，Codex 的 frontend-security-reviewer 读约 3000 行的文件时输出被截断，直接 HOLD）。
 - Windows：各角色的临时环境加上 `NODE_DISABLE_COMPILE_CACHE=1`（现场：range-build-tool run f3987135，`role-tmp` 里 Node 的编译缓存在 Codex 沙箱的 ACL 下变得不可读，测试失败、run HOLD，只能用管理员权限删除）。macOS 不变。
+- 发现的 `file` 写成 `a.py:12:5`、`a.py, b.py`、`a.py (foo)` 这类形式时，只要其中任何一个路径在这次增量里，就算在增量内（照常阻塞），不会被误标为 `out_of_delta`。
+- reject 之后的只改文档修复也跳过 gate（没有代码可测）；reject 留下的"下次必须过 gate"标记会保留到下一次完整重跑。
 - 没有新增配置键，没有改 `agents/*.md` 和 `scripts/adversarial_gate_fallback_prompt.txt`，冻结的角色清单逐字节不变，正在跑的 v3.7.x/v3.8.0 run 直接 resume；它们没有通过点清单，走今天的完整重跑。
 
-**按意图更新的测试断言**（原来钉的是旧路由或旧的安全标记规则）：`test_worktree_lifecycle` 的 docs 审查 REVISE 重放（改为作者 → docs 审查 → SECURITY）、docs 审查判定（MINOR+安全标记改为 APPROVE，新增 MAJOR+安全标记仍 REVISE）、`exec_convergence` 内容（多了 `manifest_file`）、SECURITY 提示文字；`test_v317b` 的 withdraw 排除项（安全标记行需带阻塞严重度才拒绝，新增 MINOR/LOW 可撤回）；`test_v317p` 的阻塞集合和账本说明句子；`test_real_coordinator` 的 `FAKE_EXEC_SECURITY_REVISE`（MINOR+安全标记改为 advisory）和继任 run 的 item blocker（LOW 安全行不再带过去）。
+**按意图更新的测试断言**（原来钉的是旧路由或旧的安全标记规则）：`test_worktree_lifecycle` 的 docs 审查 REVISE 重放（改为作者 → docs 审查 → SECURITY）、docs 审查判定（MINOR+安全标记改为 APPROVE，新增 MAJOR+安全标记仍 REVISE）、`exec_convergence` 内容（多了 `manifest_file`）、SECURITY 提示文字；`test_v317b` 的 withdraw 排除项（安全标记行需带阻塞严重度才拒绝，新增 MINOR/LOW 可撤回）；`test_v317p` 的阻塞集合和账本说明句子；`test_real_coordinator` 的 `FAKE_EXEC_SECURITY_REVISE`（MINOR+安全标记改为 advisory）和继任 run 的 item blocker（LOW 安全行不再带过去）；`test_winscratch` 的 Windows 环境变量（多了 `NODE_DISABLE_COMPILE_CACHE`）。
 
 ### v3.8.0：入口说明按路线加载
 

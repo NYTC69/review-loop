@@ -1005,6 +1005,17 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertFalse(row.get('out_of_delta'))   # the restored file is in this pass's scope: its finding blocks
         self.assertIn(row, co.blocking_open_findings())
 
+    def test_a_finding_file_with_suffixes_or_several_paths_matches_the_delta_by_token(self):
+        co = rc.Coordinator(self.args())
+        delta = ['src/a.py', 'b.py']
+        for file in ('src/a.py', './src/a.py:12', 'src/a.py:12:5', 'src/a.py:3-9', 'b.py, c.py', 'c.py; b.py',
+                     'src/a.py (foo)', str(self.workspace / 'b.py') + ':4', ''):
+            with self.subTest(file=file):
+                self.assertFalse(co._out_of_delta(file, delta))
+        for file in ('c.py', 'c.py:2:1', 'src/c.py (src/a)', '/elsewhere/b.py'):
+            with self.subTest(file=file):
+                self.assertTrue(co._out_of_delta(file, delta))
+
     def test_a_polish_q_pass_with_no_changed_path_dispatches_no_specialist(self):
         co = self.polish_at()
         tree = rc.git_snapshot(self.workspace)[0]
