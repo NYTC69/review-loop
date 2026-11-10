@@ -195,6 +195,25 @@ class DocsCarryOverTests(unittest.TestCase):
         self.assertIn(f'Carried over from tree {old[:12]}: only DOCS allowlist paths changed by the docs writer: CHANGELOG.md',
                       prompt)
 
+    def test_a_docs_finding_fixed_by_the_author_keeps_the_record_for_the_next_docs_review(self):
+        old = self.held_at_docs_with_a_record()
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block'),
+               'FAKE_DOCS_REVIEW_NO_TEST': '1'}   # no docs review runs the test: each relies on the host record
+        done = self.run_operator_action('resume', '--lifecycle-mode', 'on', env=env)
+        self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+        self.assertIn("carried over to the author's docs-only change (CHANGELOG.md)", done.stdout)
+        state, tree = self.state(), rc.git_snapshot(self.workspace)[0]
+        first, second = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS' and row['status'] == 'READY']
+        self.assertEqual((first['route'], first['review']['operator_test_evidence'], first['opv_carried']),
+                         ('EXEC', 'V001', ['V001']))   # the writer carried it to its tree; the docs finding went to the author
+        self.assertEqual((second['docs_only'], second['route'], second['review']['operator_test_evidence'],
+                          second['review']['observed_test']), (True, 'SECURITY', 'V001', None))
+        [row] = state['operator_verifications']
+        self.assertEqual((row['status'], row['tree_sha256'], [carry['by'] for carry in row['carried']]),
+                         ('current', tree, ['docs-writer', 'author']))
+        self.assertEqual((row['carried'][0]['from_tree'], row['carried'][1]['from_tree']),
+                         (old, first['output_oid']))   # the author's carry starts from the DOCS tree the review sent back
+
     def test_a_docs_write_outside_the_allowlist_voids_the_record(self):
         self.held_at_docs_with_a_record()
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'code-once')}

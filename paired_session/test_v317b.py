@@ -126,14 +126,22 @@ class WithdrawalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'requires DONE'): co._withdrawal_rows()
         co.state['acceptance_state'] = 'PENDING'
         original = copy.deepcopy(row)
-        for change in ({'security': True}, {'severity': 'SECURITY'}, {'owner_role': 'specialist:code-reviewer'},
-                       {'owner_role': 'security-reviewer'}, {'severity': 'CRITICAL'}, {'severity': 'HIGH'},
+        for change in ({'security': True, 'severity': 'MAJOR'}, {'security': True, 'severity': 'CRITICAL', 'source': 'reviewer'},
+                       {'severity': 'SECURITY'}, {'owner_role': 'specialist:code-reviewer'},
+                       {'owner_role': 'security-reviewer', 'severity': 'MAJOR'}, {'severity': 'CRITICAL'}, {'severity': 'HIGH'},
                        {'source': 'secret-scan'}):
             with self.subTest(change=change):
                 row.clear(); row.update(original); row.update(change)
                 before = copy.deepcopy(co.state)
                 with self.assertRaisesRegex(ValueError, 'cannot be withdrawn'): co.withdraw_findings()
                 self.assertEqual(co.state, before)
+        for change in ({'security': True}, {'security': True, 'severity': 'MINOR', 'source': 'reviewer'},   # v3.8.1: advisory
+                       {'security': True, 'severity': 'LOW', 'source': 'reviewer'},   # security rows may be withdrawn
+                       {'owner_role': 'security-reviewer', 'severity': 'MINOR', 'source': 'security-reviewer', 'security': True}):
+            with self.subTest(change=change):
+                row.clear(); row.update(original); row.update(change)
+                self.assertEqual(co._withdrawal_rows(), [row])
+                self.assertNotIn(row, co.blocking_open_findings())
         row.clear(); row.update(original)
         co.args.finding = ['F999']
         with self.assertRaisesRegex(ValueError, 'unknown finding'): co._withdrawal_rows()

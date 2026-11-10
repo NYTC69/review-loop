@@ -218,7 +218,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((review['role'], review['phase'], review['fresh'], review['snapshot_before']),
                          ('reviewer', 'SECURITY', True, tree))
         prompt = (self.run_dir / 'evidence' / f"{review['sequence']:03d}-security-reviewer.prompt.txt").read_text()
-        for needle in ('Role: security reviewer, fresh. Phase: SECURITY.', 'delta.patch', 'any finding stops delivery'):
+        for needle in ('Role: security reviewer, fresh. Phase: SECURITY.', 'delta.patch',
+                       'CRITICAL, MAJOR and SECURITY findings stop delivery; report a MINOR or LOW security concern as MINOR'):
             self.assertIn(needle, prompt)
         [docs] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
         self.assertEqual((docs['status'], docs['route'], docs['docs_paths'], docs['candidate_oid'], docs['output_oid']),
@@ -336,8 +337,10 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(co.start_polish_or_done(), 'ACTIVE')
         self.assertEqual((co.state['lifecycle']['stage'], co.state['lifecycle']['candidate_oid'], co.state['next']),
                          ('FINISH', tree, 'finish'))
-        self.assertEqual(co.state['lifecycle']['exec_convergence'],
+        convergence = co.state['lifecycle']['exec_convergence']   # v3.8.1: plus the approved manifest
+        self.assertEqual({key: convergence[key] for key in ('tree', 'reviewer_sequence', 'gate_sequence')},
                          {'tree': tree, 'reviewer_sequence': 1, 'gate_sequence': 2})
+        self.assertEqual(co._approval_manifest(convergence), dict(rc.git_snapshot(self.workspace)[1]))
         other = 'f' * 64
         for turns in ([{'role': 'gate', 'phase': 'EXEC', 'snapshot_before': tree, 'sequence': 1}],   # gate alone
                       [{'role': 'reviewer', 'phase': 'EXEC', 'snapshot_before': other, 'sequence': 1},
@@ -709,10 +712,11 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def test_docs_review_verdicts_follow_the_ledger_blocking_rule(self):
         test = {'command': self.args().test_command, 'exit_code': 0, 'output': 'OK'}
         minor = {'severity': 'MINOR', 'file': 'CHANGELOG.md', 'summary': 'wording', 'failure_scenario': 'none'}
-        for status, finding, verdict in (('APPROVE', {**minor, 'security': True}, 'REVISE'),   # a security flag blocks
+        for status, finding, verdict in (('APPROVE', {**minor, 'security': True}, 'APPROVE'),   # v3.8.1: a MINOR security row is advisory
+                                         ('APPROVE', {**minor, 'severity': 'MAJOR', 'security': True}, 'REVISE'),
                                          ('REVISE', minor, 'APPROVE')):   # a MINOR-only REVISE is advisory
             with self.subTest(status=status, finding=finding):
-                self.run_dir = self.root / verdict
+                self.run_dir = self.root / (verdict + finding['severity'] + status)
                 co, review = self.docs_review_with({'status': status, 'full_review': [finding],
                                                     'observed_commands': [test]})
                 self.assertEqual(review['status'], verdict)
@@ -730,22 +734,363 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, r'DOCS budget exhausted \(7 writer and review calls'):
             co._docs_review_turn(rc.git_snapshot(self.workspace)[0], ['CHANGELOG.md'])
 
-    def test_a_docs_review_revise_replays_exec_with_its_findings_then_reviews_again(self):
+    def after(self, state, sequence):
+        return [(row['role'], row['phase']) for row in state['turns'] if row['sequence'] > sequence]
+
+    def test_a_docs_review_revise_goes_to_the_author_then_only_the_docs_review_and_security(self):
+        # v3.8.1: an in-allowlist docs REVISE is fixed by the EXEC author; the docs-only fix skips reviewer, gate, FINISH, POLISH-Q
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
         [finding] = first['review']['finding_ids']
-        self.assertEqual((first['route'], first['review']['status'], second['route'], second['review']['status']),
-                         ('EXEC', 'REVISE', 'SECURITY', 'APPROVE'))   # the owned entry is reviewed again
+        self.assertEqual((first['route'], first['review']['status'], second['route'], second['review']['status'],
+                          second.get('docs_only'), second['docs_paths']),
+                         ('EXEC', 'REVISE', 'SECURITY', 'APPROVE', True, ['CHANGELOG.md']))
+        self.assertEqual(self.after(state, first['review']['sequence']),
+                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
         [row] = [row for row in state['finding_ledger'] if row['id'] == finding]
         self.assertEqual((row['source'], row['severity'], row['status']), ('docs-reviewer', 'MAJOR', 'fixed'))
+        self.assertEqual(row['status_history'][-1], {'round': second['review']['sequence'], 'status': 'fixed',
+                                                     'evidence': 'corrected entry present'})   # the docs reviewer closed it
+        fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['sequence'] > first['sequence'])
+        prompt = (self.run_dir / 'evidence' / f"{fix['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn('"source": "docs-review"', prompt)   # the docs findings were delivered to the author
+        prompt = (self.run_dir / 'evidence' / f"{second['review']['sequence']:03d}-docs-reviewer.prompt.txt").read_text()
+        self.assertIn('(1 open, owned by you)', prompt)
         self.assertEqual(list(state['lifecycle']['docs_owned']), ['CHANGELOG.md'])
-        between = [(turn['role'], turn['phase']) for turn in state['turns']
-                   if first['review']['sequence'] < turn['sequence'] < second['sequence']]
-        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):
-            self.assertIn(step, between)   # the persistent reviewer disposes the docs finding, then a new gate
+        self.assertIn('# corrected entry', (self.workspace / 'CHANGELOG.md').read_text())
+        self.assertEqual(state['lifecycle']['docs_approval']['tree'], rc.git_snapshot(self.workspace)[0])
+
+    def test_an_unresolved_docs_row_goes_back_to_the_author_within_the_round_budget(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block'),
+               'FAKE_DOCS_FIX_FAILS_ONCE': str(self.root / 'fix-fails')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--max-exec-rounds', '6', env=env)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        first, second, third = self.docs_rows(state)
+        self.assertEqual([(row['route'], row['review']['status']) for row in (first, second, third)],
+                         [('EXEC', 'REVISE'), ('EXEC', 'REVISE'), ('SECURITY', 'APPROVE')])
+        self.assertEqual(second['review']['finding_ids'], [])   # a still_open-only REVISE is usable, not a HOLD
+        self.assertEqual(self.after(state, first['review']['sequence']),
+                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('author', 'EXEC'), ('reviewer', 'DOCS'),
+                          ('reviewer', 'SECURITY')])
+        [row] = [row for row in state['finding_ledger'] if row['id'] in first['review']['finding_ids']]
+        self.assertEqual([item['status'] for item in row['status_history']][-2:], ['still_open', 'fixed'])
+        self.assertEqual(state['exec_rounds'], 3)
+
+    def test_a_docs_revise_at_the_round_limit_holds_and_add_rounds_gives_the_author_a_turn(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
+        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
+        self.assertIn('HOLD: EXEC round limit reached after a DOCS write', held.stdout, held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual((state['lifecycle']['stage'], state['next'], state['exec_rounds']), ('EXEC', 'author', 1))
+        count = len(state['turns'])
+        plain = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
+        self.assertIn('HOLD: EXEC round limit reached after a DOCS write', plain.stdout, plain.stdout + plain.stderr)
+        self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), count)   # no round past the cap
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--add-rounds', '1',
+                                         env=env)
+        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual([(row['role'], row['phase']) for row in state['turns'][count:]],
+                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+
+    def test_a_docs_only_reject_after_done_runs_only_the_author_the_docs_review_and_security(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1'}   # acts on the rejection only
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env).stdout)
+        first = json.loads((self.run_dir / 'state.json').read_text())
+        module = (self.workspace / 'sum_ints.py').read_text()
+        rejected = self.run_operator_action('reject', '--lifecycle-mode', 'on', '--max-invocations', '60',
+                                            '--text', 'The changelog entry must name the rejected input.',
+                                            env={**env, 'FAKE_AUTHOR_REJECTION_DOCS': '1'})
+        self.assertIn(DONE, rejected.stdout, rejected.stdout + rejected.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(self.after(state, first['sequence']),
+                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+        later = state['lifecycle']['receipts'][len(first['lifecycle']['receipts']):]
+        self.assertEqual([row['stage'] for row in later], ['DOCS', 'SECURITY'])
+        self.assertEqual((later[0]['docs_only'], later[0]['docs_paths'], state['status']), (True, ['CHANGELOG.md'], 'DONE'))
+        self.assertEqual((self.workspace / 'sum_ints.py').read_text(), module)
+        self.assertIn('# rejection applied', (self.workspace / 'CHANGELOG.md').read_text())
+
+    def test_a_docs_only_reject_keeps_the_operator_record_for_the_docs_review(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1'}
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env).stdout)
+        old = rc.git_snapshot(self.workspace)[0]
+        log = self.root / 'host-test.log'
+        log.write_text('Ran 12 tests\nOK\n')
+        attached = self.run_operator_action('attach-verification', '--lifecycle-mode', 'on', '--max-invocations', '60',
+                                            '--command', 'python3 -m unittest', '--exit-code', '0', '--log', str(log),
+                                            '--log-sha256', hashlib.sha256(log.read_bytes()).hexdigest(),
+                                            '--note', 'ran on the host', env=env)
+        self.assertIn(f'VERIFICATION: V001 bound to tree {old}', attached.stdout, attached.stdout + attached.stderr)
+        rejected = self.run_operator_action('reject', '--lifecycle-mode', 'on', '--max-invocations', '60',
+                                            '--text', 'The changelog entry must name the rejected input.',
+                                            env={**env, 'FAKE_DOCS_REVIEW_NO_TEST_ONCE': str(self.root / 'no-test')})
+        self.assertIn(DONE, rejected.stdout, rejected.stdout + rejected.stderr)   # the docs review ran no test of its own
+        self.assertIn("carried over to the author's docs-only change (CHANGELOG.md)", rejected.stdout)
+        state, tree = json.loads((self.run_dir / 'state.json').read_text()), rc.git_snapshot(self.workspace)[0]
+        docs = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS'][-1]
+        self.assertEqual((docs['docs_only'], docs['review']['observed_test'], docs['review']['operator_test_evidence']),
+                         (True, None, 'V001'))
+        [row] = state['operator_verifications']
+        self.assertEqual((row['status'], row['tree_sha256'], row['carried'][-1]['by'], row['carried'][-1]['from_tree']),
+                         ('current', tree, 'author', old))
+        prompt = (self.run_dir / 'evidence' / f"{docs['review']['sequence']:03d}-docs-reviewer.prompt.txt").read_text()
+        self.assertIn(f'Carried over from tree {old[:12]}: only DOCS allowlist paths changed by the author: CHANGELOG.md',
+                      prompt)
+
+    def test_a_saved_state_without_approval_manifests_replays_in_full(self):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1'}
+        self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env).stdout)
+        path = self.run_dir / 'state.json'
+        state = json.loads(path.read_text())
+        manifest = json.dumps(state['role_dispatch_manifest'], sort_keys=True)
+        state['lifecycle']['exec_convergence'].pop('manifest_file')   # as v3.8.0 saved it
+        for key in ('polish_approval', 'docs_approval'):
+            state['lifecycle'].pop(key)
+        path.write_text(json.dumps(state))
+        rejected = self.run_operator_action('reject', '--lifecycle-mode', 'on', '--max-invocations', '60',
+                                            '--text', 'The changelog entry must name the rejected input.',
+                                            env={**env, 'FAKE_AUTHOR_REJECTION_DOCS': '1'})
+        # the fake DOCS writer rewrites its fixed entry, so the replayed tree is the rejected one again: refused after DOCS
+        self.assertIn('rejected-tree', rejected.stdout, rejected.stdout + rejected.stderr)
+        after = json.loads(path.read_text())
+        later = [row['stage'] for row in after['lifecycle']['receipts'][len(state['lifecycle']['receipts']):]]
+        self.assertEqual(later[:2], ['FINISH', 'POLISH-Q'])   # today's full replay
+        [polish] = [row for row in after['lifecycle']['receipts'][len(state['lifecycle']['receipts']):]
+                    if row['stage'] == 'POLISH-Q']
+        self.assertNotIn('delta_paths', polish)   # no earlier pass recorded: the whole change
+        steps = self.after(after, state['sequence'])
+        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH'), ('author', 'DOCS')):
+            self.assertIn(step, steps)
+        self.assertEqual(json.dumps(after['role_dispatch_manifest'], sort_keys=True), manifest)   # byte-identical
+
+    def test_a_minor_security_reviewer_finding_is_listed_but_reaches_done_and_is_withdrawable(self):
+        env = {'FAKE_SECURITY_MINOR_ONCE': str(self.root / 'minor-once')}
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [row] = [row for row in state['finding_ledger'] if row['source'] == 'security-reviewer']
+        self.assertEqual((row['status'], row['owner_role'], row['severity'], row['security']),
+                         ('open', 'security-reviewer', 'MINOR', True))
+        [security] = [item for item in state['lifecycle']['receipts'] if item['stage'] == 'SECURITY']
+        self.assertEqual((security['route'], security['review']['finding_ids'], security['review']['reason']),
+                         ('DONE', [row['id']], None))
+        self.assertIsNone(state['lifecycle']['security_hold_tree'])
+        self.assertIn(row['id'], wl.delivery_report(state, 'run', 'item', {}))   # listed under the open findings
+        co = rc.Coordinator(self.args('--max-invocations', '60'))
+        co.args.finding, co.args.reason = [row['id']], 'The list size is bounded by the caller.'
+        co.args.expect = co.operator_intent('withdraw-findings', None, None)['digest']
+        self.assertEqual(co.withdraw_findings(), 'DONE')
+        self.assertEqual([item['status'] for item in co.state['finding_ledger'] if item['id'] == row['id']], ['withdrawn'])
+        self.run_dir = self.root / 'major'
+        env = {'FAKE_SECURITY_MINOR_ONCE': str(self.root / 'major-once'), 'FAKE_SECURITY_MINOR_SEVERITY': 'MAJOR'}
+        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        self.assertIn('HOLD: security reviewer findings: ', held.stdout, held.stdout + held.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [row] = [row for row in state['finding_ledger'] if row['source'] == 'security-reviewer']
+        co = rc.Coordinator(self.args('--max-invocations', '60'))
+        co.state.update(status='DONE', acceptance_state='PENDING')   # even where withdrawal is allowed, MAJOR is refused
+        co.args.finding, co.args.reason = [row['id']], 'The list size is bounded by the caller.'
+        with self.assertRaisesRegex(ValueError, 'cannot be withdrawn'):
+            co._withdrawal_rows()
+
+    def docs_review_owned(self, answer):
+        co = rc.Coordinator(self.args())
+        [row] = co.record_findings('docs-reviewer', 'DOCS', 1, [
+            {'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'stale entry', 'failure_scenario': 'misleads'}])
+        row = next(item for item in co.state['finding_ledger'] if item['id'] == row['id'])
+        tree = rc.git_snapshot(self.workspace)[0]
+        ledger = json.dumps(co.state['finding_ledger'])
+        answer = answer(row['id'])
+        def invoke(role, phase, prompt, schema, fresh=False):
+            co.state['sequence'] += 1
+            co.state['turns'].append({'sequence': co.state['sequence'], 'role': role, 'phase': phase, 'snapshot_before': tree})
+            self.prompt = prompt
+            return {'answer': answer, 'sequence': co.state['sequence'], 'snapshot': tree, 'role': role}
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=invoke):
+            try:
+                return co, row, ledger, co._docs_review_turn(tree, ['CHANGELOG.md'])
+            except RuntimeError as exc:
+                return co, row, ledger, exc
+
+    def test_the_docs_reviewer_disposes_its_open_rows(self):
+        test = {'command': self.args().test_command, 'exit_code': 0, 'output': 'OK'}
+        for disposition, status, verdict, final in (('fixed', 'APPROVE', 'APPROVE', 'fixed'),
+                                                    ('still_open', 'REVISE', 'REVISE', 'open')):
+            with self.subTest(disposition=disposition):
+                self.run_dir = self.root / disposition
+                co, row, _, review = self.docs_review_owned(lambda finding_id: {
+                    'status': status, 'full_review': [], 'observed_commands': [test],
+                    'prior_findings': [{'id': finding_id, 'disposition': disposition, 'evidence': 'checked'}]})
+                self.assertEqual((review['status'], row['status']), (verdict, final))
+                self.assertIn(f"- {row['id']}: [severity=MAJOR] stale entry", self.prompt)
+        self.run_dir = self.root / 'omitted'
+        co, row, ledger, error = self.docs_review_owned(lambda finding_id: {
+            'status': 'APPROVE', 'full_review': [], 'observed_commands': [test], 'prior_findings': []})
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn('docs reviewer omitted dispositions for open docs rows', str(error))
+        self.assertIn('resume reviews again', str(error))
+        self.assertEqual(json.dumps(co.state['finding_ledger']), ledger)   # no partial disposition
+
+    def polish_at(self, approve_first=True):
+        co = rc.Coordinator(self.args())
+        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+        (self.workspace / 'other.py').write_text('VALUE = 1\n')
+        if approve_first:   # an earlier completed pass on this tree
+            co.state['lifecycle']['polish_approval'] = co._save_approval_manifest('polish')
+        return co
+
+    def polish_invoke(self, co, findings=None, prompts=None):
+        def invoke(role, phase, prompt, schema, fresh=False):
+            tree = rc.git_snapshot(self.workspace)[0]
+            name = prompt.split('Role: specialist ', 1)[1].split(',', 1)[0]
+            co.state['sequence'] += 1
+            answer = {'status': 'APPROVE', 'full_review': (findings or {}).get(name, []), 'prior_findings': [],
+                      'observed_commands': []}
+            co.state['turns'].append({'sequence': co.state['sequence'], 'role': role, 'phase': phase, 'answer': answer,
+                                      'snapshot_before': tree, 'observed_tool_calls': 1})
+            if prompts is not None:
+                prompts[name] = prompt
+            return {'answer': answer, 'sequence': co.state['sequence'], 'snapshot': tree, 'role': role}
+        return invoke
+
+    def test_a_later_polish_q_pass_reviews_only_the_paths_changed_since_the_last_pass(self):
+        co = self.polish_at()
+        (self.workspace / 'other.py').write_text('VALUE = 2\n')
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=tree)
+        co.state['next'] = 'polish-q'
+        prompts = {}
+        finding = {'severity': 'MAJOR', 'file': './sum_ints.py:2', 'summary': 'unchanged code nit', 'failure_scenario': 'x'}
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.polish_invoke(co, {'code-reviewer': [finding]}, prompts)):
+            co.worktree_polish_turn()
+        [receipt] = [row for row in co.state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((receipt['delta_paths'], receipt['specialists']),
+                         (['other.py'], ['python-reviewer', 'code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer']))
+        for prompt in prompts.values():
+            self.assertIn('Changed paths: other.py\n', prompt)
+            self.assertIn('Only these paths changed since the last specialist pass', prompt)
+        [row] = [row for row in co.state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
+        self.assertEqual((row['status'], row['out_of_delta'], row['advisory']), ('open', True, True))
+        self.assertNotIn(row, co.blocking_open_findings())
+        self.assertEqual((co.state['status'], co.state['next'], co.state['lifecycle']['stage']), ('ACTIVE', 'docs', 'DOCS'))
+        self.assertIn('open (advisory)', (self.run_dir / 'findings-ledger.md').read_text())
+        self.assertIn(f"{row['id']} MAJOR+out-of-delta", co._progress_open())
+        self.assertEqual(co.state['lifecycle']['polish_approval']['tree'], tree)
+        self.assertNotIn('polish_scope', co.state['lifecycle'])
+
+    def test_a_file_restored_to_its_base_content_is_still_in_the_polish_q_delta(self):
+        co = rc.Coordinator(self.args())
+        original = (self.workspace / 'tracked.txt').read_text()
+        (self.workspace / 'tracked.txt').write_text('changed by the approved pass\n')
+        co.state['lifecycle']['polish_approval'] = co._save_approval_manifest('polish')
+        (self.workspace / 'tracked.txt').write_text(original)   # restored: no longer in the diff against HEAD
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=tree)
+        prompts = {}
+        finding = {'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'restored text lost a case', 'failure_scenario': 'x'}
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.polish_invoke(co, {'code-reviewer': [finding]}, prompts)):
+            co.worktree_polish_turn()
+        [receipt] = [row for row in co.state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((receipt['delta_paths'], receipt['skipped']), (['tracked.txt'], False))
+        self.assertIn('Changed paths: tracked.txt\n', prompts['code-reviewer'])
+        [row] = [row for row in co.state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
+        self.assertFalse(row.get('out_of_delta'))   # the restored file is in this pass's scope: its finding blocks
+        self.assertIn(row, co.blocking_open_findings())
+
+    def test_a_polish_q_pass_with_no_changed_path_dispatches_no_specialist(self):
+        co = self.polish_at()
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=tree)
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched a specialist')):
+            co.worktree_polish_turn()
+        [receipt] = [row for row in co.state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual((receipt['skipped'], receipt['specialists'], receipt['delta_paths'], co.state['next']),
+                         (True, [], [], 'docs'))
+
+    def test_a_delta_pass_held_mid_stage_resumes_with_the_same_scope(self):
+        co = self.polish_at()
+        (self.workspace / 'other.py').write_text('VALUE = 3\n')
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=tree)
+        calls = []
+        stub = self.polish_invoke(co)
+        def flaky(*args, **kwargs):
+            calls.append(args[2].split('Role: specialist ', 1)[1].split(',', 1)[0])
+            if len(calls) == 2:
+                raise RuntimeError('invocation limit reached')
+            return stub(*args, **kwargs)
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=flaky), self.assertRaisesRegex(RuntimeError, 'invocation limit'):
+            co.worktree_polish_turn()
+        self.assertEqual(co.state['lifecycle']['polish_scope']['paths'], ['other.py'])
+        self.assertEqual(co.state['lifecycle']['pending']['stage'], 'POLISH-Q')
+        co = rc.Coordinator(self.args(action='resume'))   # the saved state, as resume loads it
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=lambda *a, **k: calls.append(
+                    a[2].split('Role: specialist ', 1)[1].split(',', 1)[0]) or self.polish_invoke(co)(*a, **k)):
+            co.worktree_polish_turn()   # begin() accepts the pending request; only the unfinished specialists run
+        self.assertEqual(calls, ['python-reviewer', 'code-reviewer', 'code-reviewer', 'silent-failure-hunter',
+                                 'pr-test-analyzer'])
+        [receipt] = [row for row in co.state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual(receipt['delta_paths'], ['other.py'])
+        self.assertNotIn('polish_scope', co.state['lifecycle'])
+        self.run_dir = self.root / 'v380'   # a specialists request a v3.8.0 state left in flight: the whole change
+        co = self.polish_at(approve_first=False)
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=tree)
+        request = wl.stage_request(co.state['lifecycle'], 'specialists')
+        co.state['lifecycle'].update(pending=request, specialist_done={})
+        co.state['lifecycle']['polish_approval'] = co._save_approval_manifest('polish')   # yet no polish_scope
+        prompts = {}
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'), \
+                mock.patch.object(co, 'invoke', side_effect=self.polish_invoke(co, prompts=prompts)):
+            co.worktree_polish_turn()
+        self.assertIn('Changed paths: other.py, sum_ints.py\n', prompts['code-reviewer'])
+        self.assertNotIn('Only these paths changed', prompts['code-reviewer'])
+
+    def test_the_docs_writer_is_not_dispatched_again_when_only_docs_or_nothing_changed(self):
+        co = rc.Coordinator(self.args())
+        (self.workspace / 'CHANGELOG.md').write_text('# entry\n')
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=tree, docs_owned={'CHANGELOG.md': 'x'},
+                                     docs_approval=co._save_approval_manifest('docs'))
+        co.state.update(next='docs', phase='EXEC')
+        with mock.patch.object(co, 'invoke', side_effect=AssertionError('dispatched a DOCS writer or reviewer')):
+            co.worktree_docs_turn()
+        [docs] = self.docs_rows(co.state)
+        self.assertEqual((docs['writer_skipped'], docs['docs_paths'], docs['route'], co.state['next'],
+                          co.state['lifecycle']['stage']), (True, [], 'SECURITY', 'security', 'SECURITY'))
+        self.run_dir = self.root / 'docs-changed'
+        co = rc.Coordinator(self.args())
+        co.state['lifecycle'].update(docs_owned={'CHANGELOG.md': 'x'}, docs_approval=co._save_approval_manifest('docs'))
+        (self.workspace / 'CHANGELOG.md').write_text('# entry, corrected\n')
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=tree)
+        co.state.update(next='docs', phase='EXEC')
+        reviewed = []
+        with mock.patch.object(co, '_lifecycle_writer', side_effect=AssertionError('dispatched the DOCS writer')), \
+                mock.patch.object(co, '_docs_review_turn', side_effect=lambda tree, paths: reviewed.append(paths) or {
+                    'sequence': 9, 'status': 'APPROVE', 'finding_ids': []}):
+            co.worktree_docs_turn()
+        [docs] = self.docs_rows(co.state)
+        self.assertEqual((reviewed, docs['docs_paths'], docs['route'], co.state['next']),
+                         ([['CHANGELOG.md']], ['CHANGELOG.md'], 'SECURITY', 'security'))
+        self.assertEqual(co.state['lifecycle']['docs_approval']['tree'], tree)
+        self.run_dir = self.root / 'code-changed'   # any other path: today's writer path
+        co = rc.Coordinator(self.args())
+        co.state['lifecycle'].update(docs_approval=co._save_approval_manifest('docs'))
+        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return 0\n')
+        co.state['lifecycle'].update(stage='DOCS', candidate_oid=rc.git_snapshot(self.workspace)[0])
+        self.assertFalse(co._docs_writer_skip(wl.stage_request(co.state['lifecycle'], 'docs-writer')))
+        self.assertIsNone(co.state['lifecycle']['pending'])
 
     def test_a_docs_comment_write_replays_exec_review_and_gate(self):
         env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}

@@ -197,6 +197,12 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+
+
+def blocks_by_severity(row: dict) -> bool:
+    """v3.8.1 (owner 2026-11-10): a row blocks by its severity alone; the security tag no longer escalates a MINOR or LOW row."""
+    severity = str(row.get('severity', '')).upper()
+    return severity in BLOCKING_REVIEW_SEVERITIES or (row.get('source') == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))
 # L105: .review-loop/config.md review guidance (operator text) and the prompts it reaches: reviews, and the POLISH-Q specialists.
 GUIDANCE_KEYS = (('review_focus', 'Review focus'), ('review_style', 'Review style'), ('quality_focus', 'Quality focus'))
 REVIEW_GUIDANCE, QUALITY_GUIDANCE = ('review_focus', 'review_style'), ('quality_focus', 'review_style')
@@ -223,7 +229,7 @@ def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
     rows = {}
     for source in (*state.get('item_blockers', []), *state.get('finding_ledger', [])):
         if source.get('status') not in ('open', 'awaiting-revalidation') or not (source.get('severity') in BLOCKING_REVIEW_SEVERITIES or
-                source.get('security') or source.get('source') == 'adversarial-gate' and source.get('severity') in ('CRITICAL', 'HIGH', 'MEDIUM')):
+                source.get('source') == 'adversarial-gate' and source.get('severity') in ('CRITICAL', 'HIGH', 'MEDIUM')):
             continue
         row = copy.deepcopy(source); row.setdefault('origin_run', str(run_dir))
         key = (row['origin_run'], row['id'])
@@ -259,18 +265,18 @@ def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
             'role_agents': dict(required_agents), 'agents_dir': str(agents_dir.resolve()),
             'agent_body_sha256': agents, 'gate_prompt_path': str(prompt_path.resolve()),
             'gate_prompt_sha256': prompt_hash}
-REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW. Never lower severity to qualify for advisory handling.')
+REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW; a MINOR or LOW security-tagged finding is listed and advisory. Never lower severity to qualify for advisory handling.')
 REVIEW_INCLUSION_GUIDANCE = ('Report a new finding only when you would ask the author to change the work for a concrete failure or material waste in normal supported use; there is no target finding count, and full_review: [] is a normal answer. '
     'Assume users and models act in good faith within the supported scope and recommend proportionate protections. '
     'Rare but realistically reachable credential exposure, authorization bypass, irreversible data loss, destructive action, or comparable harm is still reported.')
 LEDGER_DISPOSITION_GUIDANCE = ('A still_open disposition records that a finding is unresolved and does not by itself require REVISE. '
-    'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, every security-tagged row, and source=adversarial-gate with CRITICAL or HIGH. '
-    'Every other row (MINOR or LOW without the security tag; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open. '
+    'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, and source=adversarial-gate with CRITICAL or HIGH. '
+    'Every other row (MINOR or LOW, security-tagged or not; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open. '
     'Do not raise another role\'s advisory row to a blocker only because it is still open. '
     'Keep giving every listed row its disposition. '
     'An advisory row that you would not report under the rule above (no concrete failure or material waste in normal supported use) may be withdrawn with evidence. '
     'Close a blocking row only as fixed, or withdraw it with evidence that the finding itself is wrong.')
-APPROVE_CONVERSION_NOTE = ('An APPROVE that leaves any blocking or security-tagged finding open is never accepted (in PLAN and EXEC it is converted to REVISE): close the finding with evidence in prior_findings, or return REVISE.')   # persistent reviewer only: the shadow prompt must not mention prior_findings
+APPROVE_CONVERSION_NOTE = ('An APPROVE that leaves any blocking finding open is never accepted (in PLAN and EXEC it is converted to REVISE): close the finding with evidence in prior_findings, or return REVISE.')   # only in the ledger-owning reviewer prompt: the shadow prompt must not mention prior_findings
 
 
 class RunLeaseError(RuntimeError):
@@ -1004,7 +1010,8 @@ def reclassify_default_home_trust(changes: dict, before: dict, after: dict, work
     return changes
 
 
-NOTE_LIFECYCLE_WAITS = ('gate', 'finish', 'docs', 'polish-q', 'polish-fix', 'polish-recheck', 'polish-simplify', 'polish-tests')   # v3.7.2
+NOTE_LIFECYCLE_WAITS = ('gate', 'finish', 'docs', 'polish-q', 'polish-fix', 'polish-recheck', 'polish-simplify', 'polish-tests',
+                        'docs-review')   # v3.7.2; v3.8.1 docs-review
 NOTE_WRITER_PHASES = ('FINISH', 'DOCS', 'POLISH-Q')   # v3.7.2: lifecycle writer stages a queued note reaches
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate')   # b295-f1 FIELD-1: Codex reviewer-type roles get a per-dispatch temp root
 LEGACY_PROBE_ROLES = ('probe', 'gate-probe')   # v3.7.0: removed roles; a turn saved by an earlier release may still own a scratch
@@ -3520,10 +3527,8 @@ class Coordinator:
         return [finding for finding in self.state['finding_ledger'] if finding['status'] == 'open']
 
     def blocking_open_findings(self) -> list[dict]:
-        rows = [finding for finding in self.open_findings()
-                if finding['severity'] in BLOCKING_REVIEW_SEVERITIES or
-                finding.get('security') or
-                (finding['source'] == 'adversarial-gate' and finding['severity'] in ('CRITICAL', 'HIGH'))]
+        rows = [finding for finding in self.open_findings()   # v3.8.1: the security tag alone does not block; a POLISH-Q
+                if blocks_by_severity(finding) and not finding.get('out_of_delta')]   # row outside its pass's delta is advisory
         if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') not in ('SECURITY', 'DONE'):
             rows = [row for row in rows if row.get('owner_role') != 'security-reviewer']   # only SECURITY can close them
         return rows
@@ -3684,7 +3689,8 @@ class Coordinator:
                       status=row['status'], summary=' '.join(str(row['summary']).split())[:120])
 
     def _progress_open(self) -> list[str]:
-        return [f"{row['id']} {row['severity']}" + ('+sec' if row.get('security') else '') for row in self.open_findings()]
+        return [f"{row['id']} {row['severity']}" + ('+sec' if row.get('security') else '') +
+                ('+out-of-delta' if row.get('out_of_delta') else '') for row in self.open_findings()]
 
     def _progress_terminal(self, status: str, reason: str = '') -> None:
         if status in ('ACCEPTED', 'REPORTED', 'ABORTED'):
@@ -3740,7 +3746,7 @@ class Coordinator:
     @staticmethod
     def findings_are_advisory(findings: list[dict]) -> bool:
         return bool(findings) and all(str(row.get('severity', '')).upper() in
-                                      ADVISORY_REVIEW_SEVERITIES and not row.get('security')
+                                      ADVISORY_REVIEW_SEVERITIES
                                       for row in findings)
 
     def record_review_verdict(self, sequence: int, phase: str, raw: str, effective: str, rf5=False) -> None:
@@ -4112,7 +4118,8 @@ class Coordinator:
                       'polish-fix': 'the POLISH-Q fix author turn',
                       'polish-simplify': 'the POLISH-Q simplifier', 'polish-tests': 'the POLISH-Q test writer',
                       'polish-q': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn',
-                      'polish-recheck': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn'}.get(
+                      'polish-recheck': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn',
+                      'docs-review': f'the next {phase} author turn if the docs review requests changes'}.get(
                           waiting, f'the next {phase} author turn')
         if at_limit and waiting in ('author', 'reviewer', 'gate', 'polish-fix'):
             target += f' after resume --add-rounds N at this {phase} round-limit HOLD'
@@ -4456,10 +4463,10 @@ class Coordinator:
             if row is None: raise ValueError(f'unknown finding id: {finding_id}')
             if row['status'] != 'open': raise ValueError(f'finding {finding_id} is already closed')
             severity, owner = row['severity'].upper(), row.get('owner_role', '')
-            if (row.get('security') or severity == 'SECURITY' or owner == 'security-reviewer' or
+            if (((row.get('security') or owner == 'security-reviewer') and blocks_by_severity(row)) or severity == 'SECURITY' or
                     owner.startswith('specialist:') or row['source'] == 'secret-scan' or
-                    (row['source'] == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))):
-                raise ValueError(f'finding {finding_id} cannot be withdrawn by withdraw-findings: security, specialist ownership, secret-scan, and gate CRITICAL/HIGH rows are excluded')
+                    (row['source'] == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))):   # v3.8.1: MINOR/LOW security rows may go
+                raise ValueError(f'finding {finding_id} cannot be withdrawn by withdraw-findings: CRITICAL/MAJOR/SECURITY security rows, specialist ownership, secret-scan, and gate CRITICAL/HIGH rows are excluded')
             rows.append(row)
         return rows
 
@@ -4707,7 +4714,8 @@ class Coordinator:
             self.set_effective_verdict('APPROVE')
             self.state['lifecycle'].pop('writer_replay', None)   # D09 §2: a converged writer replay has used its one chance
             self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
-                'tree': reviewed, 'reviewer_sequence': reviewer.get('sequence'), 'gate_sequence': gate.get('sequence')})
+                'tree': reviewed, 'reviewer_sequence': reviewer.get('sequence'), 'gate_sequence': gate.get('sequence'),
+                'manifest_file': self._save_approval_manifest('exec')['manifest_file']})   # v3.8.1: what a later fix is diffed against
             self.state['next'] = 'finish'
             self.save()
             return 'ACTIVE'
@@ -6178,6 +6186,31 @@ class Coordinator:
         if turn.get('role') == 'author' and turn.get('workspace') == str(self.workspace):
             opv.void_stale(self, None, atomic_json)
 
+    def _carry_docs_only_author(self, result: dict) -> list:
+        """v3.8.1: an EXEC author turn whose change since a recorded tree (EXEC convergence, DOCS approval, or the DOCS tree a
+        docs review sent back to the author; their manifests are recorded) touched only docs paths carries the operator's records bound to that tree to the new tree, as the DOCS
+        writer does; a code change, an older state or an unknown tree carries nothing (the records are voided as before)."""
+        life = self.state.get('lifecycle') or {}
+        if (not self.state.get('operator_verifications') or not worktree_lifecycle.is_worktree(self.state)
+                or self.state['phase'] != 'EXEC' or life.get('stage') != 'EXEC' or self.state['config'].get('review_report')):
+            return []
+        tree, manifest = git_snapshot(self.workspace)
+        if tree != result.get('snapshot'):
+            return []
+        current, from_trees, paths = dict(manifest), set(), set()
+        for record in (life.get('exec_convergence'), life.get('docs_approval'), life.get('docs_revise')):
+            approved = self._approval_manifest(record)
+            changed = worktree_lifecycle.manifest_delta(approved, current) if approved is not None else []
+            if changed and all(self._doc_path(path, current.get(path)) for path in changed):
+                from_trees.add(record['tree'])
+                paths.update(changed)
+        carried = opv.carry_docs_only(self, from_trees, tree, sorted(paths), result['sequence'], atomic_json,
+                                      by='author') if from_trees else []
+        if carried:
+            print(f"NOTE: operator verification {', '.join(carried)} carried over to the author's docs-only change "
+                  f"({', '.join(sorted(paths)[:10])})")
+        return carried
+
     def _void_opv_observed(self, seq0: int, failed: bool = False) -> None:
         """OPV (v2.9.7): void on every tree the coordinator observed in the author turns after seq0 (start and end snapshot of
         each recorded turn; a missing end snapshot is an unknown tree), and on an unknown tree when a failed turn's child ran
@@ -6248,7 +6281,8 @@ class Coordinator:
             if role not in ('reviewer', 'shadow', 'gate'):
                 if role == 'author' and workspace_override is None and phase != 'DOCS':   # a probe or candidate turn in another tree leaves the workspace alone
                     # v3.7.2: worktree_docs_turn carries a record over a docs-only change or voids it; a later call with the new tree voids it too
-                    self._void_opv_observed(seq0)
+                    if not self._carry_docs_only_author(result):   # v3.8.1: a carried record is bound to the final tree, so
+                        self._void_opv_observed(seq0)                # only the final tree's check below applies to it
                     opv.void_stale(self, result.get('snapshot'), atomic_json)   # OPV: a tree the author changed voids its records
                 return result
             answer = result['answer']
@@ -6767,9 +6801,72 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['plan_rewrite'] = True   # the audit trail names the extra turn
             self.progress('plan_rewrite', status='written', sequence=result['sequence'])
         self.state['delivered_review'] = ''
-        self.state['next'] = 'reviewer'
+        self.state['next'] = self._post_author_next()
         self.state.pop('pending_author_result_sequence', None)
         self.save()
+
+    def _save_approval_manifest(self, kind: str) -> dict:
+        """v3.8.1: the manifest (path -> hash) at an approval point, so a later change can be scoped to the paths it touched."""
+        tree, manifest = git_snapshot(self.workspace)
+        path = self.evidence / f'approval-{kind}-{tree}.json'
+        atomic_json(path, manifest)
+        return {'tree': tree, 'manifest_file': str(path)}
+
+    @staticmethod
+    def _approval_manifest(record) -> Optional[dict]:
+        """The recorded approval manifest as a dict, or None (a state saved before v3.8.1, an unreadable or foreign file):
+        None always means today's full replay, never a HOLD."""
+        if not isinstance(record, dict) or not record.get('manifest_file') or not record.get('tree'):
+            return None
+        try:
+            manifest = json.loads(Path(record['manifest_file']).read_text(encoding='utf-8'))
+            digest = hashlib.sha256(json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+            return dict(manifest) if digest == record['tree'] else None
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _doc_path(self, path: str, value) -> bool:
+        """v3.8.1: a path a docs-only change may touch: in the DOCS allowlist or DOCS-owned, and not in the DOCS HOLD set."""
+        docs = {*self._docs_allowlist(), *self._docs_owned()}
+        return path in docs and not worktree_lifecycle.docs_denied(path, value)
+
+    def _post_author_next(self) -> str:
+        """v3.8.1: after an EXEC author turn of a later epoch whose every change since the EXEC convergence is a docs path,
+        only the fresh docs review runs ('docs-review'); anything else, or an older state, replays the reviewer ('reviewer')."""
+        life = self.state.get('lifecycle')
+        if not (worktree_lifecycle.is_worktree(self.state) and self.state['phase'] == 'EXEC' and life.get('stage') == 'EXEC'
+                and not self.state['config'].get('review_report')):
+            return 'reviewer'
+        advisory = self.state.get('advisory_fix') or {}
+        if life.get('writer_replay') or (advisory.get('state') == 'ran' and advisory.get('epoch') == life.get('epoch')):
+            return 'reviewer'   # the advisory fix round and a writer replay keep their own chain back to POLISH-Q
+        approved =self._approval_manifest(life.get('exec_convergence'))
+        if approved is None:
+            return 'reviewer'
+        tree, manifest = git_snapshot(self.workspace)
+        current = dict(manifest)
+        changed = worktree_lifecycle.manifest_delta(approved, current)
+        if not changed or not all(self._doc_path(path, current.get(path)) for path in changed):
+            life.pop('docs_only', None)
+            return 'reviewer'
+        life['docs_only'] = {'paths': changed, 'tree': tree}
+        return 'docs-review'
+
+    def _docs_author_route(self, rows: list[dict]) -> None:
+        """v3.8.1: a docs review REVISE on an all-docs change goes to the EXEC author (the fix), not the reviewer; the
+        author turn counts the round, so the limit is checked here without spending one."""
+        life = self.state['lifecycle']
+        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
+                                   'docs_revise': self._save_approval_manifest('docs-revise')}   # the reviewed DOCS tree:
+        self.state['lifecycle'].pop('docs_only', None)   # its operator records may follow the author's docs-only fix
+        self.state.update(phase='EXEC', next='author', gate_ran=False,
+                          delivered_review=worktree_lifecycle.delivered_findings('docs-review', rows))
+        if self.state['exec_rounds'] >= self.exec_round_limit():
+            self.round_limit_hold('EXEC round limit reached after a DOCS write')
+
+    def _docs_revise_rows(self) -> list[dict]:
+        blocking = self.blocking_open_findings()
+        return [row for row in blocking if row.get('source') == 'docs-reviewer'] or blocking
 
     def _writer_git_state(self) -> dict:
         """HEAD, its branch and the staged entries: what a lifecycle writer must not change (doc 6, D8)."""
@@ -6854,6 +6951,8 @@ class Coordinator:
         life, workspace = self.state['lifecycle'], self.workspace
         allow = set(self._docs_allowlist())
         request = worktree_lifecycle.stage_request(life, 'docs-writer')
+        if (life['pending'] != request or life.get('docs_skip') == request['request_id']) and self._docs_writer_skip(request):
+            return   # v3.8.1: nothing but docs changed since the DOCS approval: no second writer
         base_file = self.evidence / f"{request['request_id']}-docs-base.json"
         if life['pending'] != request:
             tree, manifest = git_snapshot(workspace)
@@ -6892,7 +6991,7 @@ class Coordinator:
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
         before, after = dict(base), dict(manifest)
-        changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+        changed = worktree_lifecycle.manifest_delta(before, after)
         denied = [path for path in changed if worktree_lifecycle.docs_denied(path, after.get(path))]
         outside = [path for path in changed if path not in allow]
         receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': result['sequence'], 'docs_paths': changed,
@@ -6924,7 +7023,9 @@ class Coordinator:
             self.state['lifecycle']['docs_owned'] = {**self.state['lifecycle'].get('docs_owned', {}), **receipt['docs_written']}
         if reason:
             self.hold(reason)
-        elif replay:   # a code or comment write, or a docs review REVISE: new EXEC convergence, reviewer then gate
+        elif replay and not outside:   # v3.8.1: a docs review REVISE on docs-only writes: the EXEC author fixes the docs
+            self._docs_author_route(self._docs_revise_rows())
+        elif replay:   # a code or comment write: new EXEC convergence, reviewer then gate
             life = self.state['lifecycle']
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
             self.state['exec_rounds'] += 1
@@ -6932,13 +7033,110 @@ class Coordinator:
             if self.state['exec_rounds'] > self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after a DOCS write')
         else:
-            self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree)   # SECURITY binds the DOCS output
+            self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree,   # SECURITY binds the DOCS output
+                                           docs_approval=self._save_approval_manifest('docs'))
+            self.state['next'] = 'security'
+        self.save()
+
+    def _docs_writer_skip(self, request: dict) -> bool:
+        """v3.8.1 DOCS skip: when no non-doc path changed since the last DOCS approval, the writer is not dispatched again:
+        changed docs get the fresh docs review only, and an unchanged tree goes straight to SECURITY. False (an older state,
+        an earlier DOCS HOLD in this epoch, a code change) keeps today's writer path."""
+        life = self.state['lifecycle']
+        replaying = life.get('docs_skip') == request['request_id'] and life['pending'] == request
+        approved = self._approval_manifest(life.get('docs_approval'))
+        previous = next((row for row in reversed(life['receipts'])
+                         if row.get('stage') == 'DOCS' and row.get('epoch') == life['epoch']), None)
+        if not replaying and (approved is None or (previous and previous.get('status') == 'HOLD')):
+            return False
+        tree, manifest = git_snapshot(self.workspace)
+        if tree != life['candidate_oid']:
+            if replaying:
+                raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
+            return False
+        current = dict(manifest)
+        changed = worktree_lifecycle.manifest_delta(approved or {}, current) if approved is not None else []
+        if not all(self._doc_path(path, current.get(path)) for path in changed):
+            if replaying:
+                raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
+            return False
+        self.state['lifecycle'] = lifecycle_spine.begin(life, request)
+        self.state['lifecycle']['docs_skip'] = request['request_id']
+        self.save()
+        receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': None, 'docs_paths': changed,
+                   'docs_written': {}, 'writer_skipped': True}
+        review = None
+        if changed:   # the reviewed docs changed since the approval: a fresh docs review of exactly this tree
+            review = receipt['review'] = self._docs_review_turn(tree, sorted({*changed, *self._docs_owned()}))
+            receipt['sequence'] = review['sequence']
+        revise = bool(review) and review['status'] != 'APPROVE'
+        reason = (None if revise or not (blocking := self.blocking_open_findings()) else
+                  'DOCS cannot advance with open blocking findings: ' + ', '.join(row['id'] for row in blocking))
+        receipt['route'] = 'HOLD' if reason else 'EXEC' if revise else 'SECURITY'
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'],
+                                                           {**receipt, 'status': 'HOLD' if reason else 'READY'})
+        self.state['lifecycle'].pop('docs_skip', None)
+        if reason:
+            self.hold(reason)
+        elif revise:
+            self._docs_author_route(self._docs_revise_rows())
+        else:
+            self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree,
+                                           docs_approval=self._save_approval_manifest('docs'))
+            self.state['next'] = 'security'
+        self.save()
+        return True
+
+    def worktree_docs_review_only_turn(self) -> None:
+        """v3.8.1 docs-only fix: an EXEC author change that touched only docs paths since the EXEC convergence skips the
+        reviewer, shadow, gate, FINISH and POLISH-Q: the fresh docs review runs on that tree; APPROVE goes to SECURITY,
+        REVISE back to the author, and any other open blocker replays EXEC in full."""
+        life = self.state['lifecycle']
+        scope = life.get('docs_only') or {}
+        tree = git_snapshot(self.workspace)[0]
+        if life.get('stage') == 'EXEC':
+            if not scope.get('paths') or tree != scope.get('tree'):   # the tree moved after the author turn: full replay
+                life.pop('docs_only', None)
+                self.state['next'] = 'reviewer'
+                self.save()
+                return
+            life.update(stage='DOCS', candidate_oid=tree)
+            self.save()
+        elif tree != life.get('candidate_oid'):
+            raise RuntimeError('DOCS tree differs from the tree the docs-only fix left; restore it or abort')
+        paths = scope['paths']
+        request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'docs-reviewer')
+        self.state['lifecycle'] = lifecycle_spine.begin(self.state['lifecycle'], request)
+        self.save()
+        review = self._docs_review_turn(tree, sorted({*paths, *self._docs_owned()}))
+        blocking = self.blocking_open_findings()
+        route = 'EXEC' if review['status'] != 'APPROVE' or blocking else 'SECURITY'
+        self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
+            **request, 'status': 'READY', 'output_oid': tree, 'sequence': review['sequence'], 'docs_paths': paths,
+            'docs_written': {}, 'docs_only': True, 'review': review, 'route': route})
+        self.state['lifecycle'].pop('docs_only', None)
+        if review['status'] != 'APPROVE':
+            self._docs_author_route(self._docs_revise_rows())
+        elif blocking:   # another role's blocker is open: today's full replay, reviewer then gate
+            life = self.state['lifecycle']
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+        else:
+            allow = set(self._docs_allowlist())
+            manifest = dict(git_snapshot(self.workspace)[1])
+            life = self.state['lifecycle']
+            life['docs_owned'] = {**life.get('docs_owned', {}), **{path: manifest.get(path) for path in paths if path in allow}}
+            opv.void_stale(self, tree, atomic_json)   # records were carried at the author turn (_carry_docs_only_author)
+            life.update(stage='SECURITY', candidate_oid=tree, docs_approval=self._save_approval_manifest('docs'))
             self.state['next'] = 'security'
         self.save()
 
     def _docs_review_turn(self, tree: str, paths: list[str]) -> dict:
         """Fresh docs reviewer over the full diff (a reviewer-only fast replay). A HOLD, an unusable review
-        or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again."""
+        or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again.
+        v3.8.1: it disposes the open docs rows no other role owns (fixed, withdrawn or still_open), so a docs fix the
+        EXEC author made is closed here without the EXEC reviewer."""
+        owned = [row for row in self.open_findings() if row.get('source') == 'docs-reviewer' and not row.get('owner_role')]
         self.materialize_review_context()
         prompt = ('Role: docs reviewer, fresh. Phase: DOCS.\n'
                   f'Review the documentation of {self._change_noun("this uncommitted change")} against the full diff: '
@@ -6949,7 +7147,9 @@ class Coordinator:
                   'wrote it. Judge other inaccurate documentation with normal severity judgement. '
                   'Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
-                  f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n'
+                  f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n' +
+                  (worktree_lifecycle.owned_ledger(owned) + 'Close an open docs row as fixed only when the current tree '
+                   'fixes it; a row the tree does not fix stays still_open.\n' if owned else '') +
                   'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
         self._docs_budget()
         result = self.invoke('reviewer', 'DOCS', prompt, review_schema(), fresh=True)
@@ -6958,8 +7158,9 @@ class Coordinator:
             raise RuntimeError('docs reviewer reviewed a tree other than the one under review')
         answer = result['answer']
         findings = worktree_lifecycle.normalized_findings('docs-reviewer', answer['full_review'], 'docs reviewer')
-        blocking = [row for row in findings if row['severity'] in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
-        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings):
+        blocking = [row for row in findings if blocks_by_severity(row)]   # v3.8.1: the security tag alone does not block
+        if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings and not any(
+                row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
             raise RuntimeError(unusable_review('docs reviewer', answer) + '; resume reviews again')
         record = None if (observed := self._observed_test(answer)) else self._operator_test_record(tree)
         if not observed and record is None:
@@ -6967,9 +7168,19 @@ class Coordinator:
             raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
                                + (cause or (' (the configured test was not observed to completion: no exit status when the '
                                               'turn ended)' if unfinished else '')) + '; resume reviews again')
-        self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer disposes them
+        if owned:
+            ledger = copy.deepcopy(self.state['finding_ledger'])
+            try:
+                if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
+                                                      [row['id'] for row in owned], None):
+                    raise RuntimeError(', '.join(missing))
+            except (RuntimeError, ValueError) as exc:
+                self.state['finding_ledger'] = ledger   # a malformed answer leaves no partial disposition
+                raise RuntimeError(f'docs reviewer omitted dispositions for open docs rows ({exc}); resume reviews again') from exc
+        self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer or the next docs review disposes them
         self.render(result, 'docs-reviewer', 'DOCS')
-        return {'sequence': result['sequence'], 'status': 'REVISE' if blocking else 'APPROVE', 'observed_test': observed,
+        still = [row for row in self.open_findings() if row['id'] in {item['id'] for item in owned} and blocks_by_severity(row)]
+        return {'sequence': result['sequence'], 'status': 'REVISE' if blocking or still else 'APPROVE', 'observed_test': observed,
                 'finding_ids': [row['id'] for row in self.state['finding_ledger']
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
                 **({'operator_test_evidence': record['id']} if record else {})}
@@ -7054,7 +7265,7 @@ class Coordinator:
     def worktree_security_turn(self) -> None:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
         run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
-        hit in a changed file or reviewer finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
+        hit in a changed file or blocking reviewer finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
         if self.state['config'].get('review_report'):
             return self._report_security_turn()
         life = self.state['lifecycle']
@@ -7075,7 +7286,8 @@ class Coordinator:
         if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
             raise RuntimeError(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore it and '
                                'resume, or abort')
-        if (held := [row['id'] for row in self.open_findings() if row.get('owner_role') == 'security-reviewer']) and (
+        if (held := [row['id'] for row in self.open_findings() if row.get('owner_role') == 'security-reviewer'
+                     and blocks_by_severity(row)]) and (
                 life.get('security_hold_tree') == tree):   # the tree its findings were raised or left open on
             raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + ', '.join(held) +
                                '; fix them outside the run and resume (EXEC replays), or abort')
@@ -7269,7 +7481,7 @@ class Coordinator:
                 "They are recorded as SECURITY notes, not findings of this run; review the run's change as before.\n")
 
     def _security_review_turn(self, tree: str, request_id: str) -> dict:
-        """Fresh security reviewer over the clean scan: any open finding of its own HOLDs (no repair); on the new
+        """Fresh security reviewer over the clean scan: any open CRITICAL, MAJOR or SECURITY finding of its own HOLDs (no repair); on the new
         tree an operator fix produced, it disposes its earlier findings (owner only). Only a turn invoke returned
         (evidence contract checked) is recorded for reuse on a crash replay; a turn without tool calls, a HOLD, an
         unusable verdict or a malformed answer is discarded before any ledger write, so resume dispatches again
@@ -7295,7 +7507,8 @@ class Coordinator:
                               'configuration or docs; injection; unsafe deserialization; path traversal; missing '
                               'authorization or input validation; unsafe subprocess, file or network handling; '
                               'sensitive files that should be ignored. Do not modify any file. Report every finding '
-                              'in full_review; any finding stops delivery.\n' + self._security_scan_note_prompt() +
+                              'in full_review. CRITICAL, MAJOR and SECURITY findings stop delivery; report a MINOR or LOW '
+                              'security concern as MINOR: it is listed in the delivery report but does not stop delivery.\n' + self._security_scan_note_prompt() +
                               worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
@@ -7335,10 +7548,11 @@ class Coordinator:
         self.render({'answer': answer, 'sequence': sequence, 'snapshot': turn.get('snapshot_after'), 'role': 'reviewer'},
                     owner, 'SECURITY')
         open_ids = [row['id'] for row in self.open_findings() if row.get('owner_role') == owner]
-        review = {'sequence': sequence, 'status': answer['status'], 'finding_ids': open_ids,
-                  'reason': ('security reviewer findings: ' + ', '.join(open_ids) + '; fix them outside the run and '
-                             'resume (EXEC replays), or abort') if open_ids else None}
-        life['security_hold_tree'] = tree if open_ids else None   # only a review that wrote the ledger moves it
+        blocking_ids = [row['id'] for row in self.open_findings() if row.get('owner_role') == owner and blocks_by_severity(row)]
+        review = {'sequence': sequence, 'status': answer['status'], 'finding_ids': open_ids,   # every open row is listed;
+                  'reason': ('security reviewer findings: ' + ', '.join(blocking_ids) + '; fix them outside the run and '
+                             'resume (EXEC replays), or abort') if blocking_ids else None}   # v3.8.1: MINOR/LOW do not stop it
+        life['security_hold_tree'] = tree if blocking_ids else None   # only a review that wrote the ledger moves it
         life['security_review'] = {'request_id': request_id, 'review': review}
         self.save()
         return review
@@ -7477,12 +7691,17 @@ class Coordinator:
         if not report_mode and blockers and last.get('status') == 'HOLD' and last.get('candidate_oid') == life['candidate_oid']:
             raise RuntimeError('POLISH-Q blockers need a fix on a new tree, not a re-review: ' + ', '.join(blockers))
         request = worktree_lifecycle.stage_request(life, 'specialists')
+        full = self._changed_paths()
         if life['pending'] != request:   # a new attempt; a replay keeps the specialists it already completed
             life['specialist_done'] = {}
+            life['polish_scope'] = self._polish_scope(request, full)   # beside the request: begin() compares requests
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
-        paths = self._changed_paths()
-        names = self._polish_specialists(paths)
+        scope = self.state['lifecycle'].get('polish_scope') or {}
+        if scope.get('request_id') != request['request_id'] or report_mode:   # a pass a v3.8.0 state left in flight
+            scope = {'base': None}
+        paths = scope['paths'] if scope['base'] else full   # v3.8.1: only what changed since the last specialist pass
+        names = self._polish_specialists(paths) if paths or not scope['base'] else ()   # an empty delta: no dispatch
         done = self.state['lifecycle']['specialist_done']
         if (need := len([name for name in names if name not in done])) > (
                 self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
@@ -7491,15 +7710,20 @@ class Coordinator:
             self.materialize_review_context()
         for name in names:
             if name not in done:
-                done[name] = self._specialist_turn(name, paths, request['candidate_oid'])
+                done[name] = self._specialist_turn(name, paths, request['candidate_oid'],
+                                                   *([paths] if scope['base'] else []))   # the delta, after an earlier pass
                 self.save()
         blocking = self.blocking_open_findings()
         tree = git_snapshot(self.workspace)[0]
         receipt = {**request, 'status': 'HOLD' if (blocking and not report_mode) or tree != request['candidate_oid'] else 'READY',
                    'output_oid': tree, 'specialists': list(names), 'specialist_turns': [done[name] for name in names],
-                   'skipped': not names}   # skip_quality_polish: a no-op receipt
+                   'skipped': not names,   # skip_quality_polish, or no path changed since the last pass: a no-op receipt
+                   **({'delta_base': scope['base'], 'delta_paths': paths} if scope['base'] else {})}
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
         self.state['lifecycle'].pop('specialist_done', None)
+        self.state['lifecycle'].pop('polish_scope', None)
+        if not report_mode and tree == request['candidate_oid']:   # v3.8.1: the next pass reviews only what changes after this
+            self.state['lifecycle']['polish_approval'] = self._save_approval_manifest('polish')
         if report_mode:   # LG2-a2: specialists only report; no fix leg, no blocker gate
             if tree != request['candidate_oid']:
                 self.hold('POLISH-Q tree differs from the reviewed report tree; inspect, then abort')
@@ -7516,13 +7740,25 @@ class Coordinator:
             self.hold('POLISH-Q tree differs from the FINISH-approved tree; inspect, then abort')
         elif self._advisory_fix_round(len(names)):   # ADVFIX: one author round for the advisory findings, before the writers
             pass
-        elif queue := self._quality_writers_tail(paths, len(names), request):   # D09 C1-b1: the writer legs, in order
+        elif queue := self._quality_writers_tail(full, len(names), request):   # D09 C1-b1: the writer legs, in order
             self.state['lifecycle']['writer_queue'] = queue
             self.state['next'] = 'polish-simplify' if queue[0] == 'simplifier' else 'polish-tests'
         else:
             self.state['lifecycle']['stage'] = 'DOCS'
             self.state['next'] = 'docs'
         self.save()
+
+    def _polish_scope(self, request: dict, full: list[str]) -> dict:
+        """v3.8.1 POLISH-Q delta: after a completed specialist pass, the next pass reviews only the paths changed since it
+        (deleted paths dropped). base None (no readable earlier pass) means today's whole change."""
+        record = self.state['lifecycle'].get('polish_approval')
+        previous = self._approval_manifest(record)
+        if previous is None:
+            return {'request_id': request['request_id'], 'base': None, 'paths': None}
+        current = dict(git_snapshot(self.workspace)[1])   # a path restored to the review base still changed since the pass
+        return {'request_id': request['request_id'], 'base': record['tree'],
+                'paths': [path for path in worktree_lifecycle.manifest_delta(previous, current)
+                          if current.get(path, 'missing') != 'missing']}   # deleted paths dropped
 
     def _advisory_fix_round(self, specialists: int) -> bool:
         """ADVFIX (owner 2026-10-06, "加一轮修非阻塞"): at the first clean POLISH-Q exit of a run with
@@ -7533,7 +7769,7 @@ class Coordinator:
         reason. Findings still open afterwards stay advisory. True when the round was started."""
         if not self.state['config'].get('advisory_fix_round') or self.state.get('advisory_fix'):
             return False
-        findings = [row for row in self.nonblocking_open_findings() if not row.get('security')]
+        findings = self.nonblocking_open_findings()   # v3.8.1: MINOR/LOW security rows are advisory too
         detail = self._quality_writer_shortfall(1, specialists) if findings else None
         if not findings or detail:
             self.state['advisory_fix'] = {'state': 'skipped', 'reason': detail or 'no open non-blocking findings'}
@@ -8001,7 +8237,21 @@ class Coordinator:
             raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)
         return counts
 
-    def _specialist_turn(self, name: str, paths: list[str], tree: str) -> dict:
+    def _out_of_delta(self, file, delta: list[str]) -> bool:
+        """v3.8.1: a finding's file (':line' suffix and './' stripped) outside the pass's delta; an empty file is in it."""
+        path = re.sub(r':\d+(?:-\d+)?$', '', str(file or '').strip())
+        if not path:
+            return False
+        if os.path.isabs(path):
+            try:
+                path = Path(path).relative_to(self.workspace).as_posix()
+            except ValueError:
+                return False
+        while path.startswith('./'):
+            path = path[2:]
+        return path not in delta
+
+    def _specialist_turn(self, name: str, paths: list[str], tree: str, delta_paths: Optional[list[str]] = None) -> dict:
         life = self.state['lifecycle']
         path = HERE.parent / 'agents' / (name + '.md')
         try:
@@ -8014,8 +8264,11 @@ class Coordinator:
             raise RuntimeError('specialist body differs from the frozen role manifest: ' + name)
         owner = 'specialist:' + name
         owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
+        protocol = self._review_protocol(paths) + (
+            '\nOnly these paths changed since the last specialist pass; the rest of delta.patch was covered already: '
+            'review these paths only.' if delta_paths is not None else '')
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
-                                                       self._review_protocol(paths), self._change_noun()) +
+                                                       protocol, self._change_noun()) +
                   self._guidance(QUALITY_GUIDANCE) + opv.prompt_block(self, tree, atomic_json))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
             counts = self._specialist_budget(name)
@@ -8053,6 +8306,18 @@ class Coordinator:
                                               [row['id'] for row in owned], owner):
             raise RuntimeError(f'specialist {name} omitted dispositions for its findings: ' + ', '.join(missing))
         self.record_findings(owner, 'POLISH-Q', result['sequence'], findings)
+        if delta_paths is not None:   # v3.8.1: a new finding on a path this pass did not need to review is recorded as advisory
+            marked = False
+            for row in self.state['finding_ledger']:
+                if (row.get('source') == owner and row.get('origin_round') == result['sequence'] and row['status'] == 'open'
+                        and not row.get('out_of_delta') and self._out_of_delta(row.get('file'), delta_paths)):
+                    row.update(out_of_delta=True, advisory=True)
+                    row['status_history'].append({'round': result['sequence'], 'status': 'open', 'evidence':
+                                                  'outside this POLISH-Q pass delta (unchanged since the last specialist '
+                                                  'pass): recorded as advisory, not blocking'})
+                    marked = True
+            if marked:
+                self.write_ledger()
         self.render(result, 'specialist-' + name, 'POLISH-Q')
         return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree,
                 'observed_test': self._observed_test(answer), 'status': answer['status']}   # W2a-1 L-3: recorded, not enforced
@@ -8090,6 +8355,8 @@ class Coordinator:
         """V317-G2: the held phase's round count is within its limit, so plain resume re-reviews the same tree."""
         if self.state['round_limit_hold'].get('phase') == 'PLAN':
             return self.state['plan_rounds'] <= self.plan_round_limit()
+        if self.state.get('next') == 'author':   # v3.8.1: a docs review REVISE at the cap waits for an author round
+            return self.state['exec_rounds'] < self.exec_round_limit()
         return self.state['exec_rounds'] <= self.exec_round_limit()
 
     def plan_round_limit(self) -> int:
@@ -8102,7 +8369,8 @@ class Coordinator:
         """L100 (owner 2026-10-07): resume --add-rounds N at a PLAN or EXEC round-limit HOLD. The extension is recorded in
         the same save that leaves the HOLD, so a retried command finds no HOLD and is refused, never applied twice. A review or
         gate verdict that stopped before the author turn delivers the open findings to that author turn (no new review); a
-        HOLD after a FINISH, DOCS, SECURITY or writer change keeps its next step (the review of that change)."""
+        HOLD after a FINISH, DOCS, SECURITY or writer change keeps its next step (the review of that change); v3.8.1: a HOLD
+        after a docs review REVISE on docs-only writes already waits for the author, so the extension dispatches the author."""
         held = self.state['round_limit_hold']
         self.state.setdefault('round_extensions', []).append({'phase': held['phase'], 'n': n, 'hold_reason': held['hold_reason'],
                                                                'timestamp': datetime.now().astimezone().isoformat()})
@@ -8208,8 +8476,7 @@ class Coordinator:
                 row['source'] = 'fresh-shadow'
             shadow['answer']['full_review'] = shadow_rows
             shadow_blocking = [row for row in shadow_rows
-                               if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES
-                               or row.get('security')]
+                               if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES]
             if shadow_blocking:
                 answer['full_review'].extend(shadow_blocking)
                 if answer['status'] == 'APPROVE':
@@ -8268,7 +8535,7 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         effective_verdict = 'REVISE' if plan_history else 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal) and not plan_history)
-        new_blocking = [row for row in new_rows if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES or row.get('security')]
+        new_blocking = [row for row in new_rows if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES]
         structural = (self._structural_block_hold('reviewer', result['sequence'], new_blocking)   # FIELD-5: only NEW blockers form a BLOCK
                       if phase == 'EXEC' and answer['status'] == 'REVISE' and new_blocking else None)
         if phase == 'EXEC':
@@ -8623,6 +8890,8 @@ class Coordinator:
                     self.worktree_writer_turn()   # D09 C1-b1
                 elif self.state['next'] == 'docs' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_docs_turn()
+                elif self.state['next'] == 'docs-review' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_docs_review_only_turn()   # v3.8.1: a docs-only author fix
                 elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_security_turn()
                 else:
@@ -8707,8 +8976,9 @@ class Coordinator:
         if past_deadline:   # F2b: the stopped turn is archived, so note --scope-change and abort work; no new dispatch
             self.state['active'] = self.state['uncertain_active'] = None
             return self.hold(past_deadline)
-        if add is None and self.at_round_limit_hold() and self.state['exec_rounds'] > self.exec_round_limit():
-            return 'HOLD'   # stage writes already used the next round; an extension must authorize its review
+        if add is None and self.at_round_limit_hold() and (self.state['exec_rounds'] > self.exec_round_limit() or (
+                (self.state.get('round_limit_hold') or {}).get('phase') == 'EXEC' and not self.round_limit_hold_within_limit())):
+            return 'HOLD'   # stage writes already used the next round (or the author would start one past it); an extension must authorize it
         if add is not None: self._add_rounds(add)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''

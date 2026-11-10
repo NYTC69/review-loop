@@ -74,8 +74,8 @@ EXEC still requires a successful configured test, no observed test failure, the 
 evidence, and the same snapshot. Blocking findings retain the normal repair
 loop or round-limit HOLD. The opt-in advisory fix round keeps its own single
 attempt; its eligible advisory re-review exits immediately.
-Blocking means CRITICAL, MAJOR, SECURITY, any security-flagged finding, or a gate's
-CRITICAL/HIGH; such a row still open at the cap is the `PLAN round limit reached`
+Blocking means CRITICAL, MAJOR, SECURITY, or a gate's CRITICAL/HIGH (a MINOR or LOW
+security-flagged finding is listed but advisory); such a row still open at the cap is the `PLAN round limit reached`
 / `EXEC round limit reached` HOLD.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
@@ -630,8 +630,8 @@ on the host's own judgment. First issue the same
 command with `--intent-only`, then submit it with `--expect <digest>`; ids and
 reason are bound to the intent and mutation runs under the run/workspace leases.
 Allowed states are DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, and
-a rejected-tree HOLD. Unknown or closed ids, an empty reason, security-tagged
-or SECURITY rows, specialist/security-reviewer-owned rows, gate CRITICAL/HIGH
+a rejected-tree HOLD. Unknown or closed ids, an empty reason, CRITICAL/MAJOR/SECURITY
+security-tagged or security-reviewer rows, specialist-owned rows, gate CRITICAL/HIGH
 rows and `secret-scan` rows are refused. Phrase the reason as approved behavior,
 without finding ids, review-history phrases or model/vendor approval attributions;
 bare model/vendor names are allowed. A refusal names the matched text. For example:

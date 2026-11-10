@@ -42,7 +42,7 @@ class PromptTests(unittest.TestCase):
                 co = self.coordinator(*flags)
                 rows = self.rows(co)
                 self.assertEqual({row['id'] for row in co.blocking_open_findings()},
-                                 {rows[1]['id'], rows[3]['id'], rows[4]['id']})
+                                 {rows[1]['id'], rows[3]['id']})   # v3.8.1: a LOW security-tagged row is advisory
                 (co.context / 'plan.md').write_text('# Plan\nReview supported behavior.\n')
                 snap = rc.git_snapshot(self.workspace)[0]
                 for phase in ('PLAN', 'EXEC'):
@@ -52,8 +52,8 @@ class PromptTests(unittest.TestCase):
                     self.assertIn(SEVERE_HARM.replace('remains blocking.', 'is still reported.'), prompt)
                     for sentence in (
                             'A still_open disposition records that a finding is unresolved and does not by itself require REVISE.',
-                            'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, every security-tagged row, and source=adversarial-gate with CRITICAL or HIGH.',
-                            'Every other row (MINOR or LOW without the security tag; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open.',
+                            'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, and source=adversarial-gate with CRITICAL or HIGH.',
+                            'Every other row (MINOR or LOW, security-tagged or not; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open.',
                             "Do not raise another role's advisory row to a blocker only because it is still open.",
                             'Keep giving every listed row its disposition.',
                             'An advisory row that you would not report under the rule above (no concrete failure or material waste in normal supported use) may be withdrawn with evidence.',

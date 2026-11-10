@@ -125,6 +125,11 @@ def docs_prompt(docs_file, allowlist, run_id, workitem):
             'environment cannot recover. Return only JSON matching the supplied schema.\n\nWork item:\n' + workitem)
 
 
+def manifest_delta(before, after):
+    """The sorted paths whose manifest value differs between two path->value maps: added, removed or changed."""
+    return sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+
+
 def docs_denied(path, value):
     """The DOCS HOLD set (doc 6): protected names at any depth, docs/protocol, and any symlink write."""
     parts = tuple(part.casefold() for part in path.split('/'))

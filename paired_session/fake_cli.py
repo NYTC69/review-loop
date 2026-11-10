@@ -357,14 +357,20 @@ def main():
             body = 'Updated the configured documentation file.'
         else:
             module = Path.cwd() / 'sum_ints.py'
-            if not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE'):
+            rejection = '## Operator rejection for current EXEC scope' in prompt
+            docs_rejection = rejection and os.environ.get('FAKE_AUTHOR_REJECTION_DOCS')   # v3.8.1: a docs-only rejection fix
+            docs_fix = '"source": "docs-review"' in prompt   # v3.8.1: a docs review REVISE delivered to the author: docs only
+            if docs_rejection:
+                changelog = Path.cwd() / 'CHANGELOG.md'
+                changelog.write_text((changelog.read_text() if changelog.exists() else '') + '# rejection applied\n')
+            elif not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE') and not docs_fix:
                 if os.environ.get('FAKE_DOC_DELTA'):
                     (Path.cwd() / 'CLAUDE.md').write_text('Directory: sum_ints.py\n')
                 if 'intentionally omit bool rejection' in prompt or 'No delivered review' in prompt:
                     module.write_text('def sum_ints(values):\n    if not all(isinstance(x, int) for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
                 else:
                     module.write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n        raise TypeError("ints only")\n    return sum(values)\n')
-            if ('## Operator rejection for current EXEC scope' in prompt and
+            if (rejection and not docs_rejection and
                     not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE')):
                 module.write_text(module.read_text() + '# rejection applied\n')
             if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
@@ -372,6 +378,14 @@ def main():
             if 'docs entry still wrong' in prompt:   # worktree-lifecycle: the EXEC author fixes a DOCS-owned entry
                 changelog = Path.cwd() / 'CHANGELOG.md'
                 changelog.write_text(changelog.read_text() + '# corrected entry\n')
+            elif docs_fix:   # v3.8.1: a docs review REVISE delivered straight to the author
+                changelog = Path.cwd() / 'CHANGELOG.md'
+                fails = os.environ.get('FAKE_DOCS_FIX_FAILS_ONCE')   # the first attempt misses the entry
+                if fails and not Path(fails).exists():
+                    Path(fails).write_text('missed once\n')
+                    changelog.write_text(changelog.read_text() + '# attempted fix\n')
+                else:
+                    changelog.write_text(changelog.read_text() + '# corrected entry\n')
             if 'specialist blocker' in prompt:   # worktree-lifecycle POLISH-Q fix leg: one new tree per fixed id set
                 ids = ' '.join(re.findall(r'"id": "F(\d+)"', prompt))   # no finding ids in code: shadow independence
                 module.write_text(module.read_text() + f'# specialist fix {ids}\n')
@@ -601,6 +615,21 @@ def main():
         disposition = 'fixed'
         prior = [{'id': finding_id, 'disposition': disposition,
                   'evidence': 'fake verified disposition'} for finding_id in open_ids]
+        if 'Role: docs reviewer,' in prompt and open_ids:   # v3.8.1: the docs reviewer disposes the open docs rows
+            changelog = Path.cwd() / 'CHANGELOG.md'
+            if changelog.exists() and '# corrected entry' in changelog.read_text():
+                prior = [{'id': finding_id, 'disposition': 'fixed', 'evidence': 'corrected entry present'}
+                         for finding_id in open_ids]
+            else:
+                revise = True
+                prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'entry still describes the old behavior'}
+                         for finding_id in open_ids]
+        minor_once = os.environ.get('FAKE_SECURITY_MINOR_ONCE')   # v3.8.1: one advisory security-reviewer finding
+        if minor_once and phase == 'SECURITY' and 'Role: security reviewer' in prompt and not Path(minor_once).exists():
+            Path(minor_once).write_text('reported\n')
+            findings = [{'severity': os.environ.get('FAKE_SECURITY_MINOR_SEVERITY', 'MINOR'), 'security': True,
+                         'file': 'sum_ints.py', 'summary': 'input size is unbounded',
+                         'failure_scenario': 'a huge list makes the call slow'}]
         docs_open = os.environ.get('FAKE_DOCS_FINDING_STILL_OPEN_ONCE')   # the EXEC reviewer keeps a docs finding
         if (docs_open and role == 'reviewer' and phase == 'EXEC' and 'docs describe the wrong behavior' in prompt and
                 not Path(docs_open).exists()):
@@ -633,6 +662,8 @@ def main():
         if 'Role: docs reviewer,' in prompt and no_test and not Path(no_test).exists():
             Path(no_test).write_text('no test\n')
             answer['self_run_evidence'] = []   # a docs review without the retest
+        if 'Role: docs reviewer,' in prompt and os.environ.get('FAKE_DOCS_REVIEW_NO_TEST'):   # v3.8.1: never runs the test
+            answer['self_run_evidence'] = []
         if phase == 'EXEC' and os.environ.get('FAKE_EXEC_NO_EVIDENCE'):   # an approval that lists no self-run evidence
             extra_observed_commands = [*answer['self_run_evidence'], *(extra_observed_commands or [])]
             answer['self_run_evidence'] = []

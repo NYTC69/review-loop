@@ -1845,7 +1845,8 @@ sys.exit(result.returncode)
         spec_path = parent.evidence / 'successor-spec.json'
         spec = json.loads(spec_path.read_text())
         self.assertEqual(spec['item_uuid'], item_uuid)
-        self.assertEqual([row['id'] for row in spec['item_blockers']], ['F001', 'F002', 'F005'])
+        ledger = parent.state['finding_ledger']   # v3.8.1: the LOW security row (second) is advisory and stays behind
+        self.assertEqual([row['id'] for row in spec['item_blockers']], [ledger[0]['id'], ledger[4]['id']])
         self.run_dir = parent.run_dir.with_name(parent.run_dir.name + '-successor')
         self.workitem = parent.evidence / 'successor-workitem.md'
         child = self.coordinator('--supersedes', str(parent.run_dir))
@@ -4083,13 +4084,11 @@ sys.exit(result.returncode)
                 result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                     '--polish-round', 'off', '--max-exec-rounds', '1', env={flag: '1'})
                 state = json.loads((self.run_dir / 'state.json').read_text())
-                if flag == 'FAKE_EXEC_SECURITY_REVISE':
-                    self.assertEqual(result.returncode, 2)
-                    self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
-                else:
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    low = next(row for row in state['finding_ledger'] if row['severity'] == 'LOW')
-                    self.assertTrue(low['advisory'])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)   # v3.8.1: a MINOR security row is advisory
+                low = next(row for row in state['finding_ledger']
+                           if row['severity'] == ('MINOR' if flag == 'FAKE_EXEC_SECURITY_REVISE' else 'LOW'))
+                self.assertTrue(low['advisory'])
+                self.assertEqual(low['security'], flag == 'FAKE_EXEC_SECURITY_REVISE')
 
     def test_workitem_reviewer_commands_merge_into_roles_and_flags(self):
         use_lifecycle_on(self, self)

@@ -1,5 +1,21 @@
 # Changelog
 
+### v3.8.1：小修改后 lifecycle 不再整条链重跑
+
+现场问题（poker-tools run 4f769bc8）：lifecycle 开启的 run 在第一次通过后，作者的任何改动（哪怕只改 CHANGELOG 的一句话）都会把整条链重跑一遍：EXEC 审查和 shadow、gate、FINISH、POLISH-Q（4 个 specialist 看整个 diff）、DOCS writer 和审查、SECURITY。POLISH-Q 跑了 7 次，每次都对没改过、已通过的代码提出新的 MINOR；一次只改文档的修复花了约 15 次调用。按 2026-11-08 的规则（好用优先，默认用户和模型不会做坏事，只做合理范围内的防护），这是 bug，在补丁版本里修。
+
+**改动**
+- 在每个通过点记录当时的清单（路径 → 哈希）：EXEC 收敛（`exec_convergence.manifest_file`）、每次完成的 POLISH-Q（`polish_approval`）、DOCS 通过进入 SECURITY（`docs_approval`），文件写在 `evidence/approval-<kind>-<tree>.json`。读不出或对不上的记录一律按今天的完整重跑处理，不会因此 HOLD。
+- 只改文档的修复：后续 epoch 里 EXEC 作者改完后，如果自 EXEC 收敛以来改动的每个路径都在 DOCS allowlist 里或归 DOCS 所有（且不在 DOCS HOLD 集合里），跳过 reviewer、shadow、gate、FINISH 和 POLISH-Q，只对这个目录树跑一次新的 docs 审查（新的 `next` 值 `docs-review`）：`APPROVE` 进 SECURITY，`REVISE` 回到作者（算一个 EXEC 轮次）。作者 turn 结束时，绑定在 EXEC 收敛、DOCS 通过或被 docs 审查退回的 DOCS 目录树（`docs_revise`）上的操作员验证记录，如果之后只改了文档路径，就重新绑定到新目录树（记录的 `carried` 写 `by: author`），docs 审查因此能用它代替沙箱里跑不了的测试。改了别的路径照旧完整重跑。advisory fix 轮和 writer 回放保持原来的链。
+- docs 审查方处理归它的未关闭 docs 行：提示里列出这些行，要求逐条给 fixed、withdrawn 或 still_open；缺了任何一条就恢复账本并 HOLD（"resume reviews again"）。只报 still_open、没有新发现的 `REVISE` 是有效答复，会回到作者。
+- POLISH-Q 增量：之前已有完成的 POLISH-Q 时，specialist 只看那之后改过的路径（按通过点清单比较，恢复成基线内容的文件也算改过；删除的路径不算），提示里多一句说明；没有改动路径就不派发 specialist，直接往下走。新发现的文件不在这次增量里时照常记录，但标为 `out_of_delta` 和 advisory，不阻塞、不启动 polish 修复，账本显示 `open (advisory)`，进度显示 `+out-of-delta`。增量范围存在 `polish_scope`（不放进请求本身），中途 HOLD 后 resume 沿用同一个范围；v3.8.0 留下的进行中请求按整个改动审查。POLISH-Q 修复后的复查仍看整个改动。
+- DOCS 跳过：自上次 DOCS 通过以来只改了文档路径时不再派发 DOCS writer：改了文档就只跑 docs 审查，什么都没改就直接进 SECURITY（回执带 `writer_skipped`）。
+- DOCS 审查 `REVISE` 且 writer 只写了 allowlist 内的路径时，下一步是 EXEC 作者修复，不再先回 reviewer；轮数由作者 turn 计，到上限时 HOLD「EXEC round limit reached after a DOCS write」，此时普通 resume 保持 HOLD，`resume --add-rounds 1` 派发作者。writer 写了 allowlist 以外的路径照旧先回 reviewer。
+- 安全标记不再提升严重度（Yuan 2026-11-10 决定）：带安全标记的发现只有 CRITICAL、MAJOR 或 SECURITY 才阻塞；MINOR/LOW 照常列出（SECURITY 阶段仍看得到），但在所有地方都不阻塞（账本阻塞判断、继任 run 的 item blocker、shadow 和 reviewer 的新阻塞、docs 审查、advisory 判断、advisory fix 轮），`withdraw-findings` 也接受它们。SECURITY 审查方的 MINOR 发现不再让 SECURITY HOLD，未关闭时列在交付报告的「未关闭的发现」里；提示改为「CRITICAL、MAJOR 和 SECURITY 发现阻止交付，MINOR 或 LOW 的安全问题按 MINOR 报告，列出但不阻止交付」。审查提示里的严重度和账本说明同步修改。解读说明：带安全标记的 gate MEDIUM/LOW 行按 gate 的规则算 advisory。
+- 没有新增配置键，没有改 `agents/*.md` 和 `scripts/adversarial_gate_fallback_prompt.txt`，冻结的角色清单逐字节不变，正在跑的 v3.7.x/v3.8.0 run 直接 resume；它们没有通过点清单，走今天的完整重跑。
+
+**按意图更新的测试断言**（原来钉的是旧路由或旧的安全标记规则）：`test_worktree_lifecycle` 的 docs 审查 REVISE 重放（改为作者 → docs 审查 → SECURITY）、docs 审查判定（MINOR+安全标记改为 APPROVE，新增 MAJOR+安全标记仍 REVISE）、`exec_convergence` 内容（多了 `manifest_file`）、SECURITY 提示文字；`test_v317b` 的 withdraw 排除项（安全标记行需带阻塞严重度才拒绝，新增 MINOR/LOW 可撤回）；`test_v317p` 的阻塞集合和账本说明句子；`test_real_coordinator` 的 `FAKE_EXEC_SECURITY_REVISE`（MINOR+安全标记改为 advisory）和继任 run 的 item blocker（LOW 安全行不再带过去）。
+
 ### v3.8.0：入口说明按路线加载
 
 11-05 批准的 P3-1。以前每次进入 paired-session 都要读完整份入口说明 `paired-session-entry.md`（约 4,800 词），其中 Review-only、Code-quality-loop、Review-PR 三节只在对应路线上才用到，普通 run 也要读。

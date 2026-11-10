@@ -46,8 +46,9 @@ def _entry(row: dict, data: bytes) -> str:
                       f"exit code {row['exit_code']}; log sha256 {row['log_sha256']} ({row['log_bytes']} bytes)",   # the note stays in state and evidence
                       f'  Log tail (last {len(tail)} of {len(text)} characters):',
                       *('    | ' + line for line in tail.splitlines()),
-                      *(f"  Carried over from tree {row_carry['from_tree'][:12]}: only DOCS allowlist paths changed by the docs "
-                        f"writer: {', '.join(row_carry['paths'])}" for row_carry in row.get('carried', []))])
+                      *(f"  Carried over from tree {row_carry['from_tree'][:12]}: only DOCS allowlist paths changed by the "
+                        f"{'docs writer' if row_carry.get('by', 'docs-writer') == 'docs-writer' else 'author'}: "
+                        f"{', '.join(row_carry['paths'])}" for row_carry in row.get('carried', []))])
 
 
 def _block(tree_sha256: str, entries: list) -> str:
@@ -79,7 +80,7 @@ def void_stale(co, tree_sha256, write_json) -> None:
         co.save()
 
 
-def carry_docs_only(co, from_trees, to_tree: str, paths: list, sequence: int, write_json) -> list:
+def carry_docs_only(co, from_trees, to_tree: str, paths: list, sequence: int, write_json, by: str = 'docs-writer') -> list:
     """v3.7.2: the DOCS writer changed only DOCS allowlist paths (`paths`, checked by the caller); every current, intact record
     bound to one of `from_trees` is re-bound to `to_tree` and the carry-over is noted in it. Returns the carried ids."""
     carried = []
@@ -87,7 +88,7 @@ def carry_docs_only(co, from_trees, to_tree: str, paths: list, sequence: int, wr
         if row['status'] != 'current' or row['tree_sha256'] not in from_trees or row['tree_sha256'] == to_tree or not _intact(row):
             continue
         row.setdefault('carried', []).append({'from_tree': row['tree_sha256'], 'to_tree': to_tree, 'paths': list(paths)[:50],
-                                              'by': 'docs-writer', 'sequence': sequence,
+                                              'by': by, 'sequence': sequence,
                                               'time': datetime.now().astimezone().isoformat()})
         row['tree_sha256'] = to_tree
         write_json(co.evidence / f"operator-verification-{row['id']}.json", row)
