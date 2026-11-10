@@ -28,6 +28,7 @@ class DocsObservedFactsTests(unittest.TestCase):
     def test_docs_reviewer_prompt_makes_false_or_unsupported_statements_at_least_major(self):
         co = rc.Coordinator.__new__(rc.Coordinator)
         co.args = SimpleNamespace(test_command='python3 -m unittest')
+        co.state = {'finding_ledger': []}   # v3.8.1: the docs review lists its own open rows
         with patch.object(co, 'materialize_review_context'), \
                 patch.object(co, '_change_noun', return_value='this uncommitted change'), \
                 patch.object(co, '_changed_paths', return_value=['README.md']), \

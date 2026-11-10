@@ -54,6 +54,7 @@ class DocsScopeTests(unittest.TestCase):
     def test_reviewer_scopes_major_rule_and_keeps_nonexistent_results_blocking(self):
         co = object.__new__(rc.Coordinator)
         co.args = SimpleNamespace(test_command='python3 -m unittest')
+        co.state = {'finding_ledger': []}   # v3.8.1: the docs review lists its own open rows
         with patch.object(co, 'materialize_review_context'), \
                 patch.object(co, '_change_noun', return_value='this change'), \
                 patch.object(co, '_changed_paths', return_value=[]), \

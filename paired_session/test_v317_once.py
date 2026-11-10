@@ -71,9 +71,9 @@ class AdvisoryOnceTests(unittest.TestCase):
 
     def test_blocking_second_review_does_not_reset_attempt(self):
         for phase in ('PLAN', 'EXEC'):
-            for severity, security in (('MAJOR', False), ('LOW', True)):
-                with self.subTest(phase=phase, severity=severity):
-                    self.run_dir = self.root / (phase + severity)
+            for severity, security in (('MAJOR', False), ('MAJOR', True)):   # v3.8.1: LOW+security is advisory, not blocking
+                with self.subTest(phase=phase, severity=severity, security=security):
+                    self.run_dir = self.root / (phase + severity + str(security))
                     co, first = self.start(phase)
                     co.state[phase.lower() + '_rounds'] = 2
                     self.record_review(co, phase, severity, security)

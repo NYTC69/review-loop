@@ -104,6 +104,8 @@ class DispatchBudgetTests(unittest.TestCase):
         for role in ('reviewer', 'gate', 'shadow'):
             actual, env, _ = self.dispatch(co, role)
             baseline = old._gate_prompt('snapshot') if role == 'gate' else old._review_prompt(role, 'snapshot')
+            for name in ('REVIEW_SEVERITY_GUIDANCE', 'LEDGER_DISPOSITION_GUIDANCE', 'APPROVE_CONVERSION_NOTE'):   # v3.8.1: the
+                baseline = baseline.replace(getattr(released, name), getattr(rc, name))                          # security rule text only
             self.assertEqual(actual, baseline)
             with patch.dict(os.environ, {'BASH_MAX_TIMEOUT_MS': '1'}):
                 baseline_env = released.cli_env()

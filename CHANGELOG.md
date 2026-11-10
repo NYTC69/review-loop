@@ -18,7 +18,7 @@
 - reject 之后的只改文档修复也跳过 gate（没有代码可测）；reject 留下的"下次必须过 gate"标记会保留到下一次完整重跑。
 - 没有新增配置键，没有改 `agents/*.md` 和 `scripts/adversarial_gate_fallback_prompt.txt`，冻结的角色清单逐字节不变，正在跑的 v3.7.x/v3.8.0 run 直接 resume；它们没有通过点清单，走今天的完整重跑。
 
-**按意图更新的测试断言**（原来钉的是旧路由或旧的安全标记规则）：`test_worktree_lifecycle` 的 docs 审查 REVISE 重放（改为作者 → docs 审查 → SECURITY）、docs 审查判定（MINOR+安全标记改为 APPROVE，新增 MAJOR+安全标记仍 REVISE）、`exec_convergence` 内容（多了 `manifest_file`）、SECURITY 提示文字；`test_v317b` 的 withdraw 排除项（安全标记行需带阻塞严重度才拒绝，新增 MINOR/LOW 可撤回）；`test_v317p` 的阻塞集合和账本说明句子；`test_real_coordinator` 的 `FAKE_EXEC_SECURITY_REVISE`（MINOR+安全标记改为 advisory）和继任 run 的 item blocker（LOW 安全行不再带过去）；`test_winscratch` 的 Windows 环境变量（多了 `NODE_DISABLE_COMPILE_CACHE`）。
+**按意图更新的测试断言**（原来钉的是旧路由或旧的安全标记规则）：`test_worktree_lifecycle` 的 docs 审查 REVISE 重放（改为作者 → docs 审查 → SECURITY）、docs 审查判定（MINOR+安全标记改为 APPROVE，新增 MAJOR+安全标记仍 REVISE）、`exec_convergence` 内容（多了 `manifest_file`）、SECURITY 提示文字；`test_v317b` 的 withdraw 排除项（安全标记行需带阻塞严重度才拒绝，新增 MINOR/LOW 可撤回）；`test_v317p` 的阻塞集合和账本说明句子；`test_real_coordinator` 的 `FAKE_EXEC_SECURITY_REVISE`（MINOR+安全标记改为 advisory）和继任 run 的 item blocker（LOW 安全行不再带过去）；`test_winscratch` 的 Windows 环境变量（多了 `NODE_DISABLE_COMPILE_CACHE`）；`test_rf_fixes`（fake 的 `FAKE_PLAN_APPROVE_SECURITY` 改开 MAJOR 安全发现，MINOR 安全发现已不阻塞）；`test_v317_once` 的阻塞组合（LOW+安全改为 MAJOR+安全）；`test_v318cap` 与 59ce540 的逐字节比较（只替换安全规则的三段说明）；`test_v304`、`test_v302w` 的空壳 coordinator 补一个空账本（docs 审查现在要列出自己的未关闭行）。
 
 ### v3.8.0：入口说明按路线加载
 
