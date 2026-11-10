@@ -308,6 +308,7 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         self.assertTrue(finish.endswith('Review scope (no plan was approved):\nSCOPE'))
         self.assertNotIn('approved plan', finish)
         self.assertIn(noun, wl.specialist_prompt('python-reviewer', 'BODY', 'python3 -m unittest', [], 'PROTOCOL', noun))
+        self.assertIn('when a tool output is truncated, read the remaining range instead of stopping or answering HOLD', wl.specialist_prompt('python-reviewer', 'BODY', None, [], 'PROTOCOL'))   # v3.8.1
         self.run_dir = self.root / 'default'
         default = rc.Coordinator(rc.parser().parse_args(self.command()[2:]))   # a default run keeps its wording
         self.assertIn('Approved plan: ', default._review_protocol([]))

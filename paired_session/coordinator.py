@@ -6240,7 +6240,8 @@ class Coordinator:
             try:
                 while True:   # a void read-only turn whose change was undone is re-dispatched once, told why
                     scratch = self._scratch_root(role)   # b295-f1: a fresh scratch root for each dispatch, re-dispatch included
-                    overrides = ({**(env_overrides or {}), **{key: str(scratch) for key in ('TMPDIR', 'TMP', 'TEMP')}}
+                    overrides = ({**(env_overrides or {}), **{key: str(scratch) for key in ('TMPDIR', 'TMP', 'TEMP')},
+                                  **winplat.role_env_extras()}
                                  if scratch else env_overrides)
                     try:
                         result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(

@@ -290,10 +290,16 @@ def holder_text(path, limit: int) -> str:
 
 def temp_env(path) -> dict:
     """W4b: the temp-dir variables for a role whose temp root is `path`: TMPDIR on POSIX (as before); on Windows TMP and
-    TEMP too, which Windows tools read."""
+    TEMP too, which Windows tools read, plus role_env_extras()."""
     if not IS_WINDOWS:
         return {'TMPDIR': str(path)}
-    return {key: str(path) for key in ('TMPDIR', 'TMP', 'TEMP')}
+    return {**{key: str(path) for key in ('TMPDIR', 'TMP', 'TEMP')}, **role_env_extras()}
+
+
+def role_env_extras() -> dict:
+    """v3.8.1 (field, range-build-tool): on Windows, Node's compile cache inside a role temp root became unreadable under
+    the Codex sandbox ACL, so the test command failed and the run held; turn the cache off for role processes there."""
+    return {'NODE_DISABLE_COMPILE_CACHE': '1'} if IS_WINDOWS else {}
 
 
 def temp_root() -> Path:

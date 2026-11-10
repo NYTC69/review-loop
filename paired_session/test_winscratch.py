@@ -201,15 +201,24 @@ class TempEnvTests(ScratchTest):
                         self.assertRaisesRegex(RuntimeError, 'captured'):
                     self.co.invoke('reviewer', 'PLAN', 'Role: reviewer.', {}, env_overrides={'KEEP': '1'})
                 scratch = seen[0]['TMPDIR']
-                self.assertEqual(seen, [{'KEEP': '1', 'TMPDIR': scratch, 'TMP': scratch, 'TEMP': scratch}])
+                node = {'NODE_DISABLE_COMPILE_CACHE': '1'} if windows else {}   # v3.8.1: Windows only
+                self.assertEqual(seen, [{'KEEP': '1', 'TMPDIR': scratch, 'TMP': scratch, 'TEMP': scratch, **node}])
                 self.assertEqual(Path(scratch).parent, self.run_dir / 'role-tmp')
                 self.assertFalse(os.path.lexists(scratch))                                    # dropped after the failed turn
 
     def test_the_author_temp_dir_is_also_tmp_and_temp_on_windows(self):
         with patch.object(winplat, 'IS_WINDOWS', True):
-            self.assertEqual(winplat.temp_env(self.co.author_temp_dir), {key: str(self.co.author_temp_dir) for key in ('TMPDIR', 'TMP', 'TEMP')})
+            self.assertEqual(winplat.temp_env(self.co.author_temp_dir), {**{key: str(self.co.author_temp_dir) for key in ('TMPDIR', 'TMP', 'TEMP')},
+                                                                         'NODE_DISABLE_COMPILE_CACHE': '1'})
             env = self.co._author_environment()
         self.assertEqual((env['TMPDIR'], env['TMP'], env['TEMP']), (str(self.co.author_temp_dir),) * 3)
+        self.assertEqual(env['NODE_DISABLE_COMPILE_CACHE'], '1')
+
+    def test_the_node_compile_cache_is_turned_off_on_windows_only(self):
+        with patch.object(winplat, 'IS_WINDOWS', True):
+            self.assertEqual(winplat.role_env_extras(), {'NODE_DISABLE_COMPILE_CACHE': '1'})
+        with patch.object(winplat, 'IS_WINDOWS', False):
+            self.assertEqual(winplat.role_env_extras(), {})
 
 
 class CredentialReadDenyTests(unittest.TestCase):
