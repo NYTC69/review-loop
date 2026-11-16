@@ -757,7 +757,10 @@ EXEC reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
 operator-verified evidence for this exact tree. The FINISH prompt shows the same records (v3.7.1) with a rule: a
 configured-test failure that only comes from the finisher's sandbox (a database that cannot start there) and that a
-record passed on this exact tree is settled, so the finisher does not HOLD for it. A record is voided for good once the
+record passed on this exact tree is settled, so the finisher does not HOLD for it. Since v3.8.3 the EXEC author prompt
+shows them with the same rule: an author whose sandbox cannot run that test returns READY without changes and names the
+record, and the next review settles the test-failure row from it (before, `resume` after an attach re-ran the author,
+which held again). A record is voided for good once the
 snapshot differs (an operator edit or an author turn in the workspace) or the
 log copy changes. Every tree the coordinator observes in an author turn counts,
 also when the turn fails: its start and end snapshots, and an unknown tree when
@@ -878,7 +881,8 @@ each failed start leaks one segment. Once the 32-slot table (`kern.sysv.shmmni`)
 also outside the run. Routes:
 
 1. Run the DB-backed test on the host and attach its log with `attach-verification` (see above); a passing record of
-   the configured test settles the EXEC, FINISH and DOCS test checks for that exact tree.
+   the configured test settles the EXEC, FINISH and DOCS test checks for that exact tree. After an EXEC author HOLD for
+   that test, attach the record and `resume`: the author sees it (v3.8.3) and hands the tree back for review.
 2. Use a Codex reviewer (`--reviewer-vendor codex`) for that item.
 
 Cleanup: first check that no postgres is running (`pgrep -l postgres`), then list the segments with `ipcs -m` and remove

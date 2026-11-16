@@ -146,6 +146,10 @@ STRICT_REMOVED_NOTE = 'NOTE: strict mode was removed in v3.7.0; the run uses the
 FINISH_OPERATOR_TEST_RULE = ('If the configured test fails in your sandbox only for an environment reason (for example a database or '
                              'service that cannot start there) and a record above passed it on this exact tree, that record settles '
                              'the test: do not HOLD for that failure, and name the record in your answer. Any other failure still counts.')
+EXEC_AUTHOR_OPERATOR_TEST_RULE = ('If a delivered finding is only that the configured test fails in the sandbox for an environment '
+                                  'reason (for example a database or service that cannot start there) and a record above passed '
+                                  'it on this exact tree, that record settles it: do not change files or HOLD for it; return READY '
+                                  'and name the record in body. Fix every other delivered finding as usual.')   # v3.8.3
 PROBE_REMOVED = 'permission-probe was removed in v3.7.0; runs do not need it (use resume to continue a held run)'
 CODEX_CLI_WAIVER_NOTE = 'NOTE: --accept-unverified-codex-cli was removed in v3.7.0 and is ignored'
 REVIEWER_BLOCK_CHANGED_ON = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item and resume, '
@@ -4876,6 +4880,7 @@ class Coordinator:
                 ('Delivered review:\n' + prior) if prior else 'No delivered review on this turn.',
             *([rulings] if (rulings := self.operator_rulings_prompt('author').strip()) else []),   # V317-B3
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
+            *([evidence] if (evidence := self._exec_author_operator_evidence()) else []),
             GEMINI_AUTHOR_HISTORY_RULE if 'gemini' in vendor_by_role(self.args).values() else AUTHOR_HISTORY_RULE,
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
@@ -6929,6 +6934,13 @@ class Coordinator:
         configured test (a database that cannot start there) does not HOLD on a check the operator already ran. '' without one."""
         block = opv.prompt_block(self, git_snapshot(self.workspace)[0], atomic_json)
         return block and block + '\n' + FINISH_OPERATOR_TEST_RULE
+
+    def _exec_author_operator_evidence(self) -> str:
+        """v3.8.3 (poker-tools run 9156fede): the operator's records for this exact tree, so an EXEC author whose sandbox cannot
+        run the configured test (a local database that cannot start there) does not HOLD again after the operator attached a
+        passing run; the next review settles the test-failure row from the same record. '' without one (prompt bytes unchanged)."""
+        block = opv.prompt_block(self, git_snapshot(self.workspace)[0], atomic_json).strip()
+        return block and block + '\n' + EXEC_AUTHOR_OPERATOR_TEST_RULE
 
     def worktree_finish_turn(self) -> None:
         """ADR-11 FINISH: a fresh author session in the live worktree; a tree change reopens EXEC review + gate."""

@@ -53,6 +53,27 @@ class OperatorVerificationTests(unittest.TestCase):
         self.assertEqual(co._finish_operator_evidence(), '')
         self.assertEqual(co.state['operator_verifications'][0]['status'], 'voided')
 
+    def test_the_exec_author_sees_a_current_record_and_the_sandbox_rule_and_nothing_without_one(self):   # v3.8.3 poker-tools 9156fede
+        co = self.coordinator()
+        co.state['phase'] = 'EXEC'
+        before = co._author_prompt()
+        self.assertNotIn(HEADER, before)   # no record: the author prompt keeps its bytes
+        self.assertNotIn(rc.EXEC_AUTHOR_OPERATOR_TEST_RULE, before)
+        self.attach(co)
+        tree = rc.git_snapshot(self.workspace)[0]
+        prompt = co._author_prompt()
+        self.assertIn(HEADER, prompt)
+        self.assertIn(f'(snapshot {tree})', prompt)
+        self.assertIn('command `xcodebuild test -scheme App`', prompt)
+        self.assertIn(rc.EXEC_AUTHOR_OPERATOR_TEST_RULE, prompt)
+        self.assertEqual(prompt.replace(co._exec_author_operator_evidence() + '\n', ''), before)   # only the block is added
+        co.state['phase'] = 'PLAN'
+        self.assertNotIn(HEADER, co._author_prompt())   # PLAN authors are not shown it
+        co.state['phase'] = 'EXEC'
+        (self.workspace / 'later.txt').write_text('a later change\n')   # another tree: the record is withdrawn
+        self.assertNotIn(HEADER, co._author_prompt())
+        self.assertEqual(co.state['operator_verifications'][0]['status'], 'voided')
+
     def test_a_record_binds_to_the_tree_and_reaches_reviewer_shadow_and_gate_prompts_scan_clean(self):
         self.coordinator()
         done = self.attach_cli()

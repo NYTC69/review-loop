@@ -1,5 +1,14 @@
 # Changelog
 
+### v3.8.3：EXEC 作者能看到操作员的验证记录
+
+现场问题（poker-tools run 9156fede）：配置的测试命令要在本地起一个 PostgreSQL 集群，角色沙箱里 `initdb` 失败（shmget 不允许）。reviewer 原本 APPROVE，但被测试失败行（F002 MAJOR test-failure）改成 REVISE；EXEC 作者也跑不了这个测试，于是 HOLD。操作员在宿主机上跑通测试并用 `attach-verification` 附上记录（V001，绑定当前目录树）后 `resume`，派发的又是作者。作者的提示里看不到这条记录，再跑测试、再失败、再 HOLD。FINISH 从 v3.7.1 起就能看到记录，EXEC 作者一直没有。
+
+**改动**
+- 当前目录树有操作员记录时，EXEC 作者的提示里附上和 reviewer、FINISH 相同的「Operator-verified evidence for this exact tree」块，外加一条规则：如果某个发现只是配置的测试因环境原因（例如沙箱里起不了数据库或服务）在沙箱里失败，而上面的记录在这个目录树上跑通了，这条记录就把它解决了。此时不为它改文件，也不 HOLD，而是返回 READY 并在 body 里写明记录编号；其他发现照常修。接下来的审查照旧用同一条记录关掉测试失败行（v3.2.4 起已有）。
+- 没有记录时作者提示逐字节不变；PLAN 作者不显示这个块。目录树一变，记录照旧作废。
+- 没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 直接 resume，下一次作者回合就会看到记录。
+
 ### v3.8.2：只读 Claude 回合不再因别的进程改插件记录而作废
 
 现场问题（gg-pipeline WI-404，全 Claude 配置）：PLAN 第 1 轮的 Claude reviewer 回合跑了 884 秒，期间机器上别的 Claude 会话同时改了 `~/.claude/settings.json` 和插件记录（`~/.claude/plugins/installed_plugins.json`），整轮作废并 HOLD「claude turn changed global config: claude_settings, claude_plugins」，只能 `resume` 从头重跑。v3.2.4（V325-CFG）只放过了"只改 settings.json"这一种情况。机器上常年有好几个 Claude 会话，全 Claude 的 run 里长回合很容易碰上。
