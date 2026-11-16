@@ -1,5 +1,16 @@
 # Changelog
 
+### v3.8.2：只读 Claude 回合不再因别的进程改插件记录而作废
+
+现场问题（gg-pipeline WI-404，全 Claude 配置）：PLAN 第 1 轮的 Claude reviewer 回合跑了 884 秒，期间机器上别的 Claude 会话同时改了 `~/.claude/settings.json` 和插件记录（`~/.claude/plugins/installed_plugins.json`），整轮作废并 HOLD「claude turn changed global config: claude_settings, claude_plugins」，只能 `resume` 从头重跑。v3.2.4（V325-CFG）只放过了"只改 settings.json"这一种情况。机器上常年有好几个 Claude 会话，全 Claude 的 run 里长回合很容易碰上。
+
+**改动**
+- 效率模式下，Claude 的 reviewer、shadow 或 gate 回合（只读，两个文件都写不了）期间，如果全局配置发现只涉及 `claude_settings` 和/或 `claude_plugins`（内容改动），回合也没有被作废，就保留这一回合的结果。插件记录的改动前后 sha256 记在回执的 `global_config_changes.concurrent_plugins_change` 里（settings 照旧记在 `concurrent_settings_change`），各打印一行 NOTE；下一回合照常重新取基线。
+- 不变的：作者回合仍然 HOLD 并提示改动可能来自别的进程；只有插件记录、且是正常插件升级时，仍走 v2.10 的记录方式（`plugin_update`、`next_turn_registry`）；文件读不出或不是合法 JSON 时仍 HOLD；Codex 回合不受影响。
+- 没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 直接 resume。
+
+**按意图更新的测试断言**：`test_v325_cfg` 里"settings 和插件记录同时改动时 gate 回合 HOLD"改为保留回合并记录两项改动；新增插件记录单独改动时保留 reviewer 回合、作者回合两项同时改动仍 HOLD 的测试。
+
 ### v3.8.1：小修改后 lifecycle 不再整条链重跑
 
 现场问题（poker-tools run 4f769bc8，range-build-tool run f3987135 同样的情况）：lifecycle 开启的 run 在第一次通过后，作者的任何改动（哪怕只改 CHANGELOG 的一句话）都会把整条链重跑一遍：EXEC 审查和 shadow、gate、FINISH、POLISH-Q（4 个 specialist 看整个 diff）、DOCS writer 和审查、SECURITY。POLISH-Q 跑了 7 次，每次都对没改过、已通过的代码提出新的 MINOR；一次只改文档的修复花了约 15 次调用。按 2026-11-08 的规则（好用优先，默认用户和模型不会做坏事，只做合理范围内的防护），这是 bug，在补丁版本里修。

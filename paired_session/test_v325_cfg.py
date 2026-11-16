@@ -2,7 +2,8 @@
 because the owner's interactive Claude Code session added an "env" entry to ~/.claude/settings.json meanwhile; `resume` re-ran
 the gate from scratch. Efficient mode now keeps a read-only Claude turn (reviewer, shadow, gate) whose only finding is that
 change, records it and prints a NOTE; author turns and any other finding still hold, with a hint that the change
-may come from another process."""
+may come from another process. v3.8.2 (gg-pipeline WI-404, an 884 s Claude reviewer turn): a change to the Claude plugin
+registry, alone or with the settings change, is kept the same way for a read-only turn."""
 import hashlib
 import json
 import os
@@ -65,14 +66,48 @@ class ConcurrentSettingsChangeTests(unittest.TestCase):
         self.assertIn('may come from another process on this machine', state['hold_reason'])
         self.assertNotIn('concurrent_settings_change', self.turns(state, 'author')[0]['global_config_changes'])
 
-    def test_a_settings_change_with_another_finding_still_holds(self):
-        queue = self.h.root / 'plugins-queue.json'   # a registry change that is not a normal plugin update, in the same turn
+    def registry_queue(self, match):   # another process rewrites the plugin registry (not a normal plugin update) in that turn
+        queue = self.h.root / 'plugins-queue.json'
         queue.write_text(json.dumps([{'plugins': [], 'unexpected': True}]))
-        result, state = self.launch(GATE, '--adversarial-gate', 'on',
-                                    env={'FAKE_PLUGIN_UPDATES': str(queue), 'FAKE_PLUGIN_UPDATES_MATCH': GATE})
+        return {'FAKE_PLUGIN_UPDATES': str(queue), 'FAKE_PLUGIN_UPDATES_MATCH': match}
+
+    def test_a_settings_and_plugin_registry_change_keeps_a_read_only_turn(self):
+        # v3.8.2 (gg-pipeline WI-404): settings and registry changed together during a read-only turn; it used to hold
+        result, state = self.launch(GATE, '--adversarial-gate', 'on', env=self.registry_queue(GATE))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(state['status'], 'DONE')
+        self.assertIn('NOTE: the Claude plugin registry changed during the gate turn; the read-only turn cannot write it, '
+                      'so the turn is kept and the next turn starts from the new registry', result.stdout)
+        [gate] = self.turns(state, 'gate')
+        self.assertNotIn('error', gate)
+        changes = gate['global_config_changes']
+        self.assertEqual((changes['status'], changes['findings']), ('PASS', []))
+        self.assertEqual(changes['concurrent_settings_change'], {'before': sha(self.old_settings), 'after': sha(NEW_SETTINGS)})
+        self.assertEqual(set(changes['concurrent_plugins_change']), {'before', 'after'})
+        self.assertNotEqual(changes['concurrent_plugins_change']['before'], changes['concurrent_plugins_change']['after'])
+
+    def test_a_plugin_registry_change_alone_keeps_a_read_only_turn(self):
+        queue_env = self.registry_queue(REVIEWER)
+        command = self.h.command('--author-vendor', 'claude', '--reviewer-vendor', 'claude', '--gate-vendor', 'claude',
+                                 '--shadow', 'off', '--adversarial-gate', 'off')
+        result = subprocess.run(command, cwd=self.h.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env={**os.environ, **queue_env})
+        state = json.loads((self.h.run_dir / 'state.json').read_text())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(state['status'], 'DONE')
+        first = self.turns(state, 'reviewer')[0]
+        changes = first['global_config_changes']
+        self.assertEqual((changes['status'], changes['findings']), ('PASS', []))
+        self.assertIn('concurrent_plugins_change', changes)
+        self.assertNotIn('concurrent_settings_change', changes)
+
+    def test_an_author_turn_with_settings_and_registry_changes_still_holds(self):
+        result, state = self.launch(AUTHOR, '--adversarial-gate', 'off', env=self.registry_queue(AUTHOR))
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(state['hold_reason'], HOLD + ', claude_plugins' + rc.GLOBAL_CONFIG_HINT)
-        self.assertNotIn('concurrent_settings_change', self.turns(state, 'gate')[0]['global_config_changes'])
+        changes = self.turns(state, 'author')[0]['global_config_changes']
+        self.assertNotIn('concurrent_settings_change', changes)
+        self.assertNotIn('concurrent_plugins_change', changes)
 
     def test_the_next_turn_takes_a_fresh_baseline(self):
         result, state = self.launch(REVIEWER, '--adversarial-gate', 'off', '--exercise-revisions')

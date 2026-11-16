@@ -6602,14 +6602,24 @@ class Coordinator:
                     if update := ([row['file'] for row in changes['findings']] == ['claude_plugins'] and
                                   normal_plugin_update(vendor_config_before['claude_plugins'], config_after['claude_plugins'])):
                         changes['plugin_update'] = update   # field21: recorded in both modes
-                    settings_only = [(row['file'], row['reason']) for row in changes['findings']] == [('claude_settings', 'unexpected-content-change')]
-                    if settings_only and role in ('reviewer', 'shadow', 'gate') and voided is None and not touched:
-                        # V325-CFG (efficient): a read-only Claude turn cannot write ~/.claude/settings.json, so the change came from
-                        # another process (e.g. the owner's interactive session); the turn stands, the next turn snapshots afresh.
-                        changes['concurrent_settings_change'] = {key: changes[key]['claude_settings']['sha256'] for key in ('before', 'after')}
+                    changed = {row['file'] for row in changes['findings']}
+                    claude_only = (changed <= {'claude_settings', 'claude_plugins'} and
+                                   all(row['reason'] == 'unexpected-content-change' for row in changes['findings']))
+                    if claude_only and not update and role in ('reviewer', 'shadow', 'gate') and voided is None and not touched:
+                        # V325-CFG, widened in v3.8.2 (gg-pipeline WI-404): a read-only Claude turn can write neither
+                        # ~/.claude/settings.json nor the plugin registry, so a change to either came from another process (an
+                        # interactive session, a plugin install, another run); the turn stands, the next turn snapshots afresh.
+                        # A normal plugin update alone keeps its FIELD-24 record below.
+                        for label in sorted(changed):
+                            key = 'concurrent_settings_change' if label == 'claude_settings' else 'concurrent_plugins_change'
+                            changes[key] = {side: changes[side][label]['sha256'] for side in ('before', 'after')}
                         changes['findings'], changes['status'] = [], 'PASS'
-                        print(f'NOTE: ~/.claude/settings.json changed during the {role} turn; the read-only turn cannot write it, so '
-                              'the turn is kept and the next turn starts from the new settings')
+                        if 'claude_settings' in changed:
+                            print(f'NOTE: ~/.claude/settings.json changed during the {role} turn; the read-only turn cannot write it, so '
+                                  'the turn is kept and the next turn starts from the new settings')
+                        if 'claude_plugins' in changed:
+                            print(f'NOTE: the Claude plugin registry changed during the {role} turn; the read-only turn cannot write it, '
+                                  'so the turn is kept and the next turn starts from the new registry')
                     elif not update or voided is not None or touched:
                         raise ValueError(message + (PLUGIN_UPDATE_HINT if update else GLOBAL_CONFIG_HINT))
                     else:
