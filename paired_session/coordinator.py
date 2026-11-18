@@ -4514,7 +4514,7 @@ class Coordinator:
     def _polish_withdrawn_replay(self) -> None:
         """v3.8.4: the operator withdrew the last specialist blockers at a POLISH-Q fix HOLD. The run takes the same way as
         after a POLISH-Q fix: a new EXEC epoch (reviewer, then gate), then FINISH and POLISH-Q, which reviews only the paths
-        changed since the last completed specialist pass (none when the tree is unchanged, so no specialist runs again).
+        changed since the last completed specialist pass; a pass the budget stopped mid-way is dropped and runs again.
         The run stays HOLD; `resume` continues."""
         life = dict(self.state['lifecycle'])
         for key in ('fix_base', 'recheck', 'specialist_done', 'polish_scope'):   # a pass the budget stopped mid-way is dropped
