@@ -71,7 +71,7 @@ class FrozenProductNameTests(unittest.TestCase):
 
     def test_other_history_markers_and_directory_paths_remain_visible(self):
         self.freeze('Implement Astra and Opus.')
-        for text, marker in (('Per Astra.ai', 'Astra'), ('/opt/astra-tools/', 'astra'),
+        for text, marker in (('Per Astra.ai', 'Astra'), ('/opt/.astra/', 'astra'),   # v3.8.5: /opt/astra-tools/ passes (test_v385_path)
                              ('readers/astra/cache', 'astra'), ('Astra/GPT approved this', 'Astra'),
                              ('Astra F042', 'F042'), ('Opus APPROVE', 'APPROVE'),
                              ('Opus REVISE', 'REVISE')):
