@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-09
+**Last updated**: 2026-11-19
 
 ## P0 — blocker / must-do-now
 
@@ -14,6 +14,9 @@
 - Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1, the EXEC author since v3.8.3 (poker-tools run 9156fede); the POLISH-Q and DOCS writers still do not. (added 2026-11-08)
 - Supervisor note (WI-NOPROBE run, 2026-11-08): a large change needed more than the default 2-hour author turn (EXEC r1 timed out at 7200 s; resumed with `--exec-turn-timeout 14400`); consider a longer default or a hint in the timeout HOLD. (added 2026-11-09)
 - Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match. (added 2026-11-09)
+- Field (gg-pipeline WI-413, v3.8.3): an operator `note` is refused while a turn is in flight and at the "uncertain in-flight CLI turn" HOLD, and a reviewer REVISE auto-dispatches the next author turn, so a ruling the reviewer asked the operator for has no delivery window (the author burned a turn to HOLD for it). (added 2026-11-19)
+- Review note (v3.8.5 Opus R3): PLAN approval / plan restatement (`_plan_history_issue`) does not apply the plan branch of `_introduced_history_matches`, so shapes that stay caught (`/srv/codex/notes/`, `.codex/sessions/`, `Codex approved`) pass PLAN approval and hold only at the gate. Have the PLAN check use the same branch. (added 2026-11-19)
+- Test isolation: `test_v3a3.test_operator_profile_and_cli_on_start_a_run` fails (main returns 2) when run in one process after the scan modules (field11..v317fa), on main too; passes alone and in CI's per-module jobs. (added 2026-11-19)
 
 Protocol-hardening work is Workstream 2 and follows Workstream 1 productization. Candidate implementations and offline reviews are groundwork, not closure evidence for real-run items. Deprecating legacy invocation means replacing the default call surface; the old implementation remains an explicit control path until all four replacement criteria pass. Workstream 2 must cover every open paired-session P1/P2/P3 item across this backlog, regardless of where the item appears, and crosswalk findings from runs #1–#10 and later audits to those items. Add any untracked run finding before declaring Workstream 2 complete. Keep each item open until its own acceptance evidence is recorded.
 
