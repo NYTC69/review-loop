@@ -9,7 +9,7 @@
 - 定位时按标记词（`codex`）在新增行里找子串，所以每一行带 codex 的新增行都被列出，指向的位置不对。
 
 **改动**
-- patch 里的工具名目录路径：冻结的 work item 把这个工具当作一个词写出来时，算仓库主题、不算审查历史。点目录（`.codex/`、`.claude/`）和沙箱临时目录（`claude-501`）属于工具状态，照旧拦。
+- patch 和 `plan.md` 里的工具名目录路径：冻结的 work item 把这个工具当作一个词写出来时，算仓库主题、不算审查历史（plan 会照抄这些路径；真实 run 验证时 gate 曾因 plan 里的 `/opt/runs_live/codex_0166/` HOLD）。点目录（`.codex/`、`.claude/`）和沙箱临时目录（`claude-501`）属于工具状态，照旧拦。
 - 路径最后一段是工具名（`node_modules/.bin/codex`）时按文件名对待，和带点的文件路径一样；前面的目录是工具自己的目录（`codex/`、`.codex/`；patch 里还有 `claude-501/`），或者后面紧跟署名动词（`GPT/Codex signed off`）时，照旧拦。plan 里沙箱临时根目录先被遮掉，所以 `/tmp/claude-501/codex` 在 plan 里按文件名放行。
 - `# noqa:` / `# ruff: noqa:` 后面的 lint 规则码不算发现编号；同一行其他位置的 `F042` 照旧拦。
 - 定位只列出包含真正匹配文本（例如整段路径）的新增行；整段文本不在单独一行上时，退回按标记词找。

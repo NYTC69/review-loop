@@ -22,6 +22,15 @@ class ToolPathTests(v326.DataHistoryTests):
         self.assertEqual(hits, [])
         self.assertEqual(markers, [[], []])
 
+    def test_a_plan_quoting_the_tool_path_passes_when_the_work_item_names_the_tool(self):   # v3.8.5 real run
+        plan = f'CODEX_BIN = "{BIN}"\nPointer `/board/log/0/plan/codex_read_units/0/model`.\n'
+        self.assertTrue(self.co._introduced_history('context/plan.md', plan))
+        self.about_codex()
+        self.assertEqual(self.co._introduced_history('context/plan.md', plan), [])
+        for text in ('Sessions live in /home/x/.codex/sessions/.', 'Read /srv/codex/notes/ first.'):
+            with self.subTest(text=text):
+                self.assertTrue(self.co._introduced_history('context/plan.md', text), text)
+
     def test_without_the_work_item_naming_it_only_the_path_line_is_listed(self):
         self.t.write('docs/reader.md', 'See reader_backends_codex.\nThe binary lives in /opt/codex_0166/bin.\nplain\n')
         hits, _ = self.patch_markers()

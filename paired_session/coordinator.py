@@ -5491,7 +5491,13 @@ class Coordinator:
             matches = [(shown, whole) for shown, whole in matches
                        if not (self.OPERATOR_TOOL_NAME_RE.fullmatch(whole) or self._bare_name_re().fullmatch(whole))]   # ADR-21: gemini
         elif name == 'context/plan.md':
-            matches = [(shown, whole) for shown, whole in matches if not self._plan_tool_name(whole, text)]
+            try:   # V385-PATH: a plan for work about a tool quotes the paths the work item is about, as the change does
+                workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
+            except OSError:
+                workitem_text = ''
+            matches = [(shown, whole) for shown, whole in matches
+                       if not (self._plan_tool_name(whole, text) or ('/sandbox-scratch/' not in whole   # FIELD-33 root
+                                                                      and self._workitem_tool_path(whole, workitem_text)))]
         return matches
 
     def _delta_history_hits(self, patch: str) -> list[tuple[str, str]]:
