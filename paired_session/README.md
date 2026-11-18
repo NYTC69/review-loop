@@ -637,7 +637,10 @@ security-tagged or security-reviewer rows, specialist-owned rows (except at a PO
 fix HOLD), gate CRITICAL/HIGH rows and `secret-scan` rows are refused. At a POLISH-Q
 fix HOLD, withdrawing the last blocking rows sets the run to replay the EXEC review and
 gate, then FINISH and POLISH-Q (only the paths changed since the last completed
-specialist pass, so none when the tree is unchanged); the run stays HOLD until `resume`.
+specialist pass; none when the tree is the one that pass reviewed); the run stays HOLD
+until `resume`. A pass the budget stopped mid-way is dropped. Specialists do not see
+operator rulings, so a withdrawn point can come back once from a later pass over changed
+paths; withdraw it again at the next POLISH-Q fix HOLD.
 Example: a specialist reports that the configured test fails in its sandbox (a
 database that cannot start there) while an attached host run passed on that tree. Phrase the reason as approved behavior,
 without finding ids, review-history phrases or model/vendor approval attributions;
@@ -762,8 +765,8 @@ digest; the log, which must lie outside the workspace and run dir and match
 `--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
 EXEC reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
-operator-verified evidence for this exact tree. The POLISH-Q specialist prompts show them too (v3.8.4) with a rule not to report such a sandbox-only failure as a
-finding. The FINISH prompt shows the same records (v3.7.1) with a rule: a
+operator-verified evidence for this exact tree. The POLISH-Q specialist prompts show them too, and since v3.8.4 add a rule not to report such a sandbox-only failure
+as a finding. The FINISH prompt shows the same records (v3.7.1) with a rule: a
 configured-test failure that only comes from the finisher's sandbox (a database that cannot start there) and that a
 record passed on this exact tree is settled, so the finisher does not HOLD for it. Since v3.8.3 the EXEC author prompt
 shows them with the same rule: an author whose sandbox cannot run that test returns READY without changes and names the

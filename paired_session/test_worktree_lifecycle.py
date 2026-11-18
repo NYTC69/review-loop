@@ -505,6 +505,26 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([item['status'] for item in state['finding_ledger'] if item['id'] == row['id']], ['withdrawn'])
 
+    def test_a_withdrawal_at_a_budget_hold_raised_mid_pass_still_reaches_done(self):
+        # v3.8.4 Opus review: the budget ran out inside a POLISH-Q pass, so its request was still pending
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60',
+                                      env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
+        self.assertIn('HOLD: POLISH-Q blockers remain after the fix: ', result.stdout, result.stdout + result.stderr)
+        co = rc.Coordinator(self.args('--max-invocations', '60'))
+        [row] = [row for row in co.state['finding_ledger'] if row['source'] == 'specialist:code-reviewer' and row['status'] == 'open']
+        life = co.state['lifecycle']
+        life.update(pending={'request_id': 'w-POLISH-Q-mid-pass', 'stage': 'POLISH-Q'}, specialist_done={'code-reviewer': {}},
+                    polish_scope={'request_id': 'w-POLISH-Q-mid-pass', 'base': None, 'paths': None})
+        co.state['hold_reason'] = 'POLISH-Q specialist budget exhausted: code-reviewer'
+        co.save()
+        co.args.finding, co.args.reason = [row['id']], 'The sandbox cannot start the database; the host run passed.'
+        co.args.expect = co.operator_intent('withdraw-findings', None, None)['digest']
+        self.assertEqual(co.withdraw_findings(), 'HOLD')
+        self.assertIsNone(co.state['lifecycle']['pending'])
+        self.assertFalse({'specialist_done', 'polish_scope'} & set(co.state['lifecycle']))
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
+
     def test_specialist_rows_are_withdrawable_only_at_a_polish_fix_hold(self):
         co = rc.Coordinator(self.args())
         [row] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [

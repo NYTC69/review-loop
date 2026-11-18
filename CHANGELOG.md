@@ -7,7 +7,8 @@
 **改动**（Yuan 2026-11-18 选定）
 - specialist 提示：当前树有操作员记录时，记录块后面加一条规则：配置的测试只因环境原因在沙箱里失败、且上面的记录在这棵树上跑通了，就算已解决，不要把这次失败报成发现；其他失败照常算。没有记录时提示逐字节不变。
 - `withdraw-findings` 新增允许的状态：POLISH-Q 修复 HOLD，即「POLISH-Q blockers remain after the fix」「POLISH-Q fix left the tree unchanged」「POLISH-Q specialist budget exhausted」。在这几种 HOLD 下，specialist 的发现可以撤回；带安全标记且严重度会阻塞的行仍然不能撤回。在别的状态下，specialist 的发现照旧不能撤回。
-- 撤回最后一个阻塞行后，run 改走 POLISH-Q 修复写入后的那条路：新的 EXEC epoch（reviewer，然后 gate），然后 FINISH 和 POLISH-Q。POLISH-Q 只看上次完成的 specialist 一轮之后改过的路径；树没变时不派 specialist，specialist 预算也随新 epoch 重新计算。run 保持 HOLD，打印一行 NOTE，由操作员 `resume`。
+- 撤回最后一个阻塞行后，run 改走 POLISH-Q 修复写入后的那条路：新的 EXEC epoch（reviewer，然后 gate），然后 FINISH 和 POLISH-Q。POLISH-Q 只看上次完成的 specialist 一轮之后改过的路径；如果当前树就是那一轮审过的树，就不派 specialist。新 epoch 会重新计算每个 specialist 的次数，但整个 run 的 POLISH-Q 调用总上限不重置。预算在 POLISH-Q 一轮进行到一半时用完的，那一轮的请求直接丢弃。run 保持 HOLD，打印一行 NOTE，由操作员 `resume`。specialist 看不到操作员的撤回决定，所以后面对改动路径再审一轮时，同一点可能再被提一次，到下一个 POLISH-Q 修复 HOLD 再撤回即可。
+- 没有放宽的：「POLISH-Q call budget cannot cover the re-reviews of this fix」这个 HOLD 不在允许撤回的范围内（不在这次批准的三种 HOLD 里）。
 - 没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 可以直接 resume。
 
 ### v3.8.3：EXEC 作者能看到操作员的验证记录

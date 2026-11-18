@@ -4517,9 +4517,10 @@ class Coordinator:
         changed since the last completed specialist pass (none when the tree is unchanged, so no specialist runs again).
         The run stays HOLD; `resume` continues."""
         life = dict(self.state['lifecycle'])
-        life.pop('fix_base', None)
-        life.pop('recheck', None)
-        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+        for key in ('fix_base', 'recheck', 'specialist_done', 'polish_scope'):   # a pass the budget stopped mid-way is dropped
+            life.pop(key, None)
+        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
+                                   'pending': None}   # its request never completes; FINISH begins a new one
         self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
         print('NOTE: no POLISH-Q blocker remains; resume replays the EXEC review and gate, then FINISH, POLISH-Q (changed '
               'paths only) and the rest of the chain')
