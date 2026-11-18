@@ -1,5 +1,15 @@
 # Changelog
 
+### v3.8.4：POLISH-Q 不再因沙箱跑不了的测试卡死
+
+现场问题（poker-tools run 4c1e6a6d、fe39d674）：配置的测试要起本地 PostgreSQL，角色沙箱里起不来。POLISH-Q 的 specialist（silent-failure-hunter、code-reviewer）因此报 MAJOR「测试命令在我这里失败」，而操作员附的宿主机记录在同一棵树上是 exit 0。作者没有可改的东西，run HOLD「POLISH-Q fix left the tree unchanged」；改了别的东西后，specialist 在新树上又报一次，最后 HOLD「POLISH-Q specialist budget exhausted」。specialist 的发现不能用 `withdraw-findings` 撤回，run 到不了 DONE，只能弃用。
+
+**改动**（Yuan 2026-11-18 选定）
+- specialist 提示：当前树有操作员记录时，记录块后面加一条规则：配置的测试只因环境原因在沙箱里失败、且上面的记录在这棵树上跑通了，就算已解决，不要把这次失败报成发现；其他失败照常算。没有记录时提示逐字节不变。
+- `withdraw-findings` 新增允许的状态：POLISH-Q 修复 HOLD，即「POLISH-Q blockers remain after the fix」「POLISH-Q fix left the tree unchanged」「POLISH-Q specialist budget exhausted」。在这几种 HOLD 下，specialist 的发现可以撤回；带安全标记且严重度会阻塞的行仍然不能撤回。在别的状态下，specialist 的发现照旧不能撤回。
+- 撤回最后一个阻塞行后，run 改走 POLISH-Q 修复写入后的那条路：新的 EXEC epoch（reviewer，然后 gate），然后 FINISH 和 POLISH-Q。POLISH-Q 只看上次完成的 specialist 一轮之后改过的路径；树没变时不派 specialist，specialist 预算也随新 epoch 重新计算。run 保持 HOLD，打印一行 NOTE，由操作员 `resume`。
+- 没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 可以直接 resume。
+
 ### v3.8.3：EXEC 作者能看到操作员的验证记录
 
 现场问题（poker-tools run 9156fede）：配置的测试命令要在本地起一个 PostgreSQL 集群，角色沙箱里 `initdb` 失败（shmget 不允许）。reviewer 原本 APPROVE，但被测试失败行（F002 MAJOR test-failure）改成 REVISE；EXEC 作者也跑不了这个测试，于是 HOLD。操作员在宿主机上跑通测试并用 `attach-verification` 附上记录（V001，绑定当前目录树）后 `resume`，派发的又是作者。作者的提示里看不到这条记录，再跑测试、再失败、再 HOLD。FINISH 从 v3.7.1 起就能看到记录，EXEC 作者一直没有。

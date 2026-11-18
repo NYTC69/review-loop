@@ -629,10 +629,17 @@ explicit decision naming the findings and reason, never in handsfree mode or
 on the host's own judgment. First issue the same
 command with `--intent-only`, then submit it with `--expect <digest>`; ids and
 reason are bound to the intent and mutation runs under the run/workspace leases.
-Allowed states are DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, and
-a rejected-tree HOLD. Unknown or closed ids, an empty reason, CRITICAL/MAJOR/SECURITY
-security-tagged or security-reviewer rows, specialist-owned rows, gate CRITICAL/HIGH
-rows and `secret-scan` rows are refused. Phrase the reason as approved behavior,
+Allowed states are DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, a
+rejected-tree HOLD, and (v3.8.4) a POLISH-Q fix HOLD: "POLISH-Q blockers remain after
+the fix", "POLISH-Q fix left the tree unchanged" or "POLISH-Q specialist budget
+exhausted". Unknown or closed ids, an empty reason, CRITICAL/MAJOR/SECURITY
+security-tagged or security-reviewer rows, specialist-owned rows (except at a POLISH-Q
+fix HOLD), gate CRITICAL/HIGH rows and `secret-scan` rows are refused. At a POLISH-Q
+fix HOLD, withdrawing the last blocking rows sets the run to replay the EXEC review and
+gate, then FINISH and POLISH-Q (only the paths changed since the last completed
+specialist pass, so none when the tree is unchanged); the run stays HOLD until `resume`.
+Example: a specialist reports that the configured test fails in its sandbox (a
+database that cannot start there) while an attached host run passed on that tree. Phrase the reason as approved behavior,
 without finding ids, review-history phrases or model/vendor approval attributions;
 bare model/vendor names are allowed. A refusal names the matched text. For example:
 
@@ -649,7 +656,7 @@ starts no author turn and counts as no rejection. DONE remains acceptance
 pending: accept or send back as before. At a round-limit HOLD caused by the
 reviewer verdict, plain `resume` already re-dispatches the reviewer on the same
 tree, even when other rows remain open or the reviewer had findings of its own.
-Withdrawal adds no continuation route; the existing exits apply. A rejected tree
+Apart from the POLISH-Q fix HOLD above, withdrawal adds no continuation route; the existing exits apply. A rejected tree
 remains rejected. Rulings survive resume and writer replay rollback, and every later author-side turn (the EXEC author,
 FINISH, the POLISH-Q writers and the DOCS writer) is told about them and asked not to reintroduce the change the
 withdrawn findings asked for. This command does not reopen lifecycle stages at DONE.
@@ -755,7 +762,8 @@ digest; the log, which must lie outside the workspace and run dir and match
 `--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
 EXEC reviewer, shadow and gate prompts show the command, cwd, exit
 code, log hash and the last 2,000 log characters (not the note) as
-operator-verified evidence for this exact tree. The FINISH prompt shows the same records (v3.7.1) with a rule: a
+operator-verified evidence for this exact tree. The POLISH-Q specialist prompts show them too (v3.8.4) with a rule not to report such a sandbox-only failure as a
+finding. The FINISH prompt shows the same records (v3.7.1) with a rule: a
 configured-test failure that only comes from the finisher's sandbox (a database that cannot start there) and that a
 record passed on this exact tree is settled, so the finisher does not HOLD for it. Since v3.8.3 the EXEC author prompt
 shows them with the same rule: an author whose sandbox cannot run that test returns READY without changes and names the

@@ -150,6 +150,12 @@ EXEC_AUTHOR_OPERATOR_TEST_RULE = ('If a delivered finding is only that the confi
                                   'reason (for example a database or service that cannot start there) and a record above passed '
                                   'it on this exact tree, that record settles it: do not change files or HOLD for it; return READY '
                                   'and name the record in body. Fix every other delivered finding as usual.')   # v3.8.3
+SPECIALIST_OPERATOR_TEST_RULE = ('If the configured test fails in your sandbox only for an environment reason (for example a '
+                                 'database or service that cannot start there) and a record above passed it on this exact tree, '
+                                 'that record settles the test: do not report that failure as a finding. Any other failure '
+                                 'still counts.')   # v3.8.4
+POLISH_WITHDRAW_HOLDS = ('POLISH-Q blockers remain after the fix', 'POLISH-Q fix left the tree unchanged',
+                         'POLISH-Q specialist budget exhausted')   # v3.8.4: holds where the operator may withdraw specialist rows
 PROBE_REMOVED = 'permission-probe was removed in v3.7.0; runs do not need it (use resume to continue a held run)'
 CODEX_CLI_WAIVER_NOTE = 'NOTE: --accept-unverified-codex-cli was removed in v3.7.0 and is ignored'
 REVIEWER_BLOCK_CHANGED_ON = ('work-item reviewer allowlist changed; restore the reviewer-commands block of the work item and resume, '
@@ -4450,9 +4456,10 @@ class Coordinator:
         allowed = ((self.state['status'] == 'DONE' and self.state.get('acceptance_state') == 'PENDING') or
                    (self.state['status'] == 'HOLD' and
                     ((self.at_round_limit_hold() and self.state['round_limit_hold'].get('phase') in ('PLAN', 'EXEC')) or
-                     self.state.get('hold_reason', '').startswith('rejected-tree'))))
+                     self.state.get('hold_reason', '').startswith('rejected-tree') or self._polish_withdraw_hold())))
         if not allowed:
-            raise ValueError('withdraw-findings requires DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, or a rejected-tree HOLD')
+            raise ValueError('withdraw-findings requires DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, a rejected-tree '
+                             'HOLD, or a POLISH-Q fix HOLD (blockers remain, tree unchanged, specialist budget exhausted)')
         reason = self.args.reason or ''
         if not reason.strip(): raise ValueError('withdraw-findings requires a non-empty --reason')
         marker = (LEDGER_ID_RE.search(reason) or FRESH_HISTORY_RE.search(reason) or
@@ -4468,9 +4475,9 @@ class Coordinator:
             if row['status'] != 'open': raise ValueError(f'finding {finding_id} is already closed')
             severity, owner = row['severity'].upper(), row.get('owner_role', '')
             if (((row.get('security') or owner == 'security-reviewer') and blocks_by_severity(row)) or severity == 'SECURITY' or
-                    owner.startswith('specialist:') or row['source'] == 'secret-scan' or
+                    (owner.startswith('specialist:') and not self._polish_withdraw_hold()) or row['source'] == 'secret-scan' or
                     (row['source'] == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))):   # v3.8.1: MINOR/LOW security rows may go
-                raise ValueError(f'finding {finding_id} cannot be withdrawn by withdraw-findings: CRITICAL/MAJOR/SECURITY security rows, specialist ownership, secret-scan, and gate CRITICAL/HIGH rows are excluded')
+                raise ValueError(f'finding {finding_id} cannot be withdrawn by withdraw-findings: CRITICAL/MAJOR/SECURITY security rows, specialist ownership (except at a POLISH-Q fix HOLD), secret-scan, and gate CRITICAL/HIGH rows are excluded')
             rows.append(row)
         return rows
 
@@ -4491,11 +4498,31 @@ class Coordinator:
                                          'evidence': f"Operator ruling {ruling_id}: {record['reason']}",
                                          'actor': 'operator', 'ruling_id': ruling_id})
             self._progress_finding(row)
+        if self._polish_withdraw_hold() and not self.blocking_open_findings():
+            self._polish_withdrawn_replay()
         self.save()
         self.write_ledger()
         self.write_open_findings()
         self.write_comparison()
         return self.state['status']
+
+    def _polish_withdraw_hold(self) -> bool:
+        return (self.state['status'] == 'HOLD' and worktree_lifecycle.is_worktree(self.state)
+                and not self.state['config'].get('review_report')
+                and self.state.get('hold_reason', '').startswith(POLISH_WITHDRAW_HOLDS))
+
+    def _polish_withdrawn_replay(self) -> None:
+        """v3.8.4: the operator withdrew the last specialist blockers at a POLISH-Q fix HOLD. The run takes the same way as
+        after a POLISH-Q fix: a new EXEC epoch (reviewer, then gate), then FINISH and POLISH-Q, which reviews only the paths
+        changed since the last completed specialist pass (none when the tree is unchanged, so no specialist runs again).
+        The run stays HOLD; `resume` continues."""
+        life = dict(self.state['lifecycle'])
+        life.pop('fix_base', None)
+        life.pop('recheck', None)
+        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+        self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+        print('NOTE: no POLISH-Q blocker remains; resume replays the EXEC review and gate, then FINISH, POLISH-Q (changed '
+              'paths only) and the rest of the chain')
 
     def operator_ruling_lines(self) -> list[str]:
         return [f"- {row['id']}: {', '.join(row['finding_ids'])}: {row['reason']}"
@@ -6935,6 +6962,13 @@ class Coordinator:
         block = opv.prompt_block(self, git_snapshot(self.workspace)[0], atomic_json)
         return block and block + '\n' + FINISH_OPERATOR_TEST_RULE
 
+    def _specialist_operator_evidence(self, tree: str) -> str:
+        """v3.8.4 (poker-tools runs 4c1e6a6d, fe39d674): the operator's records for the reviewed tree, plus the FINISH-style
+        rule, so a specialist whose sandbox cannot start the configured test's database does not report that as a blocker.
+        '' without one (prompt bytes unchanged)."""
+        block = opv.prompt_block(self, tree, atomic_json)
+        return block and block + '\n' + SPECIALIST_OPERATOR_TEST_RULE
+
     def _exec_author_operator_evidence(self) -> str:
         """v3.8.3 (poker-tools run 9156fede): the operator's records for this exact tree, so an EXEC author whose sandbox cannot
         run the configured test (a local database that cannot start there) does not HOLD again after the operator attached a
@@ -8299,7 +8333,7 @@ class Coordinator:
             'review these paths only.' if delta_paths is not None else '')
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
                                                        protocol, self._change_noun()) +
-                  self._guidance(QUALITY_GUIDANCE) + opv.prompt_block(self, tree, atomic_json))
+                  self._guidance(QUALITY_GUIDANCE) + self._specialist_operator_evidence(tree))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
             counts = self._specialist_budget(name)
             counts[name] = counts.get(name, 0) + 1

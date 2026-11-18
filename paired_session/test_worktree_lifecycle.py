@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import os
+import types
 import unittest
 from unittest import mock
 
@@ -481,6 +482,61 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((first_fix['epoch'], second_fix['epoch'], second_fix['base_tree']), (0, 0, first_fix['tree']))
         self.assertEqual((state['lifecycle']['epoch'], state['lifecycle']['counts_epoch'],
                           state['lifecycle']['specialist_counts']['code-reviewer']), (1, 1, 1))   # caps are per epoch
+
+    def test_the_operator_withdraws_specialist_blockers_at_a_polish_fix_hold_and_the_run_reaches_done(self):
+        # v3.8.4 (poker-tools runs 4c1e6a6d, fe39d674): a specialist blocker the author cannot fix was a dead end
+        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60',
+                                      env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
+        self.assertIn('HOLD: POLISH-Q blockers remain after the fix: ', result.stdout, result.stdout + result.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        [row] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer' and row['status'] == 'open']
+        epoch = state['lifecycle']['epoch']
+        co = rc.Coordinator(self.args('--max-invocations', '60'))
+        co.args.finding, co.args.reason = [row['id']], 'The sandbox cannot start the database; the host run passed.'
+        co.args.expect = co.operator_intent('withdraw-findings', None, None)['digest']
+        with mock.patch('builtins.print') as printed:
+            self.assertEqual(co.withdraw_findings(), 'HOLD')   # the run stays held; resume continues
+        self.assertIn('no POLISH-Q blocker remains', printed.call_args[0][0])
+        self.assertEqual((co.state['phase'], co.state['next'], co.state['lifecycle']['stage'], co.state['lifecycle']['epoch']),
+                         ('EXEC', 'reviewer', 'EXEC', epoch + 1))
+        self.assertNotIn('fix_base', co.state['lifecycle'])
+        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual([item['status'] for item in state['finding_ledger'] if item['id'] == row['id']], ['withdrawn'])
+
+    def test_specialist_rows_are_withdrawable_only_at_a_polish_fix_hold(self):
+        co = rc.Coordinator(self.args())
+        [row] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
+            {'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'the configured test fails in my sandbox'}])
+        co.args.finding, co.args.reason = [row['id']], 'The host run passed.'
+        for reason in ('POLISH-Q fix left the tree unchanged; only a fix on a new tree may close a specialist blocker',
+                       'POLISH-Q specialist budget exhausted: code-reviewer', 'POLISH-Q blockers remain after the fix: X'):
+            with self.subTest(reason=reason):
+                co.state.update(status='HOLD', hold_reason=reason)
+                self.assertEqual([item['id'] for item in co._withdrawal_rows()], [row['id']])
+        co.state.update(status='DONE', acceptance_state='PENDING', hold_reason='')   # elsewhere specialist rows stay excluded
+        with self.assertRaisesRegex(ValueError, r'specialist ownership \(except at a POLISH-Q fix HOLD\)'):
+            co._withdrawal_rows()
+        co.state.update(status='HOLD', hold_reason='POLISH-Q fix left the tree unchanged; ...')
+        [secured] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 2, [
+            {'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'injection', 'security': True}])
+        co.args.finding = [secured['id']]
+        with self.assertRaisesRegex(ValueError, 'cannot be withdrawn'):   # a blocking security row still cannot go
+            co._withdrawal_rows()
+
+    def test_a_specialist_sees_a_current_operator_record_with_the_sandbox_rule(self):
+        co = rc.Coordinator(self.args())
+        tree = rc.git_snapshot(self.workspace)[0]
+        self.assertEqual(co._specialist_operator_evidence(tree), '')   # no record: the prompt keeps its bytes
+        log = self.root / 'host.log'
+        log.write_text('ok\n')
+        rc.opv.attach(co, types.SimpleNamespace(command='python3 -m unittest', cwd=None, exit_code=0, log=str(log),
+                                                log_sha256=hashlib.sha256(b'ok\n').hexdigest(), note='host run'),
+                      tree, rc.atomic_json)
+        block = co._specialist_operator_evidence(tree)
+        self.assertIn(f'(snapshot {tree})', block)
+        self.assertTrue(block.endswith(rc.SPECIALIST_OPERATOR_TEST_RULE))
 
     def test_a_fix_that_leaves_the_tree_unchanged_cannot_close_a_blocker(self):
         tree = rc.git_snapshot(self.workspace)[0]

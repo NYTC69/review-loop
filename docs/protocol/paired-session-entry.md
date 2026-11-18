@@ -377,7 +377,8 @@ under handsfree, and never on your own judgment:
   reopens EXEC and dispatches model turns) and inspect the final status.
 - Withdraw findings only on the user's explicit decision naming the findings
   and a nonempty reason. At DONE (acceptance pending), a PLAN/EXEC round-limit
-  HOLD or a rejected-tree HOLD, run `withdraw-findings --intent-only --finding ID
+  HOLD, a rejected-tree HOLD or a POLISH-Q fix HOLD (blockers remain, tree
+  unchanged, specialist budget exhausted), run `withdraw-findings --intent-only --finding ID
   --reason TEXT` (repeat `--finding` for each named id), show the digest, then run
   the same command with `--expect <digest>` instead of `--intent-only`. Relay
   the ruling/evidence, next-step hint and status. This dispatches no model turn
