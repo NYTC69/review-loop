@@ -38,8 +38,23 @@ class ToolPathTests(v326.DataHistoryTests):
                 self.assertTrue(any(where == path + ':1' for where, _ in hits), hits)
                 self.assertTrue(markers[0])
 
+    def test_a_tool_named_directory_before_the_binary_and_a_trailing_attribution_still_hit(self):   # v3.8.5 review
+        self.about_codex()
+        for path, text in (('docs/a.md', 'Use .codex/bin/codex here.\n'), ('docs/b.md', 'Use .codex/codex here.\n'),
+                           ('docs/c.md', 'Use a/codex/b/codex here.\n'), ('docs/d.md', 'GPT/Codex signed off on this.\n'),
+                           ('docs/e.md', 'bin/codex rejected it.\n')):
+            with self.subTest(path=path):
+                self.t.write(path, text)
+                hits, markers = self.patch_markers()
+                self.assertTrue(any(where == path + ':1' for where, _ in hits), hits)
+        for text in ('Use .codex/bin/codex here.', '.claude/hooks/claude runs it.', 'GPT/Codex signed off on the plan.',
+                     'Sonnet/Claude rejected the split.', 'reviewer/codex signed off.'):
+            with self.subTest(plan=text):
+                self.assertTrue(self.co._introduced_history('context/plan.md', text), text)
+        self.assertEqual(self.co._introduced_history('context/plan.md', 'Run node_modules/.bin/codex for Codex.'), [])
+
     def test_noqa_codes_are_not_finding_ids(self):
-        self.t.write('tests/test_reader.py', 'from helpers import base  # noqa: F401  (autouse)\nimport os  # noqa: E501, F811\n')
+        self.t.write('tests/test_reader.py', 'from helpers import base  # noqa: F401  (autouse)\nimport os  # NOQA: E501, F811\n')
         hits, markers = self.patch_markers()
         self.assertEqual(hits, [])
         self.assertEqual(markers, [[], []])

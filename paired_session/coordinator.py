@@ -2227,7 +2227,7 @@ def author_schema() -> dict:
     }, 'required': ['status', 'body'], 'additionalProperties': False}
 
 
-NOQA_CODES_RE = re.compile(r'(#\s*(?:ruff:\s*)?noqa:\s*)[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*')
+NOQA_CODES_RE = re.compile(r'(#\s*(?:ruff:\s*)?noqa:\s*)[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*', re.I)
 
 
 def workitem_reviewer_commands(text: str) -> list[str]:
@@ -5443,7 +5443,16 @@ class Coordinator:
         word = re.escape(whole)
         # V385-PATH: the tool's binary as the last component of a path (node_modules/.bin/codex) names a file, like a
         # dotted file path; a directory component (.codex/, /claude-501/) is still not prose
-        text = re.sub(r'(?<![\w/.-])[\w.-]*(?:/[\w.-]+)*/' + word + r'(?![\w/-])', '<path>', text, flags=re.I)
+        # (only when no directory component is the tool's own directory -- codex/, .codex/, claude-501/ stay, while a
+        # named install such as codex_0166/ is repository subject -- and no attribution verb follows: "GPT/Codex signed
+        # off" stays an attribution)
+        def file_name(match):
+            tool = whole.lower()
+            directories = [part for part in match.group(0).lower().split('/')[:-1] if tool in part]
+            return match.group(0) if any(part == tool or part.startswith('.') or re.fullmatch(r'claude-\d+', part)
+                                         for part in directories) else '<path>'
+        text = re.sub(r'(?<![\w/.-])[\w.-]*(?:/[\w.-]+)*/' + word
+                      + r'(?![\w/-])(?!\s+(?:approved?|signed|rejected|requested)\b)', file_name, text, flags=re.I)
         prose = re.compile(r'(?<![\w/.])' + word + r'(?!\w|-?/)', re.I)
         attribution = re.compile(word + r'(?:/[\w.-]+)*\s+(?:approved?|signed|rejected|requested)\b', re.I)   # 34b: a chain too
         # FIELD-34: one slash between two plain words ("Claude/Codex pp", "Opus/GPT") is prose, not a path segment; so is a
