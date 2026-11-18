@@ -1,5 +1,20 @@
 # Changelog
 
+### v3.8.5：独立性扫描不再把"关于工具本身"的改动当成审查历史
+
+现场问题（gg-pipeline WI-413，把 sol reader 切到固定版本的 codex-cli 0.166.0）：每一轮 EXEC 都被独立性扫描加一条 MAJOR「the change writes review history into the code」，reviewer 原本 APPROVE 也变成 REVISE；到最后一轮会变成 gate 输入检查 HOLD，withdraw 也撤不掉。列出的 189 处几乎都是 `"provider":"codex"` 这类无辜的行。
+
+**原因**
+- 真正命中的是带工具名的目录路径（`runs_live/codex_0166/`、JSON 指针 `/board/log/0/plan/codex_read_units/`），以及新文件里路径末尾的二进制名 `node_modules/.bin/codex`（裸名豁免要求每处都是正文用法）和 `# noqa: F401`（看起来像发现编号）。
+- 定位时按标记词（`codex`）在新增行里找子串，所以每一行带 codex 的新增行都被列出，指向的位置不对。
+
+**改动**
+- patch 里的工具名目录路径：冻结的 work item 把这个工具当作一个词写出来时，算仓库主题、不算审查历史。点目录（`.codex/`、`.claude/`）和沙箱临时目录（`claude-501`）属于工具状态，照旧拦。
+- 路径最后一段是工具名（`node_modules/.bin/codex`）时按文件名对待，和带点的文件路径一样；目录段仍不算正文。
+- `# noqa:` / `# ruff: noqa:` 后面的 lint 规则码不算发现编号；同一行其他位置的 `F042` 照旧拦。
+- 定位只列出包含真正匹配文本（例如整段路径）的新增行；整段文本不在单独一行上时，退回按标记词找。
+- 不变的：审查叙述、裁决词、"Codex approved" 这类署名、发现编号照旧拦；没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 直接 resume。
+
 ### v3.8.4：POLISH-Q 不再因沙箱跑不了的测试卡死
 
 现场问题（poker-tools run 4c1e6a6d、fe39d674）：配置的测试要起本地 PostgreSQL，角色沙箱里起不来。POLISH-Q 的 specialist（silent-failure-hunter、code-reviewer）因此报 MAJOR「测试命令在我这里失败」，而操作员附的宿主机记录在同一棵树上是 exit 0。作者没有可改的东西，run HOLD「POLISH-Q fix left the tree unchanged」；改了别的东西后，specialist 在新树上又报一次，最后 HOLD「POLISH-Q specialist budget exhausted」。specialist 的发现不能用 `withdraw-findings` 撤回，run 到不了 DONE，只能弃用。

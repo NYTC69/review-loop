@@ -2227,6 +2227,9 @@ def author_schema() -> dict:
     }, 'required': ['status', 'body'], 'additionalProperties': False}
 
 
+NOQA_CODES_RE = re.compile(r'(#\s*(?:ruff:\s*)?noqa:\s*)[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*')
+
+
 def workitem_reviewer_commands(text: str) -> list[str]:
     commands = []
     for match in re.finditer(r'(?ms)^```reviewer-commands[ \t]*\n(.*?)^```[ \t]*$', text):
@@ -5270,7 +5273,10 @@ class Coordinator:
                 if exempt and not any(whole.lower() in other for other in kept):
                     # V328-MASK: mask every occurrence the bare-name scan can find, including hyphen compounds.
                     pattern = (re.compile(r'\b' + re.escape(whole) + r'\b', re.I)
-                               if self._bare_name_re().fullmatch(whole) else repo_word(whole))
+                               if self._bare_name_re().fullmatch(whole)
+                               # V385-PATH: a path match ends with '/', and the path goes on after it (node_modules/)
+                               else re.compile(re.escape(whole), re.I) if self.TOOL_PATH_RE.fullmatch(whole)
+                               else repo_word(whole))
                     text = pattern.sub('<repo-text>', text)
             return text
 
@@ -5315,8 +5321,11 @@ class Coordinator:
                 data_file = new and Path(new).suffix.lower() in ('.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.csv', '.tsv')
                 for line in section[len(header):].splitlines():
                     if line.startswith('+'):
+                        # V385-NOQA: a linter's rule codes (# noqa: F401, E501) look like finding ids but are not
+                        line = NOQA_CODES_RE.sub(r'\1<lint-code>', line)
                         result.append(mask(line[1:], lambda whole: bool(repo_word(whole).search(repository)
-                                           or (data_file and self._bare_name_re().fullmatch(whole)))))
+                                           or (data_file and self._bare_name_re().fullmatch(whole))
+                                           or self._workitem_tool_path(whole, workitem_text))))
             return '\n'.join(result)
 
         # V303-A: apply the same bare-name exception to stat/status and workitem prose.
@@ -5432,6 +5441,9 @@ class Coordinator:
             return False
         text = DOTTED_PATH_RE.sub('<path>', self._run_path_prose('context/plan.md', text))   # as the bare-name scan reads it
         word = re.escape(whole)
+        # V385-PATH: the tool's binary as the last component of a path (node_modules/.bin/codex) names a file, like a
+        # dotted file path; a directory component (.codex/, /claude-501/) is still not prose
+        text = re.sub(r'(?<![\w/.-])[\w.-]*(?:/[\w.-]+)*/' + word + r'(?![\w/-])', '<path>', text, flags=re.I)
         prose = re.compile(r'(?<![\w/.])' + word + r'(?!\w|-?/)', re.I)
         attribution = re.compile(word + r'(?:/[\w.-]+)*\s+(?:approved?|signed|rejected|requested)\b', re.I)   # 34b: a chain too
         # FIELD-34: one slash between two plain words ("Claude/Codex pp", "Opus/GPT") is prose, not a path segment; so is a
@@ -5442,7 +5454,25 @@ class Coordinator:
         return all((prose.match(text, use.start()) or any(a <= use.start() < b for a, b in pairs))
                    and not attribution.match(text, use.start()) for use in re.finditer(r'\b' + word + r'\b', text, re.I))
 
+    # V385-PATH: a change ABOUT a tool (gg-pipeline WI-413: move a reader to a pinned codex-cli) puts the tool's name in code
+    # paths (runs_live/codex_0166/, /plan/codex_read_units/). In a patch such a path is repository subject, not review
+    # history, when the frozen work item names that tool as a word. A dot directory (.codex/, .claude/) and the sandbox
+    # scratch root (claude-501) are tool state, so they stay caught; so do attributions, verdicts and ledger ids.
+    TOOL_PATH_RE = re.compile(r'/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/', re.I)
+
+    def _workitem_tool_path(self, whole: str, workitem_text: str) -> bool:
+        if not (match := self.TOOL_PATH_RE.fullmatch(whole)):
+            return False
+        tool = match.group(1).lower()
+        parts = [part for part in whole.lower().split('/') if tool in part]
+        return bool(re.search(r'\b' + tool + r'\b', workitem_text, re.I)) and not any(
+            part.startswith('.') or re.fullmatch(r'claude-\d+', part) for part in parts)
+
     def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
+        return [shown for shown, _ in self._introduced_history_matches(name, content, base)]
+
+    def _introduced_history_matches(self, name: str, content: str, base: Optional[str] = None) -> list[tuple[str, str]]:
+        """(reported marker, whole matched text) for every review-history match the fresh scans refuse."""
         text = self._fresh_history_text(name, content, base)
         if name == 'context/plan.md':
             text = self.SANDBOX_SCRATCH_RE.sub('/sandbox-scratch/', text)   # no '>': a tool-named path below it is still caught
@@ -5452,14 +5482,21 @@ class Coordinator:
                        if not (self.OPERATOR_TOOL_NAME_RE.fullmatch(whole) or self._bare_name_re().fullmatch(whole))]   # ADR-21: gemini
         elif name == 'context/plan.md':
             matches = [(shown, whole) for shown, whole in matches if not self._plan_tool_name(whole, text)]
-        return [shown for shown, _ in matches]
+        return matches
 
     def _delta_history_hits(self, patch: str) -> list[tuple[str, str]]:
         """FIELD-31b: (path:line, marker) for every review-history match on an added line of the patch, every file."""
         hits = []
         for section in re.split(r'(?m)^(?=diff --git )', patch):
-            if not (markers := list(dict.fromkeys(self._introduced_history('context/delta.patch', section)))):
+            if not (found_matches := list(dict.fromkeys(self._introduced_history_matches('context/delta.patch', section)))):
                 continue
+            markers = list(dict.fromkeys(marker for marker, _ in found_matches))
+            added = [line.lower() for line in section.splitlines() if line.startswith('+')]
+            # V385-LOC: look for the whole match ("/runs_live/codex_0166/"), so a line that only names the bare tool, which
+            # the scan exempted, is not listed; the marker itself is the fallback when the whole text is not on one line
+            needles = {marker: [whole.lower() for m, whole in found_matches if m == marker
+                                and any(whole.lower() in line for line in added)] or [marker.lower()]
+                       for marker in markers}
             # git ends the header of a path that contains a space with a tab: a separator, not the name (as leak_scan)
             name = next((line[4:].rstrip('\t') for line in section.splitlines() if line.startswith('+++ ')), '')
             if name.startswith('"') and name.endswith('"'):
@@ -5472,7 +5509,7 @@ class Coordinator:
                 elif line.startswith(('+', ' ')):
                     number += 1
                     for marker in markers if line.startswith('+') else ():
-                        if marker.lower() in line.lower():
+                        if any(needle in line.lower() for needle in needles[marker]):
                             hits.append((f'{name}:{number}', marker))
                             found.add(marker)
             hits += [(name, marker) for marker in markers if marker not in found]   # a match that spans lines
