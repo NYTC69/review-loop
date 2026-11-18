@@ -5484,7 +5484,8 @@ class Coordinator:
         """(reported marker, whole matched text) for every review-history match the fresh scans refuse."""
         text = self._fresh_history_text(name, content, base)
         if name == 'context/plan.md':
-            text = self.SANDBOX_SCRATCH_RE.sub('/sandbox-scratch/', text)   # no '>': a tool-named path below it is still caught
+            text = self.SANDBOX_SCRATCH_RE.sub('/sandbox-scratch/', text)   # no '>': a tool-named directory below it is still
+            # caught; since v3.8.5 a bare tool name as the last component below it (/tmp/claude-501/codex) reads as a file
         matches = self._history_matches(name, text)
         if name in self.WORKITEM_SOURCES:
             matches = [(shown, whole) for shown, whole in matches

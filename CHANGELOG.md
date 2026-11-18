@@ -10,10 +10,12 @@
 
 **改动**
 - patch 里的工具名目录路径：冻结的 work item 把这个工具当作一个词写出来时，算仓库主题、不算审查历史。点目录（`.codex/`、`.claude/`）和沙箱临时目录（`claude-501`）属于工具状态，照旧拦。
-- 路径最后一段是工具名（`node_modules/.bin/codex`）时按文件名对待，和带点的文件路径一样；前面的目录是工具自己的目录（`codex/`、`.codex/`、`claude-501/`），或者后面紧跟署名动词（`GPT/Codex signed off`）时，照旧拦。
+- 路径最后一段是工具名（`node_modules/.bin/codex`）时按文件名对待，和带点的文件路径一样；前面的目录是工具自己的目录（`codex/`、`.codex/`；patch 里还有 `claude-501/`），或者后面紧跟署名动词（`GPT/Codex signed off`）时，照旧拦。plan 里沙箱临时根目录先被遮掉，所以 `/tmp/claude-501/codex` 在 plan 里按文件名放行。
 - `# noqa:` / `# ruff: noqa:` 后面的 lint 规则码不算发现编号；同一行其他位置的 `F042` 照旧拦。
 - 定位只列出包含真正匹配文本（例如整段路径）的新增行；整段文本不在单独一行上时，退回按标记词找。
-**按意图更新的测试断言**：`test_v303a` 里"work item 写了 Astra 时 `/opt/astra-tools/` 仍被拦"改为用点目录 `/opt/.astra/`（仍被拦）；`/opt/astra-tools/` 这种情况现在放行，由 `test_v385_path` 覆盖。
+
+**按意图更新的测试断言**：`test_v303a` 里"work item 写了 Astra 时 `/opt/astra-tools/` 仍被拦"改为用点目录 `/opt/.astra/`（仍被拦）；`/opt/astra-tools/` 这种情况现在放行，`test_v385_path` 用同一类路径（`codex_0166/`）覆盖。
+
 
 - 不变的：审查叙述、裁决词、"Codex approved" 这类署名、发现编号照旧拦；没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 直接 resume。
 
