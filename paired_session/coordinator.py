@@ -5474,7 +5474,8 @@ class Coordinator:
             return False
         tool = match.group(1).lower()
         parts = [part for part in whole.lower().split('/') if tool in part]
-        return bool(re.search(r'\b' + tool + r'\b', workitem_text, re.I)) and not any(
+        # the tool as a word of its own: a model id (claude-opus-5-5, gpt-6-astra) does not name it for paths (v312, v304)
+        return bool(re.search(r'(?<![\w-])' + tool + r'(?![\w-])', workitem_text, re.I)) and not any(
             part.startswith('.') or re.fullmatch(r'claude-\d+', part) for part in parts)
 
     def _introduced_history(self, name: str, content: str, base: Optional[str] = None) -> list[str]:
