@@ -60,7 +60,7 @@ class WriterRollbackTests(unittest.TestCase):
         self.assertFalse((self.workspace / 'writer_note.py').exists())
         self.assertEqual(marker['simplifier']['state'], 'rolled-back:review')
         self.assertTrue(marker['simplifier']['test']['passed'])
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds']), (3, {'start': 1, 'used': 2}))
+        self.assertEqual((state['exec_rounds'], 'writer_replay_rounds' in state), (2, False))   # WI-GATE1 R5: only the author's fix round counts
         after = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > author['sequence']]
         for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('author', 'FINISH')):
             self.assertIn(step, after)
@@ -136,7 +136,7 @@ class WriterRollbackTests(unittest.TestCase):
         for text in (row['id'], row['summary'], delivery['context']):
             self.assertIn(text, prompt)
         self.assertEqual(next(r for r in state['finding_ledger'] if r['id'] == row['id'])['status'], 'fixed')
-        self.assertEqual(state['exec_rounds'], 3)
+        self.assertEqual(state['exec_rounds'], 2)   # WI-GATE1 R5: the replay review used no round
         self.assertFalse(state.get('round_extensions'))
 
     def test_stop_after_gate_route_repair_is_unchanged_by_writer_rollback(self):

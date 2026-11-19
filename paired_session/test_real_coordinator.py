@@ -4025,17 +4025,17 @@ sys.exit(result.returncode)
         exec_verdict = next(row for row in state['review_verdicts'] if row['phase'] == 'EXEC')
         self.assertEqual(exec_verdict['effective_verdict'], 'REVISE')
 
-    def test_nonfinal_exec_minor_revise_keeps_repair_loop(self):
+    def test_a_minor_only_exec_revise_exits_in_the_first_round(self):   # WI-GATE1 S3: no repair loop for advisories
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
                                       '--polish-round', 'off', '--max-exec-rounds', '2',
                                       env={'FAKE_EXEC_MINOR_REVISE': '1'})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
         authors = [row for row in state['turns'] if row['role'] == 'author' and row['phase'] == 'EXEC']
-        self.assertEqual(len(authors), 2)
+        self.assertEqual(len(authors), 1)
         exec_verdicts = [row['effective_verdict'] for row in state['review_verdicts']
                          if row['phase'] == 'EXEC']
-        self.assertEqual(exec_verdicts, ['REVISE', 'APPROVE_WITH_ADVISORY'])
+        self.assertEqual(exec_verdicts, ['APPROVE_WITH_ADVISORY'])
 
     def test_failing_configured_test_prevents_minor_advisory_exit(self):
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',

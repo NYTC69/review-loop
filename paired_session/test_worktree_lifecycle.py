@@ -406,13 +406,13 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                          ('EXEC', 'reviewer') if changed else ('POLISH-Q', 'polish-q'))
         self.assertNotIn('writer_git', co.state['lifecycle'])
 
-    def test_a_finish_write_at_the_exec_round_limit_holds(self):
+    def test_a_finish_write_at_the_exec_round_limit_uses_no_round(self):   # WI-GATE1 R5 (was: ... _holds)
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env={'FAKE_FINISH_WRITE': '1'})
-        self.assertIn('HOLD: EXEC round limit reached after a FINISH write', result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual((state['lifecycle']['stage'], state['lifecycle']['epoch'], state['next']), ('EXEC', 1, 'reviewer'))
-        self.assertEqual(state['round_limit_hold']['hold_reason'], 'EXEC round limit reached after a FINISH write')
-        self.assertIn(state['round_limit_hold']['hold_reason'], rc.ROUND_LIMIT_REASONS)   # _override_tree knows it (W accept: W3b)
+        self.assertEqual((state['exec_rounds'], state['lifecycle']['epoch']), (1, 1))
+        self.assertNotIn('round_limit_hold', state)
+        self.assertIn('EXEC round limit reached after a FINISH write', rc.ROUND_LIMIT_REASONS)   # a v3.8.x HOLD is still known
 
     def test_a_crash_after_a_git_guard_violation_never_reuses_that_finish_turn(self):
         co = rc.Coordinator(self.args())
@@ -615,11 +615,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         with mock.patch.object(co, 'author_turn', side_effect=AssertionError('author wrote')), \
                 self.assertRaisesRegex(RuntimeError, 'the POLISH-Q fix needs at least 3 more invocations'):
             co.worktree_polish_fix_turn()
-        co.state['exec_rounds'] = co.exec_round_limit()
-        with mock.patch.object(co, 'author_turn', side_effect=AssertionError('author wrote')):
+        co.args.max_invocations = co.state['invocations_used'] + 25
+        co.state['exec_rounds'] = co.exec_round_limit()   # WI-GATE1 R5: the POLISH-Q fix uses no EXEC round, so it writes
+        with mock.patch.object(co, 'author_turn') as author:
             co.worktree_polish_fix_turn()
-        self.assertEqual((co.state['status'], co.state['round_limit_hold']['hold_reason']),
-                         ('HOLD', 'EXEC round limit reached'))
+        author.assert_called_once()
+        self.assertNotIn('round_limit_hold', co.state)
 
     def test_a_fix_author_that_stopped_before_routing_still_goes_to_the_owners(self):
         co = rc.Coordinator(self.args())
@@ -1330,7 +1331,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         co.state['status'] = 'ACTIVE'
         co.worktree_security_turn()   # resume: the changed tree is reviewed and gated again
         self.assertEqual((co.state['next'], co.state['gate_ran'], co.state['exec_rounds'], co.state['lifecycle']['stage'],
-                          co.state['lifecycle']['epoch']), ('reviewer', False, rounds + 1, 'EXEC', 1))
+                          co.state['lifecycle']['epoch']), ('reviewer', False, rounds, 'EXEC', 1))   # WI-GATE1 R5: no round
 
     def test_security_preflight_fails_closed(self):
         co, _ = self.at_security()

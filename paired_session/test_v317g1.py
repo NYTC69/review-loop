@@ -268,35 +268,31 @@ class TextTests(unittest.TestCase):
         co.state['exec_rounds'] = 1
         return co
 
-    def test_the_advisory_only_repair_attempt_says_so_and_gives_each_open_row_with_its_summary(self):
+    def test_an_advisory_only_revise_is_an_approval_without_a_repair_attempt(self):
+        # WI-GATE1 S3 (owner Q2): the V317 advisory-only repair round is gone; such a REVISE is APPROVE_WITH_ADVISORY at once
         for own in ('MINOR', None):   # a finding of its own, or only an earlier row left open
             with self.subTest(own=own):
                 self.run_dir = self.root / ('repair-' + str(own))
                 co = self.exec_run()
                 [row] = co.record_findings('adversarial-gate', 'EXEC', 1, [
                     {'severity': 'LOW', 'file': 'tracked.txt', 'summary': 'simplify the helper', 'failure_scenario': 'reads oddly'}])
-                first = self.record_review(co, 'EXEC', own)
+                self.record_review(co, 'EXEC', own)
                 co.reviewer_turn()
-                self.assertEqual((co.state['next'], co.state['advisory_repair_attempts']), ('author', {'EXEC': first}))
-                delivered = json.loads(co.state['delivered_review'])
-                self.assertIs(delivered['advisory_only'], True)
-                self.assertEqual([r.get('summary') for r in delivered['findings']], ['advisory note'] if own else [])
-                self.assertEqual(delivered['prior_findings'], [{'id': row['id'], 'fixed': False, 'evidence': 'not addressed',
-                                                                'summary': 'simplify the helper'}])
-                prompt = co._author_prompt()
-                self.assertIn(ADVISORY_TASK, prompt)
-                self.assertNotIn('blocking finding', prompt)
+                self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+                self.assertEqual(co.state['status'], 'DONE')
+                self.assertNotIn('advisory_repair_attempts', co.state)
+                self.assertIn(row['id'], [entry.get('id') for entry in co.state['backlog']])
 
     def test_every_other_revise_keeps_its_delivered_review_and_author_prompt(self):
         blocker = {'id': 'F002', 'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'advisory note',
                    'failure_scenario': 'small detail', 'source': 'persistent-reviewer'}
         for name, severity, changes, findings in (('blocking', 'MAJOR', {}, [blocker]),
-                                                  ('attempt-used', None, {'reviewed_snapshot': '0' * 40}, [])):
+                                                  ('stale-tree', None, {'reviewed_snapshot': '0' * 40}, [])):
             with self.subTest(name=name):
                 self.run_dir = self.root / name
                 co = self.exec_run()
-                self.record_review(co, 'EXEC', 'MINOR')
-                co.reviewer_turn()   # the one advisory-only repair attempt
+                co.record_findings('persistent-reviewer', 'EXEC', 0, [   # WI-GATE1: an open non-blocking row, F001
+                    {'severity': 'MINOR', 'file': 'tracked.txt', 'summary': 'advisory note', 'failure_scenario': 'small detail'}])
                 co.state['exec_rounds'] = 2
                 self.record_review(co, 'EXEC', severity, **changes)
                 co.reviewer_turn()

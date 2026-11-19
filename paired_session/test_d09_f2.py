@@ -1,5 +1,5 @@
 """D09-F2 (the D09-F gate's MINORs and NIT): the F1 count also counts a test file the writer newly touched in the leg's
-input tree; an open writer replay keeps the ordinary rounds that are left; a by-path review rollback keeps the captured
+input tree; a writer replay uses no EXEC round (WI-GATE1 R5); a by-path review rollback keeps the captured
 permission bits."""
 import os
 from pathlib import Path
@@ -39,23 +39,11 @@ class D09F2Tests(unittest.TestCase):
         leg.pop('detail')
         self.assertFalse(co._test_cases_dropped(leg))   # touching a file without dropping a case is fine
 
-    def test_an_open_replay_keeps_the_ordinary_rounds_left(self):   # MINOR 2
+    def test_a_writer_replay_uses_no_round_so_the_limit_stays_ordinary(self):   # MINOR 2, replaced by WI-GATE1 R5
         co = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--max-exec-rounds', '4')[2:]))
-        co.state.update(exec_rounds=3, writer_replay_rounds={'start': 1, 'used': None})
-        self.assertEqual(co.exec_round_limit(), 4)   # max(1 + 2, 4): a FINISH write at round 4 does not HOLD
-        co.state.update(exec_rounds=5, writer_replay_rounds={'start': 4, 'used': None})
-        self.assertEqual(co.exec_round_limit(), 6)   # at the ordinary limit the replay's own two rounds still apply
-        co._close_writer_replay_rounds()
-        self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (1, 5))   # frozen as before
-        # no double credit: a replay that ran past start + 2 on ordinary rounds (max 4, start 1: replay 2, fix 3, then an
-        # ordinary round 4) freezes only its own 2; the limit is ordinary + 2 and the room left is the ordinary room left
-        co.state.update(exec_rounds=4, writer_replay_rounds={'start': 1, 'used': None})
-        self.assertEqual(co.exec_round_limit(), 4)
-        co._close_writer_replay_rounds()
-        ordinary_used = co.state['exec_rounds'] - co.state['writer_replay_rounds']['used']   # rounds 1 and 4
-        self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (2, 6))
-        self.assertEqual(co.exec_round_limit() - co.state['exec_rounds'], 4 - ordinary_used)   # 2 ordinary rounds left
-        self.assertLessEqual(co.exec_round_limit(), 4 + 2)
+        for rounds, replay in ((3, {'start': 1, 'used': None}), (5, {'start': 4, 'used': None}), (4, {'start': 1, 'used': 2})):
+            co.state.update(exec_rounds=rounds, writer_replay_rounds=replay)   # a v3.8.x state: the record is ignored
+            self.assertEqual(co.exec_round_limit(), 4)
 
     def test_a_by_path_review_rollback_keeps_the_captured_mode(self):   # NIT
         co = self.coordinator_with_change()

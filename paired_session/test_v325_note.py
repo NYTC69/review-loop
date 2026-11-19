@@ -139,14 +139,16 @@ class QueuedNoteTests(unittest.TestCase):
         self.assertFalse(any(t.get('operator_note_id') for t in state['turns']))   # no turn received it
 
     def test_a_note_at_the_exec_round_limit_hold_is_queued_and_delivered_after_add_rounds(self):
-        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env={'FAKE_FINISH_WRITE': '1'})
-        self.assertIn('HOLD: EXEC round limit reached after a FINISH write', held.stdout, held.stdout + held.stderr)
-        noted = self.run_operator_action('note', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--text', 'Prefer the smaller fix.')
+        # WI-GATE1 R5: a FINISH write no longer reaches the cap, so the R1 HOLD of a first-round REVISE stands in for it
+        flags = ('--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--exercise-revisions')
+        held = self.run_coordinator(*flags)
+        self.assertIn('HOLD: EXEC round limit reached', held.stdout, held.stdout + held.stderr)
+        noted = self.run_operator_action('note', *flags, '--text', 'Prefer the smaller fix.')
         self.assertEqual(noted.returncode, 0, noted.stdout + noted.stderr)
         self.assertIn('after resume --add-rounds N at this EXEC round-limit HOLD', noted.stdout)
-        done = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--add-rounds', '1')
+        done = self.run_operator_action('resume', *flags, '--add-rounds', '1')
         self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
-        self.assert_delivered_to('FINISH', 'Prefer the smaller fix.')   # the reviewer and gate approved, so the finisher got it
+        self.assert_delivered_to('EXEC', 'Prefer the smaller fix.')   # the fix round's author got it
 
     def test_a_polish_q_wait_queues_the_note_and_a_writer_turn_receives_it(self):
         co = self.coordinator('--lifecycle-mode', 'on')

@@ -242,7 +242,7 @@ class HoldExitTests(unittest.TestCase):
 
     def test_a_tree_the_gate_rejected_is_reviewed_not_gated_again_after_its_repair(self):
         for mode in (OFF, ON):
-            for limit in (False, True):   # a round still left, or the gate FAIL at the round limit (WI-GATE1 Q3: one extra round)
+            for limit in (False, True):   # a round still left, or the gate FAIL at the round limit (WI-GATE1 R2: its fix rounds)
                 with self.subTest(mode=mode[1], at_limit=limit):
                     self.run_dir = self.root / f'gate-repair-{mode[1]}-{limit}'
                     rounds = ('--max-exec-rounds', '1') if limit else ()
@@ -255,7 +255,7 @@ class HoldExitTests(unittest.TestCase):
                               if turn['sequence'] > gate['sequence'] and turn['phase'] == 'EXEC']
                     self.assertEqual([turn for turn in repair if turn[0] != 'shadow'],
                                      [('author', 'EXEC'), ('reviewer', 'EXEC')])
-                    self.assertIs(bool(state.get('gate_extra_round')), limit)
+                    self.assertEqual(state['gate_fail_round']['round'], 1)   # WI-GATE1 R2: the fix round, at the cap or not
                     if mode is OFF:
                         self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
                     blocker = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate'

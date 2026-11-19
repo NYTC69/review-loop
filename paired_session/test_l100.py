@@ -65,10 +65,11 @@ class AddRoundsTests(unittest.TestCase):
         return before, state, after
 
     def test_a_w_gate_hold_goes_to_the_fix_author_and_the_gate_does_not_run_again(self):
-        # WI-GATE1 Q3: the FAIL at the cap got one extra round; its REVISE holds, the extension goes to the fix author
+        # WI-GATE1 R2: the FAIL got its two post-gate fix rounds; the REVISE holds with the split advice, and the
+        # extension goes to the fix author
         before, state, after = self.w_hold_then_continue({'FAKE_GATE_BLOCK': '1', 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'},
-                                                         'EXEC round limit reached after adversarial gate', {'FAKE_GATE_BLOCK': '1'})
-        self.assertEqual(before['next'], 'reviewer')
+                                                         rc.GATE_SPLIT_REASON, {'FAKE_GATE_BLOCK': '1'})
+        self.assertEqual((before['next'], before['exec_rounds']), ('reviewer', 3))
         roles = [(turn['role'], turn['phase']) for turn in after]
         self.assertIn(('author', 'EXEC'), roles)
         self.assertNotIn(('gate', 'EXEC'), roles)   # fixed and reviewed; the gate ran once
@@ -76,17 +77,16 @@ class AddRoundsTests(unittest.TestCase):
         prompt = self.run_dir / 'evidence' / f"{after[0]['sequence']:03d}-exec-author.prompt.txt"
         self.assertIn(gate_row['id'], prompt.read_text())
 
-    def test_a_w_polish_fix_hold_keeps_its_fix_turn(self):
-        before, state, after = self.w_hold_then_continue(
-            {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')},
-            'EXEC round limit reached')
-        self.assertEqual(before['next'], 'polish-fix')   # the HOLD stopped before the POLISH-Q fix author
+    def test_a_w_polish_fix_at_the_exec_cap_uses_no_round(self):
+        # WI-GATE1 R5: a POLISH-Q fix is no EXEC round, so the cap no longer holds it (before: 'EXEC round limit reached')
+        flags = ('--max-exec-rounds', '1', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        done = self.run_coordinator(*flags, env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer',
+                                                 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')})
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        state = self.state()
         [finding] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
-        self.assertEqual(finding['status'], 'fixed')
-        prompt = (self.run_dir / 'evidence' / f"{after[0]['sequence']:03d}-{after[0]['phase'].lower()}-author.prompt.txt").read_text()
-        self.assertNotIn('round-limit-extension', prompt)   # the fix leg's own delivered blockers, not a redirected author turn
-        self.assertIn(finding['id'], prompt)
-        self.assertNotIn(('gate', 'EXEC'), [(turn['role'], turn['phase']) for turn in after])   # WI-GATE1: EXEC review only
+        self.assertEqual((finding['status'], state['exec_rounds']), ('fixed', 1))
+        self.assertEqual(len([turn for turn in state['turns'] if turn['role'] == 'gate']), 1)   # WI-GATE1: EXEC review only
 
     def test_report_mode_refuses_and_changes_nothing(self):
         co = self.coordinator('--max-exec-rounds', '1')
@@ -143,20 +143,17 @@ class AddRoundsTests(unittest.TestCase):
                 self.assertEqual(row['id'] in co.state['delivered_review'], expected == 'author')
         self.assertEqual(co.exec_round_limit(), 5)   # 1 + 2 + 2
 
-    def test_the_limits_count_an_extension_once_next_to_the_writer_replay(self):
+    def test_the_limits_count_an_extension_once_and_a_writer_replay_not_at_all(self):
         use_lifecycle_on(self, self)
         co = self.coordinator('--max-exec-rounds', '1', '--max-plan-rounds', '2')
         co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2}, {'phase': 'PLAN', 'n': 3}]
         self.assertEqual((co.exec_round_limit(), co.plan_round_limit()), (3, 5))
-        co.state['writer_replay_rounds'] = {'start': 3, 'used': None}   # open replay: max(start + 2, ordinary - ext) + ext
-        self.assertEqual(co.exec_round_limit(), 7)
-        co.state['writer_replay_rounds']['start'] = 1   # gate LOW 1: start=1, ordinary=1, ext=1 -> 4, not swallowed by the max
-        co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 1}]
+        co.state['writer_replay_rounds'] = {'start': 3, 'used': 2}   # WI-GATE1 R5: a replay (saved by v3.8.x) adds no round
+        self.assertEqual(co.exec_round_limit(), 3)
+        co.state['gate_fail_round'] = {'round': 1, 'extra': 2, 'sequence': 7}   # R2: the FAIL round + 2, later grants on top
+        self.assertEqual(co.exec_round_limit(), 3)
+        co.state['round_extensions'].append({'phase': 'EXEC', 'n': 1})
         self.assertEqual(co.exec_round_limit(), 4)
-        co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2}, {'phase': 'PLAN', 'n': 3}]
-        co.state['writer_replay_rounds']['start'] = 3
-        co.state['writer_replay_rounds']['used'] = 2   # frozen at DOCS: ordinary + used
-        self.assertEqual(co.exec_round_limit(), 5)
         self.assertEqual(co._config()['max_exec_rounds'], 1)   # the resume comparison sees the saved cap only
 
 

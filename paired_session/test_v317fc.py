@@ -19,31 +19,17 @@ class ResumeAccountingTests(unittest.TestCase):
     def assert_done(self, result):
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
 
-    def stage_limit(self, stage, env):
-        flags = (*ON, '--max-exec-rounds', '1')
-        held = self.run_coordinator(*flags, env=env)
-        reason = 'EXEC round limit reached after a ' + stage + ' write'
-        self.assertIn('HOLD: ' + reason, held.stdout, held.stdout + held.stderr)
-        before = self.state()
-        self.assertEqual((before['exec_rounds'], before['next']), (2, 'reviewer'))
-        resumed = self.run_operator_action('resume', *flags, env=env)
-        self.assertIn('HOLD: ' + reason, resumed.stdout, resumed.stdout + resumed.stderr)
-        self.assertIn('NEXT: resume --add-rounds N', resumed.stdout)
-        after = self.state()
-        for key in ('sequence', 'turns', 'round_limit_hold', 'lifecycle'):
-            self.assertEqual(after[key], before[key])
-        self.assertFalse(after.get('round_extensions'))
-        self.assert_done(self.run_operator_action('resume', *flags, '--add-rounds', '1', env=env))
-        done = self.state()
-        self.assertEqual((done['exec_rounds'], done['config']['max_exec_rounds']), (2, 1))
-        self.assertEqual([(r['phase'], r['n']) for r in done['round_extensions']], [('EXEC', 1)])
-        later = [(t['role'], t['phase']) for t in done['turns'] if t['sequence'] > before['sequence']]
+    def test_a_finish_write_at_the_limit_uses_no_exec_round(self):
+        # WI-GATE1 R5: a FINISH write is reviewed (reviewer + shadow, no gate) without an EXEC round, so it no longer holds
+        # with 'EXEC round limit reached after a FINISH write'
+        self.assert_done(self.run_coordinator(*ON, '--max-exec-rounds', '1', env={'FAKE_FINISH_WRITE': '1'}))
+        state = self.state()
+        self.assertEqual(state['exec_rounds'], 1)
+        finish = next(r for r in state['lifecycle']['receipts'] if r['stage'] == 'FINISH')
+        later = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > finish['sequence']]
         self.assertIn(('reviewer', 'EXEC'), later)
         self.assertIn(('shadow', 'EXEC'), later)
         self.assertNotIn(('gate', 'EXEC'), later)   # WI-GATE1: the gate ran once
-
-    def test_finish_over_limit_plain_resume_holds_then_extension_continues(self):
-        self.stage_limit('FINISH', {'FAKE_FINISH_WRITE': '1'})
 
     def test_a_docs_code_write_at_the_limit_is_rolled_back_without_an_exec_round(self):
         # WI-GATE1: DOCS never reopens EXEC, so a DOCS code write no longer uses an EXEC round or holds at the limit

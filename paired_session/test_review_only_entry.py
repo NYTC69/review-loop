@@ -396,7 +396,9 @@ class ReviewOnlyEntryTests(unittest.TestCase):
         accepted = self.run_operator_action('accept', *self.W, '--exercise-revisions')
         self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
         manifest = sorted(path for path, value in self.state()['approved_manifest'] if value != 'missing')
-        self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'HEAD').splitlines(), manifest)
+        # WI-GATE1 S3 (owner Q1): the open non-blocking rows (the exercise's MINOR) ride in the accepted commit's BACKLOG.md
+        self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'HEAD').splitlines(), sorted([*manifest, 'BACKLOG.md']))
+        self.assertIn('(review-loop run', self.git('show', 'HEAD:BACKLOG.md'))
         self.assertIn('raise TypeError', self.git('show', 'HEAD:sum_ints.py'))   # the author's fix is delivered
         self.assertEqual(self.git('status', '--porcelain'), '')
 

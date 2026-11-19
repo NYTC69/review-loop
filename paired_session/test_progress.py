@@ -70,12 +70,13 @@ class ProgressTests(unittest.TestCase):
 
     def test_quiet_progress_drops_the_event_lines_but_not_the_final_line_or_the_jsonl(self):
         loud = self.run_coordinator(*FLAGS)
-        loud_final = [line for line in loud.stdout.splitlines() if not LIVE.match(line)]
+        loud_final = [line.replace(str(self.run_dir), 'RUN') for line in loud.stdout.splitlines() if not LIVE.match(line)]
         self.run_dir = self.root / 'quiet'
         quiet = self.run_coordinator(*FLAGS, '--quiet-progress')
         self.assertEqual(quiet.returncode, 0, quiet.stdout + quiet.stderr)
         self.assertFalse([line for line in quiet.stdout.splitlines() if LIVE.match(line)])
-        self.assertEqual(quiet.stdout.splitlines(), loud_final)
+        # WI-GATE1 S3: the run-backlog NOTE names each run's own directory
+        self.assertEqual([line.replace(str(self.run_dir), 'RUN') for line in quiet.stdout.splitlines()], loud_final)
         self.assertEqual(self.rows()[-1]['kind'], 'terminal')
 
     def test_a_progress_write_failure_changes_nothing_but_one_warning(self):

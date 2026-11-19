@@ -50,7 +50,7 @@ class D09C1b3Tests(unittest.TestCase):
         self.assertEqual((simplifier['state'], simplifier['test']['passed'], simplifier['test']['command']),
                          ('wrote', True, 'python3 -m unittest'))
         self.assertTrue(Path(simplifier['test']['log']).is_file())
-        self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 2))   # the replay ran
+        self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 1))   # the replay ran (WI-GATE1 R5: no EXEC round)
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
         self.assertEqual(state['invocations_used'], len([t for t in state['turns'] if t.get('invocation_budget_counted') is not False]))
 

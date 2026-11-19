@@ -302,23 +302,15 @@ class WithdrawalTests(unittest.TestCase):
                     self.assertEqual(other['status_history'], other_history)
                     self.assertEqual(withdrawn['status_history'], history)
 
-    def test_withdraw_at_a_round_limit_hold_after_a_finish_write_names_add_rounds(self):
-        # V317-G2 (B): the FINISH write used the next EXEC round (exec_rounds 2 > limit 1); plain resume keeps the HOLD
+    def test_a_finish_write_at_the_round_limit_reaches_done_without_a_withdrawal(self):
+        # V317-G2 (B) pinned a HOLD here; WI-GATE1 R5: the FINISH write uses no EXEC round, so nothing holds or needs --add-rounds
         flags = ('--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--max-invocations', '80')
         env = {'FAKE_FINISH_WRITE': '1', 'FAKE_EXEC_APPROVE_MINOR': '1'}   # WI-GATE1: the open row is a reviewer MINOR
-        held = self.run_coordinator(*flags, env=env)
-        self.assertIn('HOLD: EXEC round limit reached after a FINISH write', held.stdout, held.stdout + held.stderr)
+        done = self.run_coordinator(*flags, env=env)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
         state = self.state()
-        self.assertEqual(state['exec_rounds'], 2)
-        ids = [row['id'] for row in state['finding_ledger'] if row['status'] == 'open']
-        self.assertTrue(ids)
-        self.cli_withdraw(ids[:1], *flags, over_limit=True)
-        before = self.state()
-        plain = self.run_operator_action('resume', *flags, env=env)
-        self.assertIn('HOLD: EXEC round limit reached after a FINISH write', plain.stdout, plain.stdout + plain.stderr)
-        self.assertEqual(self.state()['turns'], before['turns'])   # no turn: the step the NEXT no longer names
-        extended = self.run_operator_action('resume', *flags, '--add-rounds', '1', env=env)
-        self.assertIn(DONE, extended.stdout, extended.stdout + extended.stderr)
+        self.assertEqual(state['exec_rounds'], 1)
+        self.assertFalse(state.get('round_extensions'))
 
     @mock.patch.dict(os.environ, {'FAKE_AUTHOR_WRITE_NEW_TREE': ''})  # AUTH names are frozen from the first turn
     def test_field_case_send_back_still_open_withdraw_resume_done_both_routes(self):

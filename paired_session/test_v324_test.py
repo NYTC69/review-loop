@@ -1,6 +1,6 @@
-"""V324-TEST: a persistent EXEC approval over its own completed failing test returns to the author."""
+"""V324-TEST: a persistent EXEC approval over its own completed failing test; WI-GATE1 R5: it HOLDs for attach-verification
+without using an EXEC round (before: it returned to the author)."""
 import hashlib
-import json
 import os
 import types
 import unittest
@@ -37,26 +37,25 @@ class FailedTestApprovalTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_REVIEW_TEST_FAILURE': '1'}):
             co.reviewer_turn()
 
-    def test_completed_failed_approval_delivers_blocker_to_next_author(self):
+    def test_completed_failed_approval_holds_for_attach_verification_without_a_round(self):
+        # WI-GATE1 R5: an APPROVE turned into REVISE only by the configured test failing in the reviewer's sandbox uses no
+        # EXEC round and HOLDs at once for attach-verification (before: a REVISE delivered to the next author)
         co = self.coordinator()
         self.failing_review(co)
-        self.assertEqual((co.state['status'], co.state['phase'], co.state['next']),
-                         ('ACTIVE', 'EXEC', 'author'))
+        self.assertEqual((co.state['status'], co.state['phase'], co.state['next'], co.state['hold_reason']),
+                         ('HOLD', 'EXEC', 'reviewer', rc.TEST_EVIDENCE_HOLD))
+        self.assertEqual(co.state['exec_rounds'], 1)
         [row] = co.blocking_open_findings()
-        self.assertEqual((row['source'], row['severity'], row['status']), ('test-failure', 'MAJOR', 'open'))
+        self.assertEqual((row['source'], row['severity'], row['status'], row['category']),
+                         ('test-failure', 'MAJOR', 'open', 'correctness'))
         self.assertIn('exit status 1', row['summary'])
         self.assertIn('FAILED fake test', row['failure_scenario'])
-        delivered = json.loads(co.state['delivered_review'])
-        self.assertEqual(delivered['status'], 'REVISE')
-        self.assertEqual(delivered['findings'][0]['source'], 'test-failure')
-        self.assertEqual(delivered['findings'][0]['id'], row['id'])
-        self.assertIn(row['summary'], co._author_prompt())
         self.assertEqual(co.state['turns'][-1]['answer']['status'], 'APPROVE')
 
-    def test_persistent_failure_returns_to_author_before_shadow_dispatch(self):
+    def test_persistent_failure_holds_before_shadow_dispatch(self):   # WI-GATE1 R5 (before: returned to the author)
         co = self.coordinator('--shadow', 'on')
         self.failing_review(co)
-        self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'author'))
+        self.assertEqual((co.state['status'], co.state['next']), ('HOLD', 'reviewer'))
         self.assertEqual([turn['role'] for turn in co.state['turns']], ['author', 'reviewer'])
         self.assertEqual(co.blocking_open_findings()[0]['source'], 'test-failure')
 
@@ -66,6 +65,7 @@ class FailedTestApprovalTests(unittest.TestCase):
                 co = self.coordinator('--adversarial-gate', gate)
                 self.failing_review(co)
                 [row] = co.blocking_open_findings()
+                co.state.update(status='ACTIVE', hold_reason='')   # WI-GATE1 R5: the operator fixed it and resumed
                 co.author_turn()
                 self.assertEqual(co.state['exec_rounds'], 2)
                 invoke = co.invoke
@@ -191,7 +191,7 @@ class FailedTestApprovalTests(unittest.TestCase):
                 self.failing_review(co)
                 [row] = co.blocking_open_findings()
                 self.assertEqual((row['source'], row['severity']), ('test-failure', 'MAJOR'))
-                self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'author'))
+                self.assertEqual((co.state['status'], co.state['next']), ('HOLD', 'reviewer'))   # WI-GATE1 R5
                 self.assertNotIn('operator_test_evidence', self.receipt(co, 'reviewer'))
 
     def test_shadow_and_gate_failed_approvals_pass_with_current_record(self):
@@ -278,16 +278,14 @@ class FailedTestApprovalTests(unittest.TestCase):
         co.state['config']['review_report'] = True
         self.assertIsNone(co._operator_test_record(rc.git_snapshot(self.workspace)[0]))
 
-    def test_last_round_uses_normal_round_limit_hold(self):
+    def test_last_round_holds_for_attach_verification_not_the_round_limit(self):
+        # WI-GATE1 R5: the same test-evidence HOLD at the last round; it is no round-limit HOLD (no round was used)
         co = self.coordinator('--max-exec-rounds', '1')
         self.failing_review(co)
-        self.assertEqual(co.state['status'], 'HOLD')
-        self.assertEqual(co.state['hold_reason'], 'EXEC round limit reached')
-        self.assertEqual(co.state['round_limit_hold']['hold_reason'], 'EXEC round limit reached')
+        self.assertEqual((co.state['status'], co.state['hold_reason']), ('HOLD', rc.TEST_EVIDENCE_HOLD))
+        self.assertNotIn('round_limit_hold', co.state)
         self.assertEqual(co.blocking_open_findings()[0]['source'], 'test-failure')
-        self.assertEqual(co.note('Repair the failing tests.', None), 'N001')   # v3.7.2: queued (was refused) for after add-rounds
-        self.assertIn('after resume --add-rounds N at this EXEC round-limit HOLD', co.state['operator_notes'][0]['deliver_to'])
-        self.assertTrue(co.at_round_limit_hold())                               # the HOLD and its exits are unchanged
+        self.assertFalse(co.at_round_limit_hold())
 
     def test_failure_detection_excludes_timeout_and_zero_exit_failure_text(self):
         command = 'python3 -m unittest'

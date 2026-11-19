@@ -67,7 +67,7 @@ class WriterReplayAdvisoryTests(unittest.TestCase):
         self.assertEqual(writer['state'], 'wrote')
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
         self.assertEqual(rc.git_snapshot(self.workspace)[0], writer['output_oid'])
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds']), (2, {'start': 1, 'used': 1}))
+        self.assertEqual((state['exec_rounds'], 'writer_replay_rounds' in state), (1, False))   # WI-GATE1 R5: writer replays and rollbacks use no EXEC round
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
         self.assertEqual(state['review_verdicts'][-1]['reviewer_raw_verdict'], 'REVISE')
         rows = [r for r in state['finding_ledger'] if r['status'] == 'open']
@@ -110,8 +110,8 @@ class WriterReplayAdvisoryTests(unittest.TestCase):
                          ('wrote', 'rolled-back:review'))
         self.assertTrue(kept.is_file())
         self.assertFalse(reverted.exists())
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds'], state['config']['max_exec_rounds']),
-                         (3, {'start': 1, 'used': 2}, 4))   # ordinary room remains on the second replay review
+        self.assertEqual((state['exec_rounds'], 'writer_replay_rounds' in state, state['config']['max_exec_rounds']),
+                         (1, False, 3))   # WI-GATE1 R5: writer replays and rollbacks use no EXEC round
         self.assertEqual([(r['reviewer_raw_verdict'], r['effective_verdict']) for r in state['review_verdicts']
                           if r['phase'] == 'EXEC'],
                          [('APPROVE', 'APPROVE'), ('REVISE', 'REVISE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
@@ -137,7 +137,7 @@ class WriterReplayAdvisoryTests(unittest.TestCase):
         self.assertFalse((self.workspace / 'writer_note.py').exists())
         self.assertEqual(rc.git_snapshot(self.workspace)[0], base)
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds']), (2, {'start': 1, 'used': 1}))
+        self.assertEqual((state['exec_rounds'], 'writer_replay_rounds' in state), (1, False))   # WI-GATE1 R5: writer replays and rollbacks use no EXEC round
         self.assertTrue(all(r['status'] == 'withdrawn' for r in state['finding_ledger']))
 
     def test_major_replay_finding_rolls_back(self):

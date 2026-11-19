@@ -83,16 +83,15 @@ class RoundLimitStillOpenTests(unittest.TestCase):
                 done = self.gate_shaped(*route, '--max-exec-rounds', '4')
                 self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
                 state = self.state()
-                self.assertEqual(self.exec_verdicts(state), [('APPROVE', 'APPROVE'), ('REVISE', 'REVISE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
+                # WI-GATE1 S3: the first advisory-only REVISE (after the gate repair) exits at once, no repair round
+                self.assertEqual(self.exec_verdicts(state), [('APPROVE', 'APPROVE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
                 authors = [turn['sequence'] for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC']
-                self.assertEqual((len(authors), state['exec_rounds']), (3, 3))   # first advisory REVISE repairs; second exits before the cap (V317-ONCE)
-                row = self.assert_exit(state, 'MINOR')
-                prompt = (self.run_dir / 'evidence' / f'{authors[2]:03d}-exec-author.prompt.txt').read_text()
-                self.assertIn(json.dumps({'id': row['id'], 'fixed': False, 'evidence': 'fake: not addressed'})[1:-1], prompt)
+                self.assertEqual((len(authors), state['exec_rounds']), (2, 2))
+                self.assert_exit(state, 'MINOR')
 
-    def test_a_gate_high_still_open_at_the_last_round_holds(self):
+    def test_a_gate_high_still_open_at_the_last_round_holds(self):   # WI-GATE1 R2: after the two post-gate fix rounds
         held = self.gate_shaped(*OFF, '--max-exec-rounds', '2', keep='reject bool')
-        self.assertEqual(held.stdout.strip().splitlines()[-1], 'HOLD: ' + LIMIT, held.stdout + held.stderr)
+        self.assertEqual(held.stdout.strip().splitlines()[-1], 'HOLD: ' + rc.GATE_SPLIT_REASON, held.stdout + held.stderr)
         state = self.state()
         self.assertEqual(self.exec_verdicts(state)[-1], ('REVISE', 'REVISE'))
         self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
@@ -251,7 +250,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
             self.assertTrue(co._writer_review_rollback('reviewer', 3))
             self.assertTrue(co.state['lifecycle']['writer_replay']['partial'])
             self.assertFalse((self.workspace / 'simplifier.py').exists())
-            self.assertEqual(co.state['exec_rounds'], co.exec_round_limit())
+            self.assertEqual(co.state['exec_rounds'], 0)   # WI-GATE1 R5: a writer replay and rollback use no EXEC round
         co = self.review('writer-second', [('adversarial-gate', 'LOW')], limit=1,
                          flags=('--lifecycle-mode', 'on'), prepare=partial_rollback, run=False)
         co.reviewer_turn()   # replay requires the fake shadow even with --shadow off
@@ -260,7 +259,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         marker = co.state['lifecycle']['quality_writers']
         self.assertEqual((marker['simplifier']['state'], marker['test-writer']['state']), ('rolled-back:review', 'wrote'))
         self.assertEqual((self.workspace / 'test_writer.py').read_text(), '# kept writer edit\n')
-        self.assertEqual(co.state['exec_rounds'], co.exec_round_limit())
+        self.assertEqual(co.state['exec_rounds'], 2)   # as the recorded review set it: the replay review adds none
 
     def assert_held(self, state):
         self.assertEqual((state['status'], state['hold_reason']), ('HOLD', LIMIT))
@@ -293,10 +292,10 @@ class RoundLimitStillOpenTests(unittest.TestCase):
             with self.subTest(change=name):
                 self.assert_held(self.review(name, rows, **change))
 
-    def test_a_round_left_or_no_row_still_open_changes_nothing(self):
-        state = self.review('round-left', [('adversarial-gate', 'low')], rounds=1)
-        self.assertEqual((state['status'], state['next'], state['review_verdicts'][-1]['effective_verdict']), ('ACTIVE', 'author', 'REVISE'))
-        self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
+    def test_a_round_left_also_exits_and_no_row_still_open_changes_nothing(self):
+        state = self.review('round-left', [('adversarial-gate', 'low')], rounds=1)   # WI-GATE1 S3: exits in any round
+        self.assertEqual((state['status'], state['review_verdicts'][-1]['effective_verdict']), ('DONE', 'APPROVE_WITH_ADVISORY'))
+        self.assertTrue(all(row.get('advisory') for row in state['finding_ledger']))
         self.assert_held(self.review('nothing-open', []))   # a REVISE without a finding and without an open row: no exit
 
 

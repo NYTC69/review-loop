@@ -1,6 +1,6 @@
 """D09-F (owner decisions 2026-10-06, after the ws25/ws26 review-only field runs):
 F1 the test writer must not remove test cases (a lower count of test functions in the changed test files is a failed
-local test); F3 the writer replay round and its one fix round have their own budget, not --max-exec-rounds; F2 when
+local test); F3 the writer replay round and its one fix round have their own budget, not --max-exec-rounds (WI-GATE1 R5: no round at all); F2 when
 the two writers changed disjoint files and the replay's blocking findings name one of them, only that writer is rolled
 back and the other is reviewed again in the replay's fix round."""
 import json
@@ -59,30 +59,17 @@ class D09FTests(unittest.TestCase):
         state, marker, base = self.run_writers('--max-exec-rounds', '1', FAKE_WRITER_WRITE='simplifier',
                                                FAKE_WRITER_FILE='writer_note.py')
         self.assertEqual((marker['simplifier']['state'], marker['test-writer']['state']), ('wrote', 'no-op'))
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds']), (2, {'start': 1, 'used': 1}))
+        self.assertEqual(state['exec_rounds'], 1)   # WI-GATE1 R5: the writer replay uses no EXEC round at all
+        self.assertNotIn('writer_replay_rounds', state)
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
-        report = rc.worktree_lifecycle.writer_report_lines(state)
-        self.assertIn('- 质量 writer 回放：1 轮（单独计数，不占 --max-exec-rounds）', report)
 
-    def test_the_replay_credit_is_two_while_open_and_what_was_used_after(self):
+    def test_a_writer_replay_leaves_the_exec_limit_unchanged(self):   # WI-GATE1 R5 replaces the F3 replay credit
         co = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--max-exec-rounds', '4')[2:]))
-        self.assertEqual(co.exec_round_limit(), 4)   # an ordinary run: unchanged
-        co.state.update(exec_rounds=5, writer_replay_rounds={'start': 4, 'used': None})
-        self.assertEqual(co.exec_round_limit(), 6)   # the replay round and one fix round
-        co._close_writer_replay_rounds()
-        self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (1, 5))   # no fix round used
-        co.state.update(exec_rounds=6, writer_replay_rounds={'start': 4, 'used': None})
-        co._close_writer_replay_rounds()
-        self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (2, 6))
-        co.state.update(exec_rounds=3, writer_replay_rounds={'start': 1, 'used': None})   # ordinary room left (1 of 4 used)
-        self.assertEqual(co.exec_round_limit(), 4)   # D09-F2 (gate, authorized): max(1 + 2, 4), ordinary rounds stay usable
-        co.state['exec_rounds'] = 4   # a FINISH write after a partial rollback takes an ordinary round: no false HOLD
-        self.assertLessEqual(co.state['exec_rounds'], co.exec_round_limit())
-        co.state['exec_rounds'] = 3
-        co._close_writer_replay_rounds()
-        self.assertEqual((co.state['writer_replay_rounds']['used'], co.exec_round_limit()), (2, 6))   # 1 ordinary + 2 replay
+        self.assertEqual(co.exec_round_limit(), 4)
+        for rounds, replay in ((5, {'start': 4, 'used': None}), (6, {'start': 4, 'used': 2}), (3, {'start': 1, 'used': None})):
+            co.state.update(exec_rounds=rounds, writer_replay_rounds=replay)   # a v3.8.x record is ignored
+            self.assertEqual(co.exec_round_limit(), 4)
 
-    # --- F2 --------------------------------------------------------------------------------------------------------------
     def test_disjoint_writers_roll_back_only_the_one_the_finding_names(self):   # ws26: the simplifier's fixes survive
         flag = str(self.workspace / 'tests' / 'test_extra.py')
         state, marker, base = self.run_writers(FAKE_WRITER_WRITE='simplifier,test-writer',
@@ -93,7 +80,7 @@ class D09FTests(unittest.TestCase):
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
         self.assertFalse(Path(flag).exists())
         self.assertIn('tests/test_extra.py', Path(marker['test-writer']['review_diff']).read_text())
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds']), (3, {'start': 1, 'used': 2}))   # replay + fix
+        self.assertEqual((state['exec_rounds'], 'writer_replay_rounds' in state), (1, False))   # WI-GATE1 R5: writer replays and rollbacks use no EXEC round
         raised = [row for row in state['finding_ledger'] if row['file'] == 'tests/test_extra.py']
         self.assertTrue(raised and all(row['status'] == 'withdrawn' for row in raised))
         reviews = [t for t in state['turns'] if t['role'] == 'reviewer' and t['phase'] == 'EXEC'

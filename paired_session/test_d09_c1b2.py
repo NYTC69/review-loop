@@ -1,6 +1,6 @@
 """D09 C1-b2 (paired_session/docs/d09-cap1-writer-passes.md §2 "Reviewer after a writer" and "One chance in review", §5):
-a kept writer change replays EXEC review, shadow, FINISH and the specialists before DOCS (exec_rounds + 1, like a
-FINISH write; WI-GATE1: no second gate); a non-approval other than eligible advisory REVISE rolls the tree back to base_oid
+a kept writer change replays EXEC review, shadow, FINISH and the specialists before DOCS (WI-GATE1: no EXEC round, like a
+FINISH write; no second gate); a non-approval other than eligible advisory REVISE rolls the tree back to base_oid
 instead of a fix round. New blockers outside writer files take EXEC repair; writer-file and advisory rows are withdrawn.
 A kept change needs a passing local check (C1-b3's executor, test_d09_c1b3.py); these tests drive the run in
 process with `_writer_local_check` patched, so the replay paths are tested apart from the test command."""
@@ -55,7 +55,7 @@ class D09C1b2Tests(unittest.TestCase):
         self.assertEqual(self.stages(state), [('FINISH', 'finisher'), ('POLISH-Q', 'specialists'), ('POLISH-Q', 'simplifier'),
                                               ('POLISH-Q', 'test-writer'), ('FINISH', 'finisher'), ('POLISH-Q', 'specialists'),
                                               ('DOCS', 'docs-writer'), ('SECURITY', 'security')])
-        self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 2))   # one replay epoch, counted like FINISH
+        self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 1))   # one replay epoch; WI-GATE1 R5: no round
         replay = [t for t in state['turns'] if t['sequence'] > marker['test-writer']['sequence']]
         roles = [(t['role'], t['phase']) for t in replay]
         for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('author', 'FINISH')):
@@ -109,7 +109,7 @@ class D09C1b2Tests(unittest.TestCase):
         after = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > max(marker[w]['sequence'] for w in writers)]
         self.assertNotIn(('author', 'EXEC'), after)   # no fix round
         self.assertEqual([row[0] for row in self.stages(state)][-2:], ['DOCS', 'SECURITY'])
-        self.assertEqual(state['exec_rounds'], 2)
+        self.assertEqual(state['exec_rounds'], 1)   # WI-GATE1 R5: the replay and its rollback use no round
         self.assertTrue(Path(marker[writers[0]]['review_diff']).read_text())
         return state
 
@@ -170,18 +170,18 @@ class D09C1b2Tests(unittest.TestCase):
         self.assertEqual((marker['simplifier']['state'], marker['test-writer']['state']), ('wrote', 'wrote'))
         self.assertEqual(marker['test-writer']['input_oid'], marker['simplifier']['output_oid'])
         self.assertNotIn(base, (marker['simplifier']['output_oid'], marker['test-writer']['output_oid']))
-        self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 2))   # one replay epoch for both
+        self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 1))   # one replay epoch for both, no round (R5)
         self.assertEqual((self.workspace / 'writer_note.py').read_text(), '# simplifier edit\n# test-writer edit\n')
 
-    def test_a_review_only_run_with_a_fix_round_and_a_finish_write_counts_every_round(self):   # §5 test 12
+    def test_a_review_only_run_counts_its_review_rounds_but_not_the_finish_write_or_the_replay(self):   # §5 test 12, R5
         self.change()
         (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
         co, status = self.drive(extra=('--exercise-revisions', '--max-exec-rounds', '6', '--max-invocations', '120'),
                                 FAKE_FINISH_WRITE='1', FAKE_WRITER_WRITE='simplifier', FAKE_WRITER_FILE='writer_note.py')
         self.assertEqual(status, 'DONE', co.state.get('hold_reason'))
         state = self.state()
-        # the existing change (1), the exercise fix round (2), the FINISH write (3), the writer replay (4)
-        self.assertEqual((state['exec_rounds'], state['lifecycle']['epoch']), (4, 2))
+        # the existing change (1) and the exercise fix round (2); WI-GATE1 R5: the FINISH write and the writer replay use none
+        self.assertEqual((state['exec_rounds'], state['lifecycle']['epoch']), (2, 2))
         self.assertEqual(state['lifecycle']['quality_writers']['simplifier']['state'], 'wrote')
         self.assertEqual([row[0] for row in self.stages(state)],
                          ['FINISH', 'FINISH', 'POLISH-Q', 'POLISH-Q', 'POLISH-Q', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])

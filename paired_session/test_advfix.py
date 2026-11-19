@@ -92,7 +92,8 @@ class AdvisoryFixRoundTests(unittest.TestCase):
                          ['FINISH', 'POLISH-Q', 'FINISH', 'POLISH-Q', 'POLISH-Q', 'POLISH-Q', 'FINISH', 'POLISH-Q', 'DOCS',
                           'SECURITY'])
         self.assertEqual((state['advisory_fix']['epoch'], state['lifecycle']['epoch']), (1, 2))
-        self.assertEqual((state['exec_rounds'], state['writer_replay_rounds']), (3, {'start': 2, 'used': 1}))
+        self.assertEqual(state['exec_rounds'], 2)   # WI-GATE1 R5: the writer replay uses no EXEC round (before: 3)
+        self.assertNotIn('writer_replay_rounds', state)
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
 
     def test_no_headroom_or_no_findings_skips_with_the_reason_once(self):

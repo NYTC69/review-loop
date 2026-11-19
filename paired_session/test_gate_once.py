@@ -5,8 +5,8 @@ carry a basis (an unmet criterion or a blocking class), evidence, the smallest c
 author; every later EXEC reviewer round carries each open FAIL item in full as a mandatory check that closes only as
 fixed. No route runs the gate again: not a reject, a note, an extension, a lifecycle change (FINISH, POLISH-Q fix, DOCS,
 SECURITY, a writer replay) or a resume of a state an earlier version saved with gate_ran reset. A malformed answer is not
-a verdict: the gate turn is dispatched once more, then the run HOLDs. Owner Q3: a FAIL at the EXEC round cap gets one
-fix + review round beyond it; owner Q4: every operator rejection note reaches every later EXEC review round."""
+a verdict: the gate turn is dispatched once more, then the run HOLDs. Round rule R2 (supersedes owner Q3): a FAIL gets
+one automatic fix round and at most one more, wherever the EXEC cap stood; owner Q4: every operator rejection note reaches every later EXEC review round."""
 import json
 import os
 from unittest import mock
@@ -164,28 +164,21 @@ class GateOnceTests(unittest.TestCase):
         self.assertTrue(state['approve_refusals'])   # RF-5: the APPROVE with the item still open was a REVISE
         self.assertEqual(sum('## Mandatory gate checks' in prompt for prompt in self.prompts(log)), 2)
 
-    # --- owner Q3: one extra round after a FAIL at the cap ------------------------------------------------------------------
-    def test_a_gate_fail_at_the_round_cap_gets_one_extra_fix_round(self):
+    # --- R2 (supersedes owner Q3): two post-gate fix rounds wherever the cap stood --------------------------------------------
+    def test_a_gate_fail_at_the_round_cap_gets_its_fix_round(self):
         result = self.run_coordinator(*OFF, '--max-exec-rounds', '1', env=FAIL)
         state = self.assert_one_gate_then_done(result)
         self.assertEqual(state['exec_rounds'], 2)
-        self.assertEqual(state['gate_extra_round']['at_round'], 1)
+        self.assertEqual(state['gate_fail_round']['round'], 1)
 
-    def test_a_revise_in_the_extra_round_holds_and_add_rounds_continues_without_a_gate(self):
+    def test_a_gate_item_open_after_both_fix_rounds_holds_and_add_rounds_continues_without_a_gate(self):
         keep = {**FAIL, 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'}
         held = self.run_coordinator(*OFF, '--max-exec-rounds', '1', env=keep)
-        self.assertIn('HOLD: EXEC round limit reached after adversarial gate', held.stdout, held.stdout + held.stderr)
+        self.assertIn('HOLD: ' + rc.GATE_SPLIT_REASON, held.stdout, held.stdout + held.stderr)
         state = self.state()
-        self.assertEqual((len(gates(state)), state['exec_rounds'], state['turns'][-1]['role']), (1, 2, 'reviewer'))
+        self.assertEqual((len(gates(state)), state['exec_rounds'], state['turns'][-1]['role']), (1, 3, 'reviewer'))
         resumed = self.run_operator_action('resume', *OFF, '--max-exec-rounds', '1', '--add-rounds', '1', env=FAIL)
         self.assert_one_gate_then_done(resumed)
-
-    def test_the_extra_round_policy_is_one_switch(self):
-        with mock.patch.object(rc.Coordinator, 'gate_fail_extra_round', return_value=False), mock.patch.dict(os.environ, FAIL):
-            co = rc.Coordinator(rc.parser().parse_args(self.command(*OFF, '--max-exec-rounds', '1', '--skip-probe')[2:]))
-            self.assertEqual(co.drive(), 'HOLD')
-        self.assertEqual(co.state['hold_reason'], 'EXEC round limit reached after adversarial gate')
-        self.assertEqual((len(gates(co.state)), co.state['next']), (1, 'gate'))   # add-rounds hands the FAIL to the author
 
     # --- operator actions ----------------------------------------------------------------------------------------------------
     def test_every_rejection_note_reaches_every_later_review_and_no_gate_reruns(self):
@@ -494,7 +487,7 @@ class LegacyGateResumeTests(unittest.TestCase):
                     resumed = self.run_operator_action('resume', *mode, '--max-exec-rounds', '1', *extra, env=env)
                     self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                     state = self.assert_repaired_without_a_gate(saved['sequence'], rows)
-                    self.assertIs(bool(state.get('gate_extra_round')), not add)   # Q3: the plain resume gets the extra round
+                    self.assertIs('gate_fail_round' in state, not add)   # R2: the plain resume routes the saved FAIL
                     self.clean()
 
     def test_a_v386_gate_receipt_saved_before_its_findings_were_recorded_is_not_lost(self):
