@@ -15,7 +15,7 @@ from paired_session import test_real_coordinator as trc
 from paired_session import timeout_scale as tsc
 
 rc = trc.rc
-B2 = 'this gemini role path cannot be dispatched: gemini runs read-only roles only (ADR-21 G2)'
+B2 = 'this gemini role path cannot be dispatched: the vendor table has no gemini entry (ADR-21 G1)'   # WI-GEM2: G2 lifted
 GEMINI_REVIEWER = ['--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-flash-medium']
 GEMINI_GATE = ['--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-pro']
 
@@ -96,18 +96,18 @@ class GeminiVendorTests(unittest.TestCase):
                 rc.validate_role_models(a)
                 self.assertEqual((a.author_vendor, a.author_model), ('codex', rc.CODEX_DEFAULT_MODEL))
                 self.assertEqual(rc.required_programs(a), ('claude_bin', 'codex_bin', 'gemini_bin'))
-                rc.refuse_gemini_roles(a)   # dispatchable
 
     def test_a_gemini_reviewer_with_stage_reviews_creates_its_run(self):   # B2b: lifecycle on and report mode run gemini
         co = rc.Coordinator(self.args(*GEMINI_REVIEWER, '--lifecycle-mode', 'on', '--gemini-bin', str(self.h.fake_gemini_cli())))
         self.assertEqual((co.state['config']['lifecycle_mode'], co.args.reviewer_vendor), ('on', 'gemini'))
-        report = self.resolved(*GEMINI_REVIEWER)
-        report.review_report = True
-        rc.refuse_gemini_roles(report)
 
-    def test_a_gemini_author_is_refused(self):
-        self.assert_refused('author_vendor gemini is not supported yet (ADR-21 G2)', '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro')
-        self.assert_refused('author_vendor gemini is not supported yet (ADR-21 G2)', '--author-vendor', 'gemini', actions=('run',))   # before the model rule
+    def test_a_gemini_author_passes_validation(self):   # WI-GEM2: G2 lifted; the gate defaults to the author's vendor (ADR-10)
+        a = self.resolved('--author-vendor', 'gemini', '--author-model', 'gemini-3.8-pro', '--gate-model', 'gemini-3.8-pro')
+        rc.validate_role_models(a)
+        self.assertEqual((a.author_vendor, a.gate_vendor, a.gate_model), ('gemini', 'gemini', 'gemini-3.8-pro'))
+        self.assert_refused('author_model is required when author_vendor is gemini', '--author-vendor', 'gemini', actions=('run',))
+        self.assert_refused('gate_model is required when gate_vendor is gemini', '--author-vendor', 'gemini', '--author-model',
+                            'gemini-3.8-pro', actions=('run',))
 
     # ---- G4: since v3.7.0 efficient is the only mode, so --strict no longer refuses a gemini role ----
     def test_a_gemini_role_with_strict_is_not_refused(self):
@@ -115,7 +115,7 @@ class GeminiVendorTests(unittest.TestCase):
                       ['--config', str(self.operator_profile({'safety_mode': 'strict', 'gate_vendor': 'gemini',
                                                               'gate_model': 'gemini-3.8-pro'}))]):
             with self.subTest(extra=extra):
-                rc.refuse_gemini_roles(self.resolved(*extra))
+                rc.validate_role_models(self.resolved(*extra))
 
     # ---- G3, G9: models ----
     def test_a_gemini_role_needs_an_explicit_model(self):
@@ -286,8 +286,7 @@ class GeminiAdapterTests(unittest.TestCase):
         flags = co.reviewer_flags()
         self.assertEqual((flags['reviewer_binary'], flags['permission_mode'], flags['sandbox'], flags['gemini_settings']),
                          (agy, 'settings-deny', 'agy-sandbox', rc.GEMINI_READONLY_SETTINGS))
-        with self.assertRaisesRegex(ValueError, 'ADR-21 G2'):
-            co._gemini_command('author', schema, False)
+        self.assertNotIn(SETTINGS, co._gemini_command('author', schema, False))   # WI-GEM2: the author gets the writer settings
 
     def test_a_persistent_reviewer_gets_the_prompt_on_stdin_and_resumes_its_conversation(self):
         co = self.coordinator()

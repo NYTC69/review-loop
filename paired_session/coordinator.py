@@ -3076,7 +3076,9 @@ class Coordinator:
                   'effort': config.author_effort,
                   'binary': self._vendor_binary(author_vendor),
                   'sandbox': vendor_entry({'codex': self._author_sandbox_overrides,
-                                           'claude': lambda: self._claude_sandbox_settings('author')}, author_vendor)(),
+                                           'claude': lambda: self._claude_sandbox_settings('author'),
+                                           'gemini': lambda: {'agy': '--sandbox', 'settings': self._gemini_author_settings(),   # WI-GEM2
+                                                              'TMPDIR': str(self.author_temp_dir)}}, author_vendor)(),
                   'subagents': config.author_subagents,
                   'tmp_isolated': self._author_tmp_isolated()}
         reviewer = self.reviewer_flags()
@@ -5047,14 +5049,26 @@ class Coordinator:
             cmd += ['resume', self.state['sessions'][role]]
         return cmd + ['-']
 
-    def _gemini_command(self, role: str, schema_path: Path, fresh: bool) -> list[str]:
-        """ADR-21 G5: agy for a read-only role (cwd = workspace, a per-dispatch TMPDIR); the prompt goes on stdin (gemini_stdin).
-        Never --dangerously-skip-permissions, --print-timeout or --mode plan; the coordinator's own timeout ends the process."""
-        if role == 'author': raise ValueError('author_vendor gemini is not supported yet (ADR-21 G2)')
+    def _gemini_author_settings(self, workspace: Optional[Path] = None) -> dict:
+        """WI-GEM2 B1: the writer's agy session settings: write_file only in the workspace, never in the run dir or a context dir
+        outside it (as the Claude author's Edit rules); url and mcp tools denied. agy 1.5.1 lets a shell write leave the workspace
+        even under --sandbox, so the post-turn guards (git, global config, context digest, run-dir inodes) remain the check."""
+        workspace = Path(workspace or self.workspace).resolve()
+        if re.search(r'[*?\[\]{}(),]', str(workspace)):
+            raise ValueError('the workspace path must not hold agy rule metacharacters (* ? [ ] { } ( ) ,) for a gemini author')
+        protected = [self.run_dir.resolve(), *([] if self.context.resolve().is_relative_to(self.run_dir.resolve()) else [self.context.resolve()])]
+        return {'permissions': {'allow': [f'write_file({workspace}/*)', 'read_file(*)', 'command(*)'],
+                                'deny': [*(f'write_file({path}/*)' for path in protected), 'read_url(*)', 'execute_url(*)', 'mcp(*)']}}
+
+    def _gemini_command(self, role: str, schema_path: Path, fresh: bool, workspace: Optional[Path] = None) -> list[str]:
+        """ADR-21 G5: agy (cwd = workspace, a TMPDIR of its own); the prompt goes on stdin (gemini_stdin). A read-only role gets
+        GEMINI_READONLY_SETTINGS, the author (WI-GEM2) the writer settings. Never --dangerously-skip-permissions, --print-timeout
+        or --mode plan; the coordinator's own timeout ends the process."""
         model, effort = self._model_effort(role)
+        settings = self._gemini_author_settings(workspace) if role == 'author' else GEMINI_READONLY_SETTINGS
         cmd = [self.args.gemini_bin, '--print=', '--input-format', 'stream-json', '--output-format', 'stream-json',
                '--model', model, *(['--effort', effort] if effort else []), '--json-schema', str(schema_path),
-               '--sandbox', '--settings', json.dumps(GEMINI_READONLY_SETTINGS, separators=(',', ':'))]
+               '--sandbox', '--settings', json.dumps(settings, separators=(',', ':'))]
         if not fresh and self.state['started'][role]:
             cmd += ['--conversation', self.state['sessions'][role]]
         return cmd
@@ -5063,7 +5077,7 @@ class Coordinator:
         vendor = self._role_vendor(role)
         command = vendor_entry({'claude': lambda: self._claude_command(role, schema_path, fresh, workspace),
                                 'codex': lambda: self._codex_command(role, schema_path, fresh),
-                                'gemini': lambda: self._gemini_command(role, schema_path, fresh)}, vendor)()
+                                'gemini': lambda: self._gemini_command(role, schema_path, fresh, workspace)}, vendor)()
         if winplat.IS_WINDOWS:   # gemini never reaches here on Windows: windows_refusal refuses it (ADR-21 amendment)
             command[:1] = program_argv(self.state['operator_programs'][vendor + '_bin'])
             winplat.check_command_line(command)
@@ -6614,8 +6628,8 @@ class Coordinator:
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
         if self._role_vendor(role) == 'gemini' and (role, phase) not in GEMINI_ROLE_PHASES:   # WI-GEM B2a, before any provider turn
-            raise RuntimeError(f'{role} {phase} turns cannot run gemini (ADR-21 G2, G4); gemini runs the reviewer with its stage '
-                               'reviews, the shadow and the EXEC gate')
+            raise RuntimeError(f'{role} {phase} turns cannot run gemini (ADR-21 G2, G4); gemini runs the author with its '
+                               'lifecycle writers, the reviewer with its stage reviews, the shadow and the EXEC gate')
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         transient_retried = False                                        # V327-RETRY: one transient-provider retry per invoke
         for attempt in range(2):
@@ -6747,7 +6761,7 @@ class Coordinator:
             capability = self.codex_capabilities(active_workspace)
             if capability['status'] != 'PASS':
                 raise RuntimeError(codex_capability_guard.refusal(capability, self.global_codex_home))
-        if role == 'author' and self._role_vendor(role) == 'codex':
+        if role == 'author' and self._role_vendor(role) in ('codex', 'gemini'):   # WI-GEM2: agy as Codex
             self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
         limit = self.args.max_invocations - self.state.get('q_reserved', 0)
@@ -6817,8 +6831,9 @@ class Coordinator:
         if receipt['vendor'] == 'gemini':
             self._record_gemini_version(receipt)
         stdout_path, stderr_path = prefix.with_suffix('.stdout.jsonl'), prefix.with_suffix('.stderr.log')
-        watched = (run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp'}, prefix)   # b296-f1: all but this turn's own files and the scratch
-                   if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR') else None)
+        gemini_writer = role == 'author' and receipt['vendor'] == 'gemini'   # WI-GEM2: agy's shell is not kept out of the run dir
+        watched = (run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp', self.author_temp_dir}, prefix)   # b296-f1: all but this turn's own files and the scratch
+                   if gemini_writer or role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR') else None)
         process = job = None
         try:
             with stdout_path.open('wb') as out, stderr_path.open('wb') as err:
@@ -6931,7 +6946,7 @@ class Coordinator:
         receipt['end'] = time.time()
         receipt['wall_seconds'] = receipt['end'] - receipt['start']
         receipt['returncode'] = process.returncode
-        after_inodes = run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp'}, prefix) if watched is not None else None   # before the coordinator writes again
+        after_inodes = run_dir_inodes(self.run_dir, {self.scratch_base / 'role-tmp', self.author_temp_dir}, prefix) if watched is not None else None   # before the coordinator writes again
         control_after = git_control_state(snapshot_workspace, control_dirs)[1] if role == 'author' else {}
         control_changed = sorted(k for k in {*control_before, *control_after} if control_before.get(k) != control_after.get(k))
         unreadable = control_before.get('!unreadable') or control_after.get('!unreadable')
@@ -6970,8 +6985,8 @@ class Coordinator:
                 receipt['scratch_entries'], linked = scratch_listing(Path(env_overrides['TMPDIR']))
                 if linked:   # a hard link there could write through to a run-dir file on the same volume
                     raise ValueError(f'{role} left a hard link in its scratch temp root: ' + ', '.join(linked))
-                if (run_dir_touched := sorted(path for path, mark in watched.items() if after_inodes.get(path) != mark)):   # a link made and removed within the turn
-                    raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(run_dir_touched[:5]))
+            if watched is not None and (run_dir_touched := sorted(path for path, mark in watched.items() if after_inodes.get(path) != mark)):
+                raise ValueError(f'{role} changed run-dir files during its turn (a link, write or mode change): ' + ', '.join(run_dir_touched[:5]))   # a link made and removed within the turn
             if vendor_config_before is not None:
                 config_after = global_config_snapshot(self.global_config_home, self.global_codex_home, gemini=receipt['vendor'] == 'gemini')
                 concurrent = (concurrent_run_workspaces(active_workspace) if receipt['vendor'] == 'codex' and   # FIELD-22, read lazily
@@ -10191,9 +10206,11 @@ MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 VENDORS = ('codex', 'claude', 'gemini')   # ADR-21 G1
 VENDOR_MODEL_PREFIXES = {'codex': 'gpt-', 'claude': 'claude-', 'gemini': 'gemini-'}   # ADR-10 M4, ADR-21 G3
-GEMINI_NOT_DISPATCHED = 'this gemini role path cannot be dispatched: gemini runs read-only roles only (ADR-21 G2)'
+GEMINI_NOT_DISPATCHED = 'this gemini role path cannot be dispatched: the vendor table has no gemini entry (ADR-21 G1)'
 GEMINI_ROLE_PHASES = {('reviewer', 'PLAN'), ('reviewer', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY'),
-                      ('reviewer', 'POLISH-Q'), ('shadow', 'PLAN'), ('shadow', 'EXEC'), ('gate', 'EXEC')}   # WI-GEM B2a, B2b
+                      ('reviewer', 'POLISH-Q'), ('shadow', 'PLAN'), ('shadow', 'EXEC'), ('gate', 'EXEC'),   # WI-GEM B2a, B2b
+                      ('author', 'PLAN'), ('author', 'EXEC'),   # WI-GEM2 B1 (ADR-21 amendment 2026-11-19: G2 lifted)
+                      ('author', 'FINISH'), ('author', 'DOCS'), ('author', 'POLISH-Q')}   # B2: the lifecycle writers
 GEMINI_SETTINGS_PATH = Path('.gemini') / 'antigravity-cli' / 'settings.json'   # ADR-21 G8, under the home directory
 GEMINI_PREFERENCE_KEYS = {'trustedWorkspaces', 'model'}   # G8: settings agy itself rewrites during normal use
 GEMINI_READONLY_SETTINGS = {'permissions': {'deny': ['write_file(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'],
@@ -10218,12 +10235,6 @@ def required_programs(args) -> tuple:
     """The operator programs a new run binds and requires: codex_bin and claude_bin always (V317-FB), and gemini_bin
     only when a role runs gemini (ADR-21 G1), so installations without agy keep working."""
     return ('claude_bin', 'codex_bin') + (('gemini_bin',) if 'gemini' in vendor_by_role(args).values() else ())
-
-
-def refuse_gemini_roles(args: argparse.Namespace) -> None:
-    """ADR-21 G2: refused before any state exists."""
-    if 'gemini' not in vendor_by_role(args).values(): return
-    if args.author_vendor == 'gemini': raise ValueError('author_vendor gemini is not supported yet (ADR-21 G2)')
 
 
 def gemini_stdin(prompt: str) -> bytes:
@@ -10307,7 +10318,6 @@ def refuse_foreign_gate_model(args: argparse.Namespace) -> None:
 def resolve_role_model_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Apply the vendor default model (ADR-12; ADR-9 keeps the operator's choice) to every role without an explicit model."""
     model_for_vendor = {'claude': 'claude-opus-5-5', 'codex': CODEX_DEFAULT_MODEL}   # ADR-21 G3: gemini has no default
-    refuse_gemini_roles(args)
     refuse_foreign_gate_model(args)
     if getattr(args, 'gate_vendor_source', None) is None:
         args.gate_vendor_source = 'default' if getattr(args, 'gate_vendor', None) is None else 'operator'
