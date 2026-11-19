@@ -26,7 +26,7 @@ top-level `README.md` Quick Start.
   roles use: the coordinator binds both binaries at run start. Role selection in the paired-session
   operator profile does not remove either CLI requirement.
 - **Antigravity CLI (`agy`)** — optional; needed only when the operator profile or the CLI flags
-  (`--reviewer-vendor gemini`, `--gate-vendor gemini`) name gemini for the reviewer or the gate. agy has no `login`
+  (`--author-vendor gemini`, `--reviewer-vendor gemini`, `--gate-vendor gemini`) name gemini for a role. agy has no `login`
   subcommand: sign in on the first interactive `agy` run (see README.md, Configuration).
 - **GitHub CLI (`gh`)** — needed only to review a pull request (a PR number or URL).
 

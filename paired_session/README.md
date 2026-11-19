@@ -286,7 +286,7 @@ variables (for example a `*_TOKEN` set by an agent session) feed the Claude cred
 follows the current environment; they also bind the lifecycle role manifest.
 Role models are operator-set (ADR-9): a role without `--author-model`,
 `--reviewer-model`, `--gate-model` or a profile value gets its vendor's default
-(Claude: `claude-opus-5-5`; Codex: `gpt-6.1-sol`); gemini (`agy`, ADR-21; reviewer and gate only) has no
+(Claude: `claude-opus-5-5`; Codex: `gpt-6.1-sol`); gemini (`agy`, ADR-21) has no
 default, so its role needs a model. Before run state is created,
 every model id must be well formed and, when `allowed_models` is set, listed for
 that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);

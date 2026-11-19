@@ -10,7 +10,7 @@
 # reviewer_model / executor_model here are not applied (a warning when set to anything other than "" or inherit);
 # models come from the operator profile.
 # Operator profile vendors: codex, claude, and the optional gemini (Antigravity CLI agy, gemini_bin, default agy) for
-# reviewer_vendor / gate_vendor only, with reviewer_model / gate_model required; see README.md (Configuration).
+# author_vendor / reviewer_vendor / gate_vendor, with that role's *_model required (macOS only); see README.md (Configuration).
 # Profile key extra_writable_roots (paired-session.json or --config, not this file; default []): absolute paths of existing
 # directories outside the run directory that the Codex author and the Codex reviewer-type roles (reviewer, shadow, gate,
 # stage reviewers, probes) may also write, and that every Claude role's Bash sandbox allows (allowWrite; native Windows has

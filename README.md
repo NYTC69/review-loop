@@ -415,22 +415,30 @@ on the first interactive `agy` run (over SSH agy stores the token in a file); th
 longer works. The defaults are unchanged (author Codex, reviewer Claude, gate = the author's vendor), so gemini runs
 only where the operator profile or the CLI flags name it:
 
-- Roles: `reviewer_vendor: gemini` (the shadow and the reviewer's stage reviews follow it) and
-  `gate_vendor: gemini`, or `--reviewer-vendor gemini` / `--gate-vendor gemini` with `--reviewer-model` /
-  `--gate-model`. `author_vendor: gemini` is refused.
-- Models: gemini has no default model, so `reviewer_model` / `gate_model` is required, for example
-  `gemini-3.8-flash` (with `reviewer_effort` / `gate_effort`, default `medium`) or any id `agy models` lists. agy also serves `claude-*` and `gpt-oss` ids; the vendor
+- Roles: `author_vendor: gemini` (the finisher, the docs writer and the POLISH-Q writers follow it, and so does the
+  gate unless `gate_vendor` is set), `reviewer_vendor: gemini` (the shadow and the reviewer's stage reviews follow it)
+  and `gate_vendor: gemini`, or `--author-vendor gemini` / `--reviewer-vendor gemini` / `--gate-vendor gemini` with
+  `--author-model` / `--reviewer-model` / `--gate-model`.
+- Models: gemini has no default model, so `author_model` / `reviewer_model` / `gate_model` is required for a gemini
+  role (a gemini author with the default gate needs `gate_model` too), for example
+  `gemini-3.8-flash` (with `author_effort` / `reviewer_effort` / `gate_effort`, default `medium`) or any id `agy models` lists. agy also serves `claude-*` and `gpt-oss` ids; the vendor
   is the CLI that runs the role, and the run records vendor and model. `allowed_models` accepts the key `gemini`.
 - Programs: `codex` and `claude` are still bound and required at run start; `agy` is bound and required only when a
   role runs gemini.
-- Read-only: agy runs with `--sandbox` and session-only settings that deny file writes, URLs and MCP and allow shell
-  commands and file reads; a turn in which agy denies an action fails.
+- Read-only roles: agy runs with `--sandbox` and session-only settings that deny file writes, URLs and MCP and allow
+  shell commands and file reads; a turn in which agy denies an action fails. agy 1.5.1 still lets a shell write inside
+  the workspace through, so a read-only gemini turn that changes the workspace is undone and dispatched once more, as
+  for the other vendors.
+- Author: agy runs with `--sandbox` and settings that allow file writes in the workspace only (never the run
+  directory), file reads and shell commands, and deny URLs and MCP; it gets the post-turn checks of a Claude author
+  (git HEAD and control files, plus refs and the index for the lifecycle writers; global config, the coordinator context and the run directory's files) and the
+  author's own `TMPDIR`, as a Codex author.
 - agy's `~/.gemini/antigravity-cli/settings.json` is snapshotted around each gemini turn like the other vendors'
   global config: after a completed gemini turn, a change of only `trustedWorkspaces` or `model` (agy writes these
   itself) is a NOTE and any other change holds; in the recovery of an uncertain (abandoned) gemini turn any change is
   recorded as a NOTE. A changed `agy --version` between turns is a NOTE (agy updates itself).
-- Scratch: each gemini turn gets its own `TMPDIR` under the run's external scratch root, as the Codex reviewer-type
-  roles do.
+- Scratch: each read-only gemini turn gets its own `TMPDIR` under the run's external scratch root, as the Codex
+  reviewer-type roles do.
 - Windows: gemini is macOS-only. On Windows a gemini role (new or saved run) is refused before any state write;
   `status`, `abort` and `stop` stay usable.
 

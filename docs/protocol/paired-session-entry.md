@@ -83,8 +83,8 @@ outside the workspace and run directory. CLI options override the profile.
 Models are operator-set (ADR-9); a role without one gets its vendor's default
 (`claude-opus-5-5` for Claude; `gpt-6.1-sol` for Codex), and the gate defaults
 to the author's vendor (ADR-10).
-Gemini (`agy`, ADR-21) may run the reviewer and the gate only, in efficient mode, and has no default model:
-its role needs `reviewer_model` / `gate_model`.
+Gemini (`agy`, ADR-21) may run the author, the reviewer and the gate, in efficient mode, and has no default model:
+its role needs `author_model` / `reviewer_model` / `gate_model`.
 The keys in `.review-loop/config.md` that are set map to one-run options:
 `docs_file` → `--docs-file`, `skip_quality_polish` → `--skip-quality-polish
 true|false`, `soft_limit_plan` / `soft_limit_exec` → `--max-plan-rounds` /

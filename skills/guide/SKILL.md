@@ -62,7 +62,7 @@ such question counts as unanswered) refuses with the reason, whether the key is 
 Once the coordinator has started, a refusal or HOLD is reported. Roles come from the
 operator profile you name or `~/.config/review-loop/paired-session.json`;
 without one, Codex is the author and gate and Claude the reviewer.
-Gemini (Antigravity CLI `agy`) is an optional third vendor for the reviewer and the gate (README.md, Configuration).
+Gemini (Antigravity CLI `agy`) is an optional third vendor for any role on macOS (README.md, Configuration).
 Every run uses one mode: every sandbox applies and no permission probe exists (`permission-probe` and strict mode
 were removed in v3.7.0; `--strict` only prints a NOTE). A reviewer turn that changes the
 workspace is voided and restored, and an author commit is a HOLD.
