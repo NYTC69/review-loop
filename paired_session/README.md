@@ -606,9 +606,10 @@ The gate runs once per work item (WI-GATE1). After a gate FAIL the repair is rev
 checks each open FAIL item in full every round and may close it only as fixed; no route gates again, also when an
 earlier version saved `gate_ran` reset after a FAIL. A FAIL that arrives at the EXEC round limit gets one fix and
 review round beyond it; a REVISE in that round HOLDs (`EXEC round limit reached after adversarial gate`).
-A gate answer that is not a verdict (a FAIL item without its basis, evidence, smallest change or proof, or an unmet
-criterion without its own item) is dispatched once more, then HOLDs (`malformed gate verdict`); resume starts a new
-attempt of the same bound and keeps the earlier receipts.
+A gate answer that is not a verdict (a reply that is not JSON, a FAIL item without its basis, evidence, smallest change
+or proof, an unmet criterion without its own item, or missing evidence claims) is dispatched once more, one retry for
+all of these, then HOLDs (`malformed gate verdict`); resume starts a new attempt of the same bound and keeps the earlier
+receipts.
 At a round-limit HOLD produced by a write (FINISH, DOCS, a SECURITY-stage change,
 or a writer rollback), the round is already used; a plain `resume` keeps the HOLD
 and `resume --add-rounds N` continues with the pending review.
