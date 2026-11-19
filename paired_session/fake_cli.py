@@ -690,6 +690,12 @@ def main():
         if (log := os.environ.get('FAKE_REVIEW_PROMPT_LOG')) and role == 'reviewer' and phase == 'EXEC':
             with open(log, 'a') as out:   # WI-GATE1: what each EXEC reviewer round was asked to check
                 out.write(json.dumps(prompt) + '\n')
+        post_gate = os.environ.get('FAKE_POST_GATE_FINDING')   # WI-GATE1 S4: a new correctness finding in every post-gate review
+        if post_gate is not None and role == 'reviewer' and phase == 'EXEC' and '## Post-gate review' in prompt:
+            revise = True
+            findings = [*findings, {'severity': 'MAJOR', 'file': 'sum_ints.py', 'category': 'correctness',
+                                    'reachability': post_gate, 'summary': 'post-gate finding ' + str(len(open_ids)),
+                                    'failure_scenario': 'a caller gets the wrong result'}]
         keep, keep_if = os.environ.get('FAKE_EXEC_STILL_OPEN'), os.environ.get('FAKE_EXEC_STILL_OPEN_IF_FILE')
         if keep and role == 'reviewer' and phase == 'EXEC' and (not keep_if or Path(keep_if).exists()):
             # V316: the open rows whose ledger line has this text stay open; REVISE without a finding of its own
@@ -739,6 +745,11 @@ def main():
                 answer['full_review'] = []
         for finding in findings:
             finding.setdefault('security', False)
+        fields = json.loads(os.environ.get('FAKE_FINDING_FIELDS') or '{}')   # WI-GATE1 S3: {summary text: {category, reachability}}
+        for finding in answer['full_review']:
+            for text, extra in fields.items():
+                if text in str(finding.get('summary', '')) and (role != 'shadow' or extra.get('shadow', True)):
+                    finding.update({key: value for key, value in extra.items() if key in ('category', 'reachability')})
         if prior is not None:
             answer['prior_findings'] = prior
         mode = os.environ.get('FAKE_MUTATION')

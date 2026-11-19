@@ -15,7 +15,8 @@ LANGUAGE_AGENTS = {'.go': 'go-reviewer', '.rs': 'rust-reviewer', '.py': 'python-
                                    'frontend-security-reviewer')}
 QUALITY_AGENTS = ('code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer')
 SEVERITY = {'CRITICAL': 'CRITICAL', 'HIGH': 'MAJOR', 'MAJOR': 'MAJOR', 'MEDIUM': 'MAJOR', 'SECURITY': 'SECURITY',
-            'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM blocks, unknown labels HOLD
+            'MINOR': 'MINOR', 'LOW': 'MINOR'}   # doc 1 taxonomy: MEDIUM maps to MAJOR, unknown labels HOLD; WI-GATE1 S3: a
+                                                # MAJOR blocks only with a blocking category and reachability (category_blocks)
 PROFILE_KEYS = ('docs_file', 'docs_allowlist', 'skip_quality_polish',   # E-4: operator-only
                 'auto_commit', 'external_delivery')
 
@@ -292,7 +293,9 @@ def specialist_prompt(name, body, test_command, owned, protocol, change='the unc
             'You are a report-only quality specialist. Review only the changed paths of '
             f'{change}, with the instructions above. Do not modify any file. Report '
             'every finding in full_review using only the schema severities: report HIGH and MEDIUM as MAJOR and LOW '
-            'as MINOR; CRITICAL and MAJOR block delivery.\n'
+            'as MINOR; a CRITICAL or MAJOR finding blocks delivery only with a blocking category (correctness, '
+            'data-loss, security, money) and a reachability statement; everything else is category other and goes to '
+            'the BACKLOG.\n'
             'Read a long file in line ranges (a few hundred lines per read), the changed hunks of delta.patch first and '
             'then the code they depend on; when a tool output is truncated, read the remaining range instead of '
             'stopping or answering HOLD.\n' + protocol + '\n' +

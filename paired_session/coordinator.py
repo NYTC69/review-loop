@@ -181,9 +181,35 @@ def resolve_exec_turn_timeout(value, general_timeout):
     if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
     return timeout
 DEFAULT_MAX_REJECTIONS = 2
+# WI-GATE1 S4 (research-rc R1-R6, owner-approved 2026-11-19): the EXEC round rules; each HOLD names its rule (a NOTE line).
+POST_GATE_FIX_ROUNDS = 2   # R2: after a gate FAIL, one automatic fix round and at most one more
+EXEC_HARD_ROUND_CAP = 5    # R3: the runaway guard over pre- and post-gate rounds
+GATE_SPLIT_REASON = ('gate FAIL items still open after the post-gate fix rounds; split the open gate items into a new work '
+                     'item')   # R2
+HARD_CAP_REASON = 'EXEC round hard cap reached'   # R3
+STILL_OPEN_REASON = 'the same blocking finding stayed open in two consecutive reviews'   # R4b (+ the ids)
+NEW_BLOCKERS_REASON = ('two consecutive reviews after an approval each brought new blocking findings; split them into a new '
+                       'work item')   # R4c (+ the ids)
+STOP_RULE_REASONS = (STILL_OPEN_REASON, NEW_BLOCKERS_REASON)
 ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', 'EXEC round limit reached after adversarial gate',
                        'EXEC round limit reached after a FINISH write', 'EXEC round limit reached after a DOCS write',
-                       'EXEC round limit reached after a SECURITY-stage change')
+                       'EXEC round limit reached after a SECURITY-stage change',   # saved by v3.8.x: stage writes no longer count
+                       GATE_SPLIT_REASON, HARD_CAP_REASON)
+REVIEW_LIMIT_REASONS = ROUND_LIMIT_REASONS[:3] + (GATE_SPLIT_REASON, HARD_CAP_REASON)   # held at a review: an extension goes to the author
+TEST_EVIDENCE_HOLD = ('EXEC APPROVE needs test evidence the role sandbox could not produce (round rule R5: no round is used): '
+                      'run the configured test command on the host, record it with attach-verification, then resume (the '
+                      'reviewer reviews the same tree again); if the failure is real, fix it in the workspace and resume')
+
+
+ROUND_RULE_TEXT = {'PLAN': 'the PLAN round cap', 'R1': 'the EXEC review rounds before the gate are used up',
+                   'R2': 'the post-gate fix rounds are used up', 'R3': 'the hard cap on EXEC rounds in total',
+                   'R4b': 'a blocking finding stayed open in two consecutive reviews; ask the owner',
+                   'R4c': 'new blocking findings in two consecutive reviews after an approval; split the work'}
+
+
+def is_round_limit_reason(reason: str) -> bool:
+    """A round-limit HOLD (resume --add-rounds continues it): a cap, or a stop rule R4b/R4c with its finding ids."""
+    return reason in ROUND_LIMIT_REASONS or str(reason).startswith(STOP_RULE_REASONS)
 OUTPUT_TAIL_LINES = 15
 OUTPUT_TAIL_CHARS = 1500
 ADVISORY_REVIEW_SEVERITIES = {'MINOR', 'LOW'}
@@ -207,12 +233,29 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+# WI-GATE1 S3 (owner 2026-11-19, item 5): one blocking threshold for every reviewer-type role. A row blocks only when its
+# severity blocks AND its category is one of these four AND it says how normal use reaches it; everything else is reported
+# and goes to the BACKLOG.
+BLOCKING_CATEGORIES = ('correctness', 'data-loss', 'security', 'money')
+FINDING_CATEGORIES = (*BLOCKING_CATEGORIES, 'other')
+
+
+def category_blocks(row: dict) -> bool:
+    """WI-GATE1 S3: the category half of the threshold. A row without a `category` key (a program row that sets none, or a
+    row saved before WI-GATE1) keeps its severity-only behavior; a post-gate row that is not a regression never blocks."""
+    if row.get('post_gate_nonblocking'):
+        return False
+    if 'category' not in row:
+        return True
+    return row['category'] in BLOCKING_CATEGORIES and bool(str(row.get('reachability') or '').strip())
 
 
 def blocks_by_severity(row: dict) -> bool:
-    """v3.8.1 (owner 2026-11-10): a row blocks by its severity alone; the security tag no longer escalates a MINOR or LOW row."""
+    """v3.8.1 (owner 2026-11-10): the security tag no longer escalates a MINOR or LOW row. WI-GATE1 S3: a blocking severity
+    blocks only with a blocking category and a reachability statement (category_blocks)."""
     severity = str(row.get('severity', '')).upper()
-    return severity in BLOCKING_REVIEW_SEVERITIES or (row.get('source') == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))
+    return (severity in BLOCKING_REVIEW_SEVERITIES or (row.get('source') == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))) \
+        and category_blocks(row)
 # L105: .review-loop/config.md review guidance (operator text) and the prompts it reaches: reviews, and the POLISH-Q specialists.
 GUIDANCE_KEYS = (('review_focus', 'Review focus'), ('review_style', 'Review style'), ('quality_focus', 'Quality focus'))
 REVIEW_GUIDANCE, QUALITY_GUIDANCE = ('review_focus', 'review_style'), ('quality_focus', 'review_style')
@@ -239,7 +282,8 @@ def pending_item_blockers(state: dict, run_dir: Path) -> list[dict]:
     rows = {}
     for source in (*state.get('item_blockers', []), *state.get('finding_ledger', [])):
         if source.get('status') not in ('open', 'awaiting-revalidation') or not (source.get('severity') in BLOCKING_REVIEW_SEVERITIES or
-                source.get('source') == 'adversarial-gate' and source.get('severity') in ('CRITICAL', 'HIGH', 'MEDIUM')):
+                source.get('source') == 'adversarial-gate' and source.get('severity') in ('CRITICAL', 'HIGH', 'MEDIUM')) \
+                or not category_blocks(source):   # WI-GATE1 S3
             continue
         row = copy.deepcopy(source); row.setdefault('origin_run', str(run_dir))
         key = (row['origin_run'], row['id'])
@@ -275,13 +319,24 @@ def frozen_role_manifest(config: dict, role_flags: dict, agents_dir: Path,
             'role_agents': dict(required_agents), 'agents_dir': str(agents_dir.resolve()),
             'agent_body_sha256': agents, 'gate_prompt_path': str(prompt_path.resolve()),
             'gate_prompt_sha256': prompt_hash}
-REVIEW_SEVERITY_GUIDANCE = ('CRITICAL, MAJOR, and SECURITY findings are blocking. Set security=true for any security issue, even when its impact severity is MINOR or LOW; a MINOR or LOW security-tagged finding is listed and advisory. Never lower severity to qualify for advisory handling.')
+THREAT_MODEL_SENTENCE = ('Users and models are assumed to act in good faith: protect against realistic mistakes in normal use, '
+                        'not against contrived worst cases.')   # WI-GATE1 S3: the owner's threat model, in every reviewer-type prompt
+REVIEW_SEVERITY_GUIDANCE = ('Only correctness, data loss, security and money issues block. Give every finding a category '
+    '(correctness, data-loss, security, money, or other) and a reachability statement: how normal use reaches the problem '
+    '(required for a blocking finding; may be empty for category other). A finding blocks only when its severity is CRITICAL, '
+    'MAJOR or SECURITY, its category is one of the four blocking categories and its reachability is filled. Everything else '
+    'is category other (wording, style, naming, docs polish, extra robustness, missing tests without a reachable failure): '
+    'report it; it does not block and goes to the BACKLOG. A document or comment that states false behavior a user would act '
+    'on is correctness. ' + THREAT_MODEL_SENTENCE + ' '
+    'Set security=true for any security issue, even when its impact severity is MINOR or LOW; a MINOR or LOW security-tagged '
+    'finding is listed and advisory. Never lower severity or category to qualify for advisory handling.')
 REVIEW_INCLUSION_GUIDANCE = ('Report a new finding only when you would ask the author to change the work for a concrete failure or material waste in normal supported use; there is no target finding count, and full_review: [] is a normal answer. '
     'Assume users and models act in good faith within the supported scope and recommend proportionate protections. '
     'Rare but realistically reachable credential exposure, authorization bypass, irreversible data loss, destructive action, or comparable harm is still reported.')
 LEDGER_DISPOSITION_GUIDANCE = ('A still_open disposition records that a finding is unresolved and does not by itself require REVISE. '
-    'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, and source=adversarial-gate with CRITICAL or HIGH. '
-    'Every other row (MINOR or LOW, security-tagged or not; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open. '
+    'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, and source=adversarial-gate with CRITICAL or HIGH, '
+    'with a blocking category (correctness, data-loss, security, money) and a reachability statement; a row listed without a category keeps its severity. '
+    'Every other row (MINOR or LOW, security-tagged or not; category other; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open. '
     'Do not raise another role\'s advisory row to a blocker only because it is still open. '
     'Keep giving every listed row its disposition. '
     'An advisory row that you would not report under the rule above (no concrete failure or material waste in normal supported use) may be withdrawn with evidence. '
@@ -2198,7 +2253,10 @@ def review_schema(statuses=('REVISE', 'APPROVE', 'HOLD'), verified=True) -> dict
         'severity': {'type': 'string', 'enum': sorted(ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)},
         'file': {'type': 'string'}, 'summary': {'type': 'string'},
         'failure_scenario': {'type': 'string'}, 'security': {'type': 'boolean'},
-    }, 'required': ['severity', 'file', 'summary', 'failure_scenario', 'security'], 'additionalProperties': False}
+        'category': {'type': 'string', 'enum': list(FINDING_CATEGORIES)},   # WI-GATE1 S3: the blocking threshold
+        'reachability': {'type': 'string'},
+    }, 'required': ['severity', 'file', 'summary', 'failure_scenario', 'security', 'category', 'reachability'],
+        'additionalProperties': False}
     prior = {'type': 'object', 'properties': {
         'id': {'type': 'string'},
         'disposition': {'type': 'string', 'enum': ['fixed', 'still_open', 'withdrawn']},
@@ -3354,6 +3412,9 @@ class Coordinator:
         for key, value in self.state['config'].items():
             if skip(key):
                 continue
+            if key == 'max_exec_rounds' and not getattr(self.args, 'max_exec_rounds_explicit', False):
+                self.args.max_exec_rounds = value   # WI-GATE1 R1: a run saved under the old default 4 keeps its cap
+                continue
             current = current_config[key]
             if key == 'workitem_reviewer_commands' and current != value:
                 if self.state['config'].get('lifecycle_mode') != 'on':   # v3.7.0: recorded with a NOTE once nothing else differs
@@ -3685,6 +3746,7 @@ class Coordinator:
                      'security': bool(finding.get('security')),
                      'failure_scenario': finding.get('failure_scenario', ''),
                      'body': finding.get('body', ''),
+                     **{key: finding[key] for key in ('category', 'reachability', 'post_gate_nonblocking') if key in finding},
                      'status_history': [{'round': origin_round, 'status': 'open',
                                         'evidence': 'program assigned identity'}]}
             if source.startswith('specialist:'):
@@ -3836,15 +3898,13 @@ class Coordinator:
         atomic_text(self.run_dir / 'findings-ledger.md', '\n'.join(lines) + '\n')
 
     def nonblocking_open_findings(self) -> list[dict]:
-        return [row for row in self.open_findings()
-                if row['severity'] in ADVISORY_REVIEW_SEVERITIES or
-                (row['source'] == 'adversarial-gate' and row['severity'] in ('MEDIUM', 'LOW'))]
+        """WI-GATE1 S3: every open row below the blocking threshold (a non-blocking severity, category other, no
+        reachability, a post-gate non-regression, or a row outside its pass's delta)."""
+        return [row for row in self.open_findings() if not blocks_by_severity(row) or row.get('out_of_delta')]
 
     @staticmethod
     def findings_are_advisory(findings: list[dict]) -> bool:
-        return bool(findings) and all(str(row.get('severity', '')).upper() in
-                                      ADVISORY_REVIEW_SEVERITIES
-                                      for row in findings)
+        return bool(findings) and not any(blocks_by_severity(row) for row in findings)
 
     def record_review_verdict(self, sequence: int, phase: str, raw: str, effective: str, rf5=False) -> None:
         self.progress('verdict', verdict=effective, raw=raw if raw != effective else '', rf5_converted=rf5, open=self._progress_open())
@@ -4022,15 +4082,27 @@ class Coordinator:
             raise ValueError(f'{action} refused: {issue.split(";")[0]}; {kept}')
 
     def round_limit_hold(self, reason: str) -> str:   # RLO: the held tree, so accept --override-rejection can rule on exactly it
+        rule = self._round_rule(reason)
         self.state['round_limit_hold'] = {'hold_reason': reason, 'phase': self.state['phase'], 'tree_sha256': git_snapshot(self.workspace)[0],
-                                          'time': datetime.now().astimezone().isoformat()}
+                                          'time': datetime.now().astimezone().isoformat(), 'rule': rule}
+        print(f'NOTE: round rule {rule} stopped the run ({ROUND_RULE_TEXT[rule]}); resume --add-rounds N continues it, '
+              'note --scope-change starts a successor, or abort')
         return self.hold(reason)
+
+    def _round_rule(self, reason: str) -> str:
+        """WI-GATE1 S4: the round rule behind a round-limit HOLD reason."""
+        if reason.startswith(STILL_OPEN_REASON): return 'R4b'
+        if reason.startswith(NEW_BLOCKERS_REASON): return 'R4c'
+        if reason == GATE_SPLIT_REASON: return 'R2'
+        if reason == HARD_CAP_REASON: return 'R3'
+        if reason.startswith('PLAN'): return 'PLAN'
+        return self._exec_limits()[1]
 
     def _override_tree(self) -> Optional[str]:   # the tree accept --override-rejection may rule on; None for any other HOLD cause
         if self.state.get('hold_reason', '').startswith('rejected-tree'):
             return self.state.get('rejected_tree_hold', {}).get('tree_sha256')
         held = self.state.get('round_limit_hold') or {}
-        if held.get('hold_reason') in ROUND_LIMIT_REASONS and held['hold_reason'] == self.state.get('hold_reason') and not self.rejected_tree(held['tree_sha256']):
+        if is_round_limit_reason(held.get('hold_reason', '')) and held['hold_reason'] == self.state.get('hold_reason') and not self.rejected_tree(held['tree_sha256']):
             return held['tree_sha256']
         return None
 
@@ -4243,13 +4315,18 @@ class Coordinator:
                   'accepted_state': self.state['status'], 'acceptance_state': 'ACCEPTED'}
         record.update(reason=self.args.reason, override_rejection=self.args.override_rejection,
                       rationale=self.state.get('rejected_tree_hold', {}).get('rationale_evidence'))
-        if self.args.override_rejection and self.state.get('hold_reason') in ROUND_LIMIT_REASONS:   # RLO: the owner accepts the held tree with these findings open
+        if self.args.override_rejection and is_round_limit_reason(self.state.get('hold_reason', '')):   # RLO: the owner accepts the held tree with these findings open
             record.update(rationale=None, round_limit_hold=self.state['round_limit_hold'],
                           open_findings=[{'id': row['id'], 'severity': row['severity'], 'source': row.get('source'), 'security': bool(row.get('security')),   # RLO LOW-1
                                           'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
         if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
             record['operator_verifications'] = verified
+        self._append_repo_backlog()   # WI-GATE1 S3 (owner Q1): lifecycle off never commits: the rows stay in the working tree
         record['uncommitted'] = self._uncommitted_files()   # no commit on the lifecycle-off route
+        if backlog := self.state.get('repo_backlog'):
+            record['repo_backlog'] = backlog
+            print(f"NOTE: {backlog['rows']} non-blocking finding(s) appended to {backlog['path']} in the working tree "
+                  '(lifecycle off never commits)')
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -4293,7 +4370,7 @@ class Coordinator:
                 self.state.get('status') in ('DONE', 'HOLD')) and (   # never ABORTED: a superseded run stays superseded
                 journal['intent'].get('receipts_sha256') == receipts) and not self.state.get('scope_change_intent'):
             intent = journal['intent']   # a replay of a journaled commit (HEAD may already be the commit)
-            if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
+            if git_snapshot(self.workspace)[0] not in (intent['tree_sha256'], journal.get('workspace_tree_sha256')):
                 raise ValueError('the tree changed since the journaled accept; restore it or abort')
         else:
             if self.state.get('status') != 'DONE' or life.get('stage') != 'DONE':
@@ -4322,7 +4399,13 @@ class Coordinator:
                   'override_rejection': False, 'delivery': delivery}
         if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
             record['operator_verifications'] = verified
-        if not delivery.get('commit'): record['uncommitted'] = self._uncommitted_files()
+        if not delivery.get('commit'):
+            self._append_repo_backlog()   # WI-GATE1 S3: no commit: the rows stay in the working tree (listed as uncommitted)
+            record['uncommitted'] = self._uncommitted_files()
+        if backlog := self.state.get('repo_backlog'):
+            record['repo_backlog'] = backlog
+            print(f"NOTE: {backlog['rows']} non-blocking finding(s) appended to {backlog['path']} "
+                  + ('in the accepted commit' if delivery.get('commit') else 'in the working tree (not committed)'))
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -4423,13 +4506,16 @@ class Coordinator:
         if journal is None:
             try:
                 self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
-                tree = self._manifest_tree(intent['tree_snapshot'])
+                if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
+                    raise ValueError('the tree changed during the accept; restore the approved tree or abort')
+                snapshot = intent['tree_snapshot']
+                if self._append_repo_backlog():   # WI-GATE1 S3 (owner Q1): the non-blocking rows ride in the accepted commit
+                    snapshot = git_snapshot(self.workspace)[1]
+                tree = self._manifest_tree(snapshot)
             except ValueError as exc:   # FIELD-25 gate: a defaulted auto_commit delivers uncommitted; an explicit one refuses
-                if self.state['config'].get('auto_commit_source') != 'review-only-default':
+                if self.state['config'].get('auto_commit_source') != 'review-only-default' or 'tree changed' in str(exc):
                     raise
                 return {'auto_commit': False, 'commit': None, 'head': parent, 'external_delivery': False, 'commit_skipped': str(exc).split('; ', 1)[0]}
-            if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
-                raise ValueError('the tree changed during the accept; restore the approved tree or abort')
             title = next((line.lstrip('# ').strip() for line in self.workitem.read_text(encoding='utf-8').splitlines() if line.strip()),
                          'paired-session work item')
             message = (f'{title}\n\npaired-session worktree lifecycle\nRun: {self.run_dir.name}\n'
@@ -4437,7 +4523,8 @@ class Coordinator:
                        + (f"Review base: {self.state['config']['review_base']}\n" if self.state.get('review_only') else ''))
             commit = self._git(['commit-tree', '--no-gpg-sign', tree, '-p', parent, '-m', message]).strip()
             journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit, 'ref': intent.get('head_ref'),
-                       'index_before': self._index_digest(), 'index_target': self._index_digest(commit)}
+                       'index_before': self._index_digest(), 'index_target': self._index_digest(commit),
+                       'workspace_tree_sha256': git_snapshot(self.workspace)[0]}   # with the BACKLOG.md rows, for a replay
             atomic_json(self.evidence / 'delivery-commit.json', journal)
         if 'index_before' not in journal:
             raise WorktreeDeliveryHold('auto_commit: the journal predates the index and branch binding; abort')
@@ -4692,7 +4779,6 @@ class Coordinator:
         self.state['pending_rejection_id'] = rejection_id
         self.state.update(status='ACTIVE', phase='EXEC', next='author',
                           delivered_review='')
-        self.state.get('advisory_repair_attempts', {}).pop('EXEC', None)
         self.save()
         self.write_comparison()
         return 'ACTIVE'
@@ -4794,6 +4880,7 @@ class Coordinator:
             self.state['lifecycle']['stage'] = lifecycle_stage
             self.state['next'] = 'done'
         self.set_effective_verdict('APPROVE')
+        self._backlog_open_nonblocking()   # WI-GATE1 S3: R4(a) only non-blocking rows left: finish, BACKLOG
         self.state['status'] = 'DONE'
         self.state['acceptance_state'] = 'PENDING'
         self.state['completed_at'] = time.time()
@@ -4813,7 +4900,7 @@ class Coordinator:
         if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
             if blocking := self.blocking_open_findings():   # repair round: author fix, then the reviewer (the gate ran once)
                 if self.state['exec_rounds'] >= self.exec_round_limit():
-                    return self.round_limit_hold('EXEC round limit reached')
+                    return self.round_limit_hold(self._exec_limit_reason())
                 self.state.update(next='author', phase='EXEC',
                                   delivered_review=worktree_lifecycle.delivered_findings('convergence', blocking))
                 self.save()
@@ -5099,7 +5186,10 @@ class Coordinator:
             return (notice + 'Open finding ledger: none. Return an empty prior_findings array.\n' +
                     LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
         rows = '\n'.join(f"- {finding['id']}: [source={finding['source']}; severity={finding['severity']}"
-                         + ('; security-tagged' if finding.get('security') else '') + f"] {finding['summary']}" for finding in findings)
+                         + ('; security-tagged' if finding.get('security') else '')
+                         + (f"; category={finding['category']}" if finding.get('category') else '')   # WI-GATE1 S3
+                         + ('; non-blocking' if not blocks_by_severity(finding) and finding.get('category') else '')
+                         + f"] {finding['summary']}" for finding in findings)
         return (notice + 'Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
                 'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n'
                 'Never report a listed finding again as a new one; its disposition above is its report.\n'
@@ -5204,7 +5294,7 @@ class Coordinator:
             self.verified_claims_prompt(),
             REVIEW_HISTORY_GUIDANCE,
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
-            self.allowed_command_prompt(), self.open_findings_prompt() + self.gate_items_prompt() + self.rejection_notes_prompt(),
+            self.allowed_command_prompt(), self.open_findings_prompt() + self.gate_items_prompt() + self.post_gate_prompt() + self.rejection_notes_prompt(),
             self._test_instruction(),
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
@@ -5646,7 +5736,8 @@ class Coordinator:
             return []
         shown = ', '.join(f'{marker!r} at {where}' for where, marker in hits[:10])
         return self.record_findings('independence-scan', phase, sequence, [{
-            'severity': 'MAJOR', 'file': hits[0][0],
+            'severity': 'MAJOR', 'file': hits[0][0], 'category': 'correctness',   # WI-GATE1 S3: a program row keeps blocking
+            'reachability': 'the fresh shadow and gate refuse this change on every run',
             'summary': (f'the change writes review history into the code ({shown}'
                         + (f', +{len(hits) - 10} more' if len(hits) > 10 else '') + ')'),
             'failure_scenario': ('the independent shadow and gate refuse inputs that carry review history, so the run '
@@ -5677,7 +5768,8 @@ class Coordinator:
         if opened:
             return opened
         tail = '\n'.join(str(failed.get('output') or '')[-2000:].splitlines()[-10:])
-        finding = {'severity': 'MAJOR', 'source': 'test-failure', 'file': '',
+        finding = {'severity': 'MAJOR', 'source': 'test-failure', 'file': '', 'category': 'correctness',   # WI-GATE1 S3
+                   'reachability': 'the configured test command fails on this tree',
                    'summary': ("the configured test command fails in the reviewer's own run "
                                f"(exit status {failed['exit_code']})"),
                    'failure_scenario': ('the configured tests do not pass; repair the failure and rerun the configured command'
@@ -5713,7 +5805,8 @@ class Coordinator:
         if not blocking:
             return []
         finding = {'severity': 'SECURITY', 'security': True, 'file': f"{blocking[0]['path']}:{blocking[0]['line']}",
-                   'summary': summary,
+                   'summary': summary, 'category': 'security',   # WI-GATE1 S3: a program row keeps blocking
+                   'reachability': 'merging the change publishes the credential',
                    'failure_scenario': ('a credential committed with the change is published with it; remove the literal from '
                                         'every listed line and read it from the environment or a secret store instead (a '
                                         'test needs an obviously fake value); if a listed line is a false positive or a '
@@ -6990,7 +7083,7 @@ class Coordinator:
             self.state.pop('pending_rejection_id', None)
             self.state['rejection_repair'] = rejection['id']   # R2 F5: the EXEC reviewer's until it approves
         key = f'{phase.lower()}_rounds'
-        if not rewriting: self.state[key] += 1
+        if not rewriting and self.state.get('next') != 'polish-fix': self.state[key] += 1   # R5: a POLISH-Q fix uses no EXEC round
         if phase == 'PLAN':
             atomic_text(self.run_dir / 'plan.md', answer['body'].rstrip() + '\n')
             atomic_text(self.run_dir / ('plan-rewrite.md' if rewriting else f"plan-{self.state[key]:02d}.md"), answer['body'].rstrip() + '\n')
@@ -7158,10 +7251,7 @@ class Coordinator:
         if answer['status'] == 'HOLD':
             self.hold('finisher: ' + answer['body'])
         elif self.state['lifecycle']['stage'] == 'EXEC':   # FINISH wrote: new convergence, the reviewer only (the gate ran once)
-            self.state['exec_rounds'] += 1
-            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
-            if self.state['exec_rounds'] > self.exec_round_limit():
-                self.round_limit_hold('EXEC round limit reached after a FINISH write')
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')   # R5: a FINISH write uses no EXEC round
         else:
             self.state['next'] = 'polish-q'
         self.save()
@@ -7171,7 +7261,6 @@ class Coordinator:
         protected path HOLDs. WI-GATE1: DOCS never reopens EXEC: a write outside the allowlist is rolled back to the
         pre-DOCS tree and recorded (HOLD only when the rollback fails), and a docs review REVISE goes back to the docs writer
         (bounded by the DOCS stage cap)."""
-        self._close_writer_replay_rounds()   # D09 F3: the writer replay's own rounds end where DOCS begins
         life, workspace = self.state['lifecycle'], self.workspace
         allow = set(self._docs_allowlist())
         request = worktree_lifecycle.stage_request(life, 'docs-writer')
@@ -7385,6 +7474,8 @@ class Coordinator:
                   '(in the paths listed below as Documentation written by the DOCS stage) is at least MAJOR. '
                   'Any claimed test, check or result that does not exist is also at least MAJOR, regardless of who '
                   'wrote it. Judge other inaccurate documentation with normal severity judgement. '
+                  'A document that states false behavior a user would act on is category correctness; wording, style, '
+                  'completeness and changelog phrasing are category other: reported, never a blocker, kept for the BACKLOG. '
                   'Do not modify any file. Documentation written by the '
                   'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
                   f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n' +
@@ -7429,16 +7520,20 @@ class Coordinator:
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
                 **({'operator_test_evidence': record['id']} if record else {})}
 
-    def add_run_backlog(self, source: str, phase: str, sequence: int, rows: list[dict]) -> None:
-        """WI-GATE1 R1 F6: non-blocking observations kept for later, outside the ledger: the state's `backlog` list and
-        backlog.md in the run dir (a later step carries them to the repository BACKLOG.md at accept). Never a repair."""
+    def add_run_backlog(self, source: str, phase: str, sequence: int, rows: list[dict],
+                        note: str = 'observation(s) on paths the stage cannot edit') -> None:
+        """WI-GATE1 R1 F6 / S3: non-blocking rows kept for later: the state's `backlog` list and backlog.md in the run dir;
+        accept carries them to the repository BACKLOG.md (_append_repo_backlog). Never a repair. A row may name its own
+        source, phase, origin round and ledger id (the open non-blocking ledger rows at DONE)."""
         entries = self.state.setdefault('backlog', [])
         known = {(row['source'], row['file'], row['summary']) for row in entries}
         added = []
         for row in rows:
-            entry = {'source': source, 'phase': phase, 'sequence': sequence, 'severity': str(row.get('severity', '')).upper(),
+            entry = {'source': row.get('source') or source, 'phase': row.get('phase') or phase,
+                     'sequence': row.get('origin_round', sequence), 'severity': str(row.get('severity', '')).upper(),
                      'file': row.get('file', ''), 'summary': str(row.get('summary', '')),
-                     'failure_scenario': str(row.get('failure_scenario', ''))}
+                     'failure_scenario': str(row.get('failure_scenario', '')),
+                     **({'id': row['id']} if row.get('id') else {}), **({'category': row['category']} if row.get('category') else {})}
             if (entry['source'], entry['file'], entry['summary']) not in known:
                 known.add((entry['source'], entry['file'], entry['summary']))
                 entries.append(entry)
@@ -7446,10 +7541,46 @@ class Coordinator:
         if not added:
             return
         atomic_text(self.run_dir / 'backlog.md', '# Run backlog (non-blocking)\n\n' + ''.join(
-            f"- [{row['source']} {row['phase']} #{row['sequence']}] {row['severity']} {row['file']}: {row['summary']}"
+            f"- [{row['source']} {row['phase']} #{row['sequence']}] " + (f"{row['id']} " if row.get('id') else '')
+            + f"{row['severity']} {row['file']}: {row['summary']}"
             + (f" ({row['failure_scenario']})" if row['failure_scenario'] else '') + '\n' for row in entries))
-        print(f"NOTE: {len(added)} {source} observation(s) on paths the stage cannot edit went to the run backlog "
-              f"({self.run_dir / 'backlog.md'}): " + ', '.join(row['file'] for row in added[:10]))
+        print(f"NOTE: {len(added)} {source} {note} went to the run backlog "
+              f"({self.run_dir / 'backlog.md'}): " + ', '.join(row.get('id') or row['file'] for row in added[:10]))
+
+    def _backlog_open_nonblocking(self) -> None:
+        """WI-GATE1 S3: every non-blocking row still open at DONE (or at an accept) is listed in the run backlog."""
+        if 'finding_ledger' not in self.state:   # a state without a ledger has no rows
+            return
+        self.add_run_backlog('ledger', 'DONE', self.state.get('sequence', 0), self.nonblocking_open_findings(),
+                             'non-blocking open finding(s)')
+
+    def _append_repo_backlog(self) -> bool:
+        """WI-GATE1 S3 (owner Q1): at accept, the run backlog is appended to the workspace BACKLOG.md (created with a '## P2'
+        heading when missing; appended at the end otherwise), one line per row; a line already there is not written again
+        (a replayed accept). Returns True when the file changed."""
+        self._backlog_open_nonblocking()
+        entries = self.state.get('backlog') or []
+        if not entries:
+            return False
+        path = self.workspace / 'BACKLOG.md'
+        text = path.read_text(encoding='utf-8') if path.is_file() else ''
+        today = datetime.now().astimezone().strftime('%Y-%m-%d')
+        lines = []
+        for row in entries:
+            head = (f"- {' '.join(row['summary'].split())} (review-loop run {self.run_dir.name}"
+                    + (f", {row['file']}" if row['file'] else '') + ')')
+            if head not in text and head not in lines:
+                lines.append(head)
+        if not lines:
+            return False
+        body = ''.join(f'{line} (added {today})\n' for line in lines)
+        if not text:
+            text = '# Backlog\n\n## P2\n\n'
+        elif not text.endswith('\n'):
+            text += '\n'
+        atomic_text(path, text + body)
+        self.state['repo_backlog'] = {'path': str(path), 'rows': len(lines)}
+        return True
 
     def _redispatch_budget(self, phase: str, voided: Exception) -> None:
         """INT-2c: a W read-only re-dispatch counts against its stage cap like any dispatch (the callers check room for their
@@ -7543,10 +7674,7 @@ class Coordinator:
             self.state['lifecycle'] = {key: value for key, value in life.items()
                                        if key not in ('security_base', 'security_turn', 'security_review')}
             self.state['lifecycle'].update(stage='EXEC', epoch=life['epoch'] + 1, candidate_oid=None)
-            self.state['exec_rounds'] += 1
-            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
-            if self.state['exec_rounds'] > self.exec_round_limit():
-                self.round_limit_hold('EXEC round limit reached after a SECURITY-stage change')
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')   # R5: a SECURITY-stage change uses no EXEC round
             self.save()
             return
         if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
@@ -7635,7 +7763,8 @@ class Coordinator:
         def row_for(kind: str, path: str, summary: str, what: str) -> dict:
             if path in changed and os.path.lexists(self.workspace / path):   # carried: in the change AND in the tree
                 return {'severity': 'CRITICAL', 'security': True, 'file': path, 'summary': f'[class: {kind}] {summary}',
-                        'body': f'The change carries {what}.', 'failure_scenario': 'Merging the change publishes it.'}
+                        'body': f'The change carries {what}.', 'failure_scenario': 'Merging the change publishes it.',
+                        'category': 'security', 'reachability': 'merging the change publishes it'}   # WI-GATE1 S3
             if path in changed:   # deleted or renamed away, staged or not: downgraded, not dropped (it stays in history)
                 return {'severity': 'MINOR', 'security': True, 'file': path, 'summary': f'[class: {kind}-removed] {summary}',
                         'body': f'{what[0].upper() + what[1:]} is removed by this change; it stays in the repository history.',
@@ -7774,7 +7903,9 @@ class Coordinator:
                               'authorization or input validation; unsafe subprocess, file or network handling; '
                               'sensitive files that should be ignored. Do not modify any file. Report every finding '
                               'in full_review. CRITICAL, MAJOR and SECURITY findings stop delivery; report a MINOR or LOW '
-                              'security concern as MINOR: it is listed in the delivery report but does not stop delivery.\n' + self._security_scan_note_prompt() +
+                              'security concern as MINOR: it is listed in the delivery report but does not stop delivery. '
+                              'A finding without a blocking category and a reachability statement (threshold below) does not '
+                              'stop delivery either.\n' + self._security_scan_note_prompt() +
                               worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
@@ -7895,10 +8026,8 @@ class Coordinator:
                                   *self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')) if path]
 
     def worktree_polish_fix_turn(self) -> None:
-        """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn)."""
-        if self.state['exec_rounds'] >= self.exec_round_limit():
-            self.round_limit_hold('EXEC round limit reached')
-            return
+        """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn). R5: it uses no
+        EXEC round; the POLISH-Q stage budgets bound it."""
         owners = self._blocker_owners()   # every owner's re-review must fit before the author writes
         for name in owners:
             self._specialist_budget(name)
@@ -8286,12 +8415,8 @@ class Coordinator:
                   'writers': [w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if (marker.get(w) or {}).get('state') == 'wrote'],
                   'statuses': {row['id']: row['status'] for row in self.state['finding_ledger']}}
         self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None, 'writer_replay': replay}
-        self.state['writer_replay_rounds'] = {'start': self.state['exec_rounds'], 'used': None}   # F3: its own budget
-        self.state['exec_rounds'] += 1
-        self.state.update(phase='EXEC', next='reviewer', delivered_review='')
+        self.state.update(phase='EXEC', next='reviewer', delivered_review='')   # R5: a writer replay uses no EXEC round
         self.progress('quality-writer', writer=', '.join(replay['writers']), state=f"replay epoch {replay['epoch']}")
-        if self.state['exec_rounds'] > self.exec_round_limit():
-            self.round_limit_hold('EXEC round limit reached after a writer pass')
 
     def _writer_review_rollback(self, source: str, sequence: int) -> bool:
         """§2 "one chance in review": a replay non-approval other than eligible advisory REVISE (the gate never reviews a
@@ -8313,11 +8438,9 @@ class Coordinator:
                 self._writer_state(writer, {**marker[writer], 'state': 'rolled-back:review', 'review': source, 'review_diff': diff})
             replay.update(writers=[w for w in replay['writers'] if w not in targets], partial=True, sequence=self.state['sequence'],
                           statuses={row['id']: row['status'] for row in self.state['finding_ledger']})
-            self.state['exec_rounds'] += 1   # the replay's one fix round (F3 budget): review the kept change again
+            # R5: a writer rollback uses no EXEC round; the kept writer change is reviewed again
             self.state.update(next='reviewer', delivered_review='', pending_reviewer_result_sequence=None)
             self.progress('quality-writer', writer=', '.join(targets), state='rolled-back:review', detail='the other writer is reviewed again')
-            if self.state['exec_rounds'] > self.exec_round_limit():
-                self.round_limit_hold('EXEC round limit reached after a writer rollback')
             self.save()
             return True
         retained = self._writer_unrelated_findings(replay, marker)
@@ -8333,7 +8456,7 @@ class Coordinator:
             self.state.update(pending_reviewer_result_sequence=None)
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
-                self.round_limit_hold('EXEC round limit reached')
+                self.round_limit_hold(self._exec_limit_reason())
                 return True
             self.state.update(next='author', delivered_review=self._writer_repair_review(retained))
             self.save()
@@ -8607,25 +8730,44 @@ class Coordinator:
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.'])
 
+    def _exec_round_extra(self) -> int:
+        """Rounds the operator or an opted-in stage granted on top of a cap: resume --add-rounds, a counted rejection, ADVFIX."""
+        return (self._round_extensions('EXEC') + self._counted_rejections() +
+                ((self.state.get('advisory_fix') or {}).get('state') == 'ran'))   # ADVFIX: its own one round
+
+    def _exec_limits(self) -> tuple[int, str]:
+        """WI-GATE1 S4 (research-rc round rules R1-R6, owner-approved 2026-11-19): the EXEC author-round limit and the rule
+        that sets it. EXEC rounds count author turns that the reviewer reviews (FINISH, POLISH-Q, DOCS and SECURITY writes,
+        writer replays and failed turns do not count, R5).
+        R1: before the gate, --max-exec-rounds (default 3).
+        R2: after a gate FAIL, one automatic fix round and at most one more (the round of the FAIL plus 2).
+        R3: a hard cap of 5 rounds in total (or --max-exec-rounds + 2 when that is higher), a runaway guard.
+        Every operator grant (--add-rounds, a rejection, ADVFIX) lands on top of each."""
+        extra = self._exec_round_extra()
+        if fail := self.state.get('gate_fail_round'):
+            limit, rule = fail['round'] + POST_GATE_FIX_ROUNDS + extra - fail['extra'], 'R2'   # grants after the FAIL only
+        else:
+            limit, rule = self.args.max_exec_rounds + extra, 'R1'
+        hard = max(EXEC_HARD_ROUND_CAP, self.args.max_exec_rounds + POST_GATE_FIX_ROUNDS) + extra
+        return (hard, 'R3') if hard < limit else (limit, rule)
+
     def exec_round_limit(self) -> int:
-        """D09 F3 (owner 2026-10-06, "回放单独计数"): a writer replay round and its one fix round have their own fixed
-        budget, never --max-exec-rounds. While the replay is open (until DOCS) the limit is the round it started at plus
-        those 2, or the ordinary limit when that is higher (D09-F2: ordinary rounds left stay usable, e.g. a FINISH write
-        after a partial rollback); at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
-        `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
-        rounds, added = self.state.get('writer_replay_rounds'), self._round_extensions('EXEC')
-        ordinary = (self.args.max_exec_rounds + self._counted_rejections() + added +
-                    ((self.state.get('advisory_fix') or {}).get('state') == 'ran') +   # ADVFIX: its own one round
-                    bool(self.state.get('gate_extra_round')))   # WI-GATE1 Q3: one fix round after a gate FAIL at the cap
-        if rounds and rounds.get('used') is None:   # L100: an operator extension always lands on top, never inside the max
-            return max(rounds['start'] + 2, ordinary - added) + added
-        return ordinary + (rounds['used'] if rounds else 0)
+        return self._exec_limits()[0]
+
+    def _exec_limit_reason(self) -> str:
+        """The HOLD reason of the EXEC round rule that is exhausted (the printed NOTE names the rule)."""
+        rule = self._exec_limits()[1]
+        if rule == 'R2' and self.gate_fail_open_items():
+            return GATE_SPLIT_REASON
+        return HARD_CAP_REASON if rule == 'R3' else 'EXEC round limit reached'
 
     def at_round_limit_hold(self) -> bool:   # L100: the current HOLD is the one round_limit_hold recorded (writer passes too)
         return self.state.get('status') == 'HOLD' and (self.state.get('round_limit_hold') or {}).get('hold_reason') == self.state.get('hold_reason')
 
     def round_limit_hold_within_limit(self) -> bool:
         """V317-G2: the held phase's round count is within its limit, so plain resume re-reviews the same tree."""
+        if self.state['round_limit_hold'].get('hold_reason', '').startswith(STOP_RULE_REASONS):
+            return False   # WI-GATE1 R4: a stop rule asks the owner; only --add-rounds continues
         if self.state['round_limit_hold'].get('phase') == 'PLAN':
             return self.state['plan_rounds'] <= self.plan_round_limit()
         if self.state.get('next') == 'author':   # v3.8.1: a docs review REVISE at the cap waits for an author round
@@ -8647,7 +8789,9 @@ class Coordinator:
         held = self.state['round_limit_hold']
         self.state.setdefault('round_extensions', []).append({'phase': held['phase'], 'n': n, 'hold_reason': held['hold_reason'],
                                                                'timestamp': datetime.now().astimezone().isoformat()})
-        if held['hold_reason'] in ROUND_LIMIT_REASONS[:3] and self.state['next'] in ('reviewer', 'gate'):
+        if self.state.get('stop_rules'):   # WI-GATE1 R4: the streaks start again after the operator's extension
+            self.state['stop_rules'].update(still_open=[], new_blocking_streak=0)
+        if held['hold_reason'] in REVIEW_LIMIT_REASONS and self.state['next'] in ('reviewer', 'gate'):
             blocking = self.blocking_open_findings()
             rows = blocking + [row for row in self.open_findings() if row not in blocking]
             writers = (self.state.get('lifecycle') or {}).get('quality_writers') or {}
@@ -8656,10 +8800,6 @@ class Coordinator:
                 for writer in worktree_lifecycle.QUALITY_WRITERS['both'])
             self.state.update(next='author', delivered_review=(self._writer_repair_review(rows, 'round-limit-extension')
                               if rolled_back else worktree_lifecycle.delivered_findings('round-limit-extension', rows)))
-
-    def _close_writer_replay_rounds(self) -> None:
-        if (rounds := self.state.get('writer_replay_rounds')) and rounds.get('used') is None:
-            rounds['used'] = 1 + min(1, max(0, self.state['exec_rounds'] - rounds['start'] - 1))
 
     def reviewer_turn(self) -> None:
         phase = self.state['phase']
@@ -8708,6 +8848,9 @@ class Coordinator:
                 self.hold('reviewer omitted open finding dispositions after retry: ' + ', '.join(missing))
                 return
         reviewer_raw_verdict = answer['status']
+        post_gate = self._post_gate_review(phase, result.get('open_finding_ids') or [])
+        if post_gate:   # R2 / owner 2026-11-20: after the gate only the gate items and regressions of the fix block
+            self._mark_post_gate_findings(answer['full_review'], regression_marker=True)
         reviewer_findings_advisory = self.findings_are_advisory(answer['full_review'])
         if phase == 'PLAN':
             answer['full_review'], out_of_phase = self.normalize_plan_findings(answer['full_review'])
@@ -8743,13 +8886,14 @@ class Coordinator:
                 shadow = self.invoke('shadow', phase, self._review_prompt('shadow', shadow_snapshot),
                                      fresh_review_schema(), fresh=True)
             shadow['answer'] = copy.deepcopy(shadow['answer'])
+            if post_gate:   # the fresh shadow cannot tell a regression of the fix: its post-gate findings go to the BACKLOG
+                self._mark_post_gate_findings(shadow['answer']['full_review'], regression_marker=False)
             shadow_rows = self.record_findings('fresh-shadow', phase, shadow['sequence'],
                                                shadow['answer']['full_review'])
             for row in shadow_rows:
                 row['source'] = 'fresh-shadow'
             shadow['answer']['full_review'] = shadow_rows
-            shadow_blocking = [row for row in shadow_rows
-                               if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES]
+            shadow_blocking = [row for row in shadow_rows if blocks_by_severity(row)]   # WI-GATE1 S3
             if shadow_blocking:
                 answer['full_review'].extend(shadow_blocking)
                 if answer['status'] == 'APPROVE':
@@ -8760,24 +8904,23 @@ class Coordinator:
                 self.hold(hold_explanation('shadow HOLD', shadow_rows, shadow['answer'].get('self_run_evidence')))
                 return
         limit = self.plan_round_limit() if phase == 'PLAN' else self.exec_round_limit()
-        at_phase_limit = self.state[f'{phase.lower()}_rounds'] >= limit
-        advisory = self.state.get('advisory_fix') or {}   # ADVFIX: the round's re-review lets a pure-advisory REVISE pass,
-        if phase == 'EXEC' and advisory.get('state') == 'ran' and advisory.get('epoch') == (self.state.get('lifecycle') or {}).get('epoch'):
-            at_phase_limit = True   # as at the final round: one fix round, never a second for advisory findings
-        # V316 (owner 2026-10-13): a REVISE without any finding that only reports earlier rows still_open (field: gate
-        # MEDIUM/LOW rows after a repair round) takes the same exit; blocking_open_findings() below keeps blocking rows a HOLD
+        if (phase == 'EXEC' and failures and reviewer_raw_verdict == 'APPROVE' and not leak and not secrets and not [
+                row for row in self.blocking_open_findings() if row['source'] != 'test-failure']):
+            # R5: the reviewer approved and only the configured test failed in its sandbox: no fix round is used; the
+            # operator runs the test on the host and attaches the record (or fixes a real failure), then resume re-reviews
+            self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
+            self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
+            self.hold(TEST_EVIDENCE_HOLD)
+            return
+        # V316 (owner 2026-10-13): a REVISE without any finding that only reports earlier rows still_open takes the same exit;
+        # WI-GATE1 S3 (owner 2026-11-19): a REVISE whose open rows are all below the blocking threshold is an approval with
+        # advisory rows (no fix round; the V317 advisory repair round is gone); the rows go to the BACKLOG at DONE
         still_open = [row for row in answer['prior_findings'] if row.get('disposition') == 'still_open']
-        only_still_open = not answer['full_review'] and bool(still_open)   # V317: PLAN takes the same exit at its cap
-        advisory_only = (answer['status'] == 'REVISE'
+        only_still_open = not answer['full_review'] and bool(still_open)
+        advisory_exit = (answer['status'] == 'REVISE'
                          and ((reviewer_findings_advisory and self.findings_are_advisory(answer['full_review']))
                               or only_still_open)
-                         and not self.blocking_open_findings())
-        attempt = self.state.get('advisory_repair_attempts', {}).get(phase)
-        advisory_exit = (advisory_only
-                         and (at_phase_limit
-                              or (phase == 'EXEC' and replaying)   # V317-REPLAY: keep eligible writer changes with advisories
-                              or (attempt is not None and attempt < result['sequence']))   # V317-ONCE: one attempt per phase
-                         and (phase != 'EXEC' or
+                         and (phase != 'EXEC' or   # an EXEC approval still needs this tree and a passing test it observed
                               answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
                          and (phase == 'PLAN' or   # after the tree check: the record lookup voids records of other trees
                               (((self.configured_test_succeeded(result['answer'])
@@ -8808,7 +8951,9 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         effective_verdict = 'REVISE' if plan_history else 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal) and not plan_history)
-        new_blocking = [row for row in new_rows if row['severity'].upper() in BLOCKING_REVIEW_SEVERITIES]
+        new_blocking = [row for row in new_rows if blocks_by_severity(row)]   # WI-GATE1 S3
+        stop_rule = (self._update_stop_rules(result['sequence'], answer, effective_verdict)
+                     if phase == 'EXEC' and not self.state['config'].get('review_report') else None)
         structural = (self._structural_block_hold('reviewer', result['sequence'], new_blocking)   # FIELD-5: only NEW blockers form a BLOCK
                       if phase == 'EXEC' and answer['status'] == 'REVISE' and new_blocking else None)
         if phase == 'EXEC':
@@ -8861,40 +9006,31 @@ class Coordinator:
             if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: no fix round
                 return
             rounds = self.state[f'{phase.lower()}_rounds']
-            if rounds >= limit:
+            if rounds >= limit and (secrets or not stop_rule):   # a stop rule (R4) names the cause better than the cap
                 self.state['pending_reviewer_result_sequence'] = None
                 if secrets:
                     self.hold(self._secret_scan_hold_reason())
                     return
-                self.round_limit_hold('EXEC round limit reached after adversarial gate' if phase == 'EXEC' and
-                                      self.state.get('gate_extra_round') and self.gate_fail_open_items()
-                                      else f'{phase} round limit reached')   # WI-GATE1 Q3: no round after the extra one
+                self.round_limit_hold(self._exec_limit_reason() if phase == 'EXEC' else f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
-            # V317-G1: the phase's one advisory-only repair attempt says so and gives each row left open with its summary;
-            # every other REVISE is unchanged
-            repair = advisory_only and attempt in (None, result['sequence'])
-            summaries = {row['id']: row['summary'] for row in self.state['finding_ledger']} if repair else {}
             self.state['delivered_review'] = json.dumps({
                 'source': 'persistent-reviewer+fresh-shadow' if any(
                     row.get('source') == 'fresh-shadow' for row in answer['full_review'])
                     else 'persistent-reviewer', 'status': answer['status'],
-                **({'advisory_only': True} if repair else {}),
                 'findings': [{**{key: row[key] for key in
                                  ('id', 'severity', 'file', 'summary', 'failure_scenario')},
-                              'source': row.get('source', 'persistent-reviewer')}
+                              'source': row.get('source', 'persistent-reviewer'),
+                              **({'blocking': False} if not blocks_by_severity(row) else {})}   # WI-GATE1 S3: for the BACKLOG
                              for row in answer['full_review']],
                 'prior_findings': [{'id': row['id'], 'fixed': row['disposition'] != 'still_open',
-                                    'evidence': row['evidence'],
-                                    **({'summary': summaries[row['id']]} if row['disposition'] == 'still_open'
-                                       and row['id'] in summaries else {})} for row in answer['prior_findings']],
+                                    'evidence': row['evidence']} for row in answer['prior_findings']],
             }, ensure_ascii=False)
-            # V317-ONCE: count only an advisory REVISE actually sent to the author.
-            # Keep its sequence so replay of that result still requests the first repair.
-            # Later blocking rounds neither consume nor reset the phase's attempt.
-            if advisory_only:
-                self.state.setdefault('advisory_repair_attempts', {}).setdefault(phase, result['sequence'])
             self.state['next'] = 'author'
+            if stop_rule:   # R4b / R4c (before the cap: it names the cause); --add-rounds dispatches the author
+                self.state['pending_reviewer_result_sequence'] = None
+                self.round_limit_hold(stop_rule)
+                return
             if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence); resume routes to the author
                 self.state['pending_reviewer_result_sequence'] = None
                 self._structural_hold(structural)
@@ -9084,6 +9220,64 @@ class Coordinator:
                 'withdrawn disposition is recorded as still_open). There is no second gate: your APPROVE with every item fixed '
                 'ends EXEC review.\n' + rows + '\n')
 
+    def _post_gate_review(self, phase: str, open_ids: Optional[list] = None) -> bool:
+        """R2 / owner ruling 2026-11-20 ("只复查门审没过的那几项，再加上这次修改本身弄坏的东西"): an EXEC review of a gate FAIL fix,
+        i.e. one dispatched while a gate FAIL item was open (open_ids: the turn's open rows at dispatch), outside a post-DONE
+        rejection repair (Q4: the persistent reviewer reviews it in full) and report mode. A later FINISH or writer re-review
+        keeps the ordinary threshold, so a writer's regression still blocks and rolls the writer back."""
+        if phase != 'EXEC' or not self.state.get('gate_ran') or self.state.get('rejection_repair') \
+                or self.state['config'].get('review_report'):
+            return False
+        if open_ids is None:
+            return bool(self.gate_fail_open_items())
+        return bool({item['id'] for item in self.state.get('gate_fail_items') or []} & set(open_ids))
+
+    @staticmethod
+    def _mark_post_gate_findings(findings: list[dict], regression_marker: bool) -> None:
+        """A post-gate finding blocks only as a regression of the change since the gate: the persistent reviewer says so by
+        starting its reachability with 'regression:'; every other one (and every fresh shadow one) is non-blocking."""
+        for row in findings:
+            regression = regression_marker and str(row.get('reachability') or '').strip().lower().startswith('regression:')
+            if not regression:
+                row['post_gate_nonblocking'] = True
+
+    def post_gate_prompt(self) -> str:
+        if not self._post_gate_review(self.state['phase']):
+            return ''
+        return ('## Post-gate review\nThe gate has run once. Review the complete change since the gate, but only the open '
+                'gate FAIL items above and blocking regressions introduced by the changes made since the gate can keep this '
+                'review from passing: start the reachability of such a regression with "regression:". Report every other '
+                'new finding as usual; the coordinator keeps it for the BACKLOG and it does not block.\n')
+
+    def _update_stop_rules(self, sequence: int, answer: dict, verdict: str) -> Optional[str]:
+        """R4 (decided by the coordinator from the ledger), for one EXEC reviewer verdict: (b) the same blocking row marked
+        still_open in two consecutive reviews; (c) after an approval, two consecutive reviews that each add a NEW blocking row
+        (category and reachability: blocks_by_severity). Gate FAIL items stay with R2. A replayed verdict is counted once;
+        --add-rounds restarts both streaks. Returns the HOLD reason, or None."""
+        rules = self.state.setdefault('stop_rules', {'sequence': 0, 'still_open': [], 'new_blocking_streak': 0,
+                                                     'approved': False})
+        if sequence <= rules['sequence']:
+            return None
+        rules['sequence'] = sequence
+        if verdict != 'REVISE':
+            rules.update(approved=rules['approved'] or verdict.startswith('APPROVE'), still_open=[], new_blocking_streak=0)
+            return None
+        ledger = {row['id']: row for row in self.state['finding_ledger']}
+        gate_ids = {item['id'] for item in self.state.get('gate_fail_items') or []}
+        still = sorted(row['id'] for row in answer.get('prior_findings') or [] if row.get('disposition') == 'still_open'
+                       and row['id'] in ledger and row['id'] not in gate_ids and blocks_by_severity(ledger[row['id']]))
+        repeated = sorted(set(still) & set(rules['still_open']))
+        rules['still_open'] = still
+        new = sorted(row['id'] for row in ledger.values() if row.get('origin_round') == sequence and row['status'] == 'open'
+                     and row.get('source') != 'adversarial-gate' and blocks_by_severity(row))
+        if rules['approved']:
+            rules['new_blocking_streak'] = rules['new_blocking_streak'] + 1 if new else 0
+        if repeated:
+            return f"{STILL_OPEN_REASON}: {', '.join(repeated)}; ask the owner how to proceed"
+        if rules['approved'] and rules['new_blocking_streak'] >= 2:
+            return f"{NEW_BLOCKERS_REASON}: {', '.join(new)}"
+        return None
+
     def rejection_notes_prompt(self) -> str:
         """WI-GATE1 Q4 (owner 2026-11-19): every operator rejection note reaches every later EXEC review round."""
         notes = [row for row in self.state.get('rejections', []) if row.get('text')]
@@ -9102,12 +9296,6 @@ class Coordinator:
                 row['evidence'] = 'withdrawal refused: a gate FAIL item closes only as fixed. ' + str(row.get('evidence', ''))
                 refused.append(row['id'])
         return refused
-
-    def gate_fail_extra_round(self) -> bool:
-        """WI-GATE1 Q3 (owner 2026-11-19): a gate FAIL that arrives with the EXEC round limit used up still gets exactly one
-        fix + review round beyond the cap (the FAIL items as mandatory checks); a REVISE in that round HOLDs. The one switch
-        for this policy: return False to HOLD at once ('EXEC round limit reached after adversarial gate')."""
-        return True
 
     def _gate_answer(self) -> Optional[dict]:
         """The gate verdict to process: an unprocessed recorded one (a crash after the turn), else a new dispatch with one
@@ -9199,6 +9387,8 @@ class Coordinator:
         snapshot = result.get('snapshot') or git_snapshot(self.workspace)[0]
         items = answer['fail_items'] if answer['verdict'] == 'FAIL' else []
         rows = [{'severity': 'high', 'file': gate_evidence_file(item['evidence']),
+                 'category': item['blocking_class'] if item['basis'] != 'criterion' and item['blocking_class'] in BLOCKING_CATEGORIES
+                 else 'correctness', 'reachability': item['evidence'],   # WI-GATE1 S3: a gate FAIL item always blocks
                  'summary': '[gate FAIL] ' + ' '.join((item['criterion'] if item['basis'] == 'criterion'
                                                        else item['blocking_class'] + ': ' + item['smallest_change']).split())[:200],
                  'body': gate_item_text(item)} for item in items]
@@ -9229,13 +9419,15 @@ class Coordinator:
         self.save()
 
     def _route_gate_fail(self, recorded: list[dict], sequence: int, structural: Optional[dict]) -> None:
-        """The post-gate repair: the FAIL items go to the author; at the EXEC round cap, Q3's one extra round."""
+        """The post-gate repair: the FAIL items go to the author. R2 (supersedes Q3): from the round of the FAIL, one automatic
+        fix round and at most one more, wherever the pre-gate cap stood; only the hard cap (R3) can stop it here."""
         self.set_effective_verdict('REVISE')
+        if not self.state.get('gate_fail_round'):
+            self.state['gate_fail_round'] = {'round': self.state['exec_rounds'], 'extra': self._exec_round_extra(),
+                                             'sequence': sequence}
         if self.state['exec_rounds'] >= self.exec_round_limit():
-            if not self.gate_fail_extra_round():
-                self.round_limit_hold('EXEC round limit reached after adversarial gate')
-                return
-            self.state['gate_extra_round'] = {'sequence': sequence, 'at_round': self.state['exec_rounds']}
+            self.round_limit_hold(self._exec_limit_reason())
+            return
         advisory = self.nonblocking_open_findings()
         self.state['delivered_review'] = json.dumps({
             'source': 'adversarial-gate', 'status': 'FAIL',
@@ -9667,7 +9859,8 @@ def parser() -> argparse.ArgumentParser:
                    help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
     p.add_argument('--max-plan-rounds', type=int, default=3)
-    p.add_argument('--max-exec-rounds', type=int, default=4)
+    p.set_defaults(max_exec_rounds_explicit=False)
+    p.add_argument('--max-exec-rounds', type=int, default=3, action=StoreExplicitInteger)   # WI-GATE1 R1
     p.set_defaults(max_invocations_explicit=False)
     p.add_argument('--max-invocations', type=int, default=25, action=StoreExplicitInteger)
     p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT_SECONDS,
