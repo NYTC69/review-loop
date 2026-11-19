@@ -232,6 +232,18 @@ def mutate(mode):
             target.unlink()
 
 
+def legacy_gate_schema(args) -> bool:
+    """The gate schema of a coordinator released before WI-GATE1 (verdict approve / needs-attention)."""
+    for flag in ('--json-schema', '--output-schema'):
+        if flag in args[:-1]:
+            value = args[args.index(flag) + 1]
+            if flag == '--output-schema':
+                try: value = Path(value).read_text()
+                except OSError: return False
+            return 'needs-attention' in value
+    return False
+
+
 def main():
     args = sys.argv[1:]
     prompt = sys.stdin.read()
@@ -373,6 +385,8 @@ def main():
             if (rejection and not docs_rejection and
                     not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE')):
                 module.write_text(module.read_text() + '# rejection applied\n')
+                if os.environ.get('FAKE_AUTHOR_REJECTION_ID') and (seen := re.search(r'\[(R\d{3}) sha256=', prompt)):
+                    module.write_text(module.read_text() + f'# {seen.group(1)}\n')   # WI-GATE1: one new tree per rejection
             if os.environ.get('FAKE_AUTHOR_WRITE_NEW_TREE'):
                 module.write_text(module.read_text() + '# resumed author output\n')
             if 'docs entry still wrong' in prompt:   # worktree-lifecycle: the EXEC author fixes a DOCS-owned entry
@@ -456,8 +470,16 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('# Fake lifecycle guide\n')
         if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
-            Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: EXEC replays
+            Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: rolled back (WI-GATE1)
             module.write_text(module.read_text() + '# docs comment fix\n')
+        if 'Phase: DOCS' in prompt and 'The fresh docs review of the current documentation requested changes' in prompt:
+            changelog = Path.cwd() / 'CHANGELOG.md'   # WI-GATE1: a docs review REVISE goes back to the docs writer
+            fails = os.environ.get('FAKE_DOCS_FIX_FAILS_ONCE')   # the first attempt misses the entry
+            if fails and not Path(fails).exists():
+                Path(fails).write_text('missed once\n')
+                changelog.write_text((changelog.read_text() if changelog.exists() else '') + '# attempted fix\n')
+            else:
+                changelog.write_text((changelog.read_text() if changelog.exists() else '') + '# corrected entry\n')
         answer = ({'status': 'HOLD', 'body': 'Fake docs writer held.'} if 'Phase: DOCS' in prompt and os.environ.get('FAKE_DOCS_HOLD') else
                   {'status': 'HOLD', 'body': 'Fake finisher held.'} if os.environ.get('FAKE_FINISH_HOLD') else
                   {'status': 'READY', 'body': 'Checked readiness; ' + ('fixed a defect.' if
@@ -478,33 +500,43 @@ def main():
             blocking = '1'
         if os.environ.get('FAKE_WRITER_BLOCK_SOURCE') == 'gate' and (Path.cwd() / 'writer_note.py').exists():
             blocking = '1'
+        # WI-GATE1: the gate answers PASS or FAIL against the acceptance criteria; FAIL items carry basis, evidence,
+        # smallest change and proof. FAKE_GATE_MALFORMED=<field>|none|unmet (1 = evidence) blanks that field, sends no
+        # items, or PASSes with an unmet criterion; FAKE_GATE_MALFORMED_ONCE=<marker> does so once only.
         malformed = os.environ.get('FAKE_GATE_MALFORMED')
-        findings = []
-        if blocking or malformed:
-            body = ('Trigger: bool input. Reachability: public API. Impact: wrong sum. Likelihood: common. '
-                    'Fix cost: one type check. Cheaper response: tests alone do not fix behavior.' if blocking
-                    else 'Trigger: bool input only.')
-            if os.environ.get('FAKE_FINDING_CLASS'):
-                body = '[class: ' + os.environ['FAKE_FINDING_CLASS'] + '] ' + body
-            findings = [{'severity': 'high', 'file': os.environ.get('FAKE_GATE_FINDING_FILE', 'sum_ints.py'), 'line_start': 1, 'line_end': 3,
-                         'confidence': 0.9, 'recommendation': 'reject bool', 'body': body}]
-            if blocking and (extra := os.environ.get('FAKE_GATE_BLOCK_WITH')):   # V316: low|medium next to the blocker
-                findings.append({'severity': extra, 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3, 'confidence': 0.8,
-                                 'recommendation': 'simplify the helper',
-                                 'body': 'Non-blocking cleanup suggested by the fake gate.'})
-        elif (scope := os.environ.get('FAKE_GATE_SCOPE')) and 'operator decision: ' + scope not in prompt:
-            findings = [{'severity': 'medium', 'file': 'sum_ints.py', 'line_start': 1, 'line_end': 3,
-                         'confidence': 0.8, 'recommendation': 'expanded export scope',
-                         'body': 'The export change exceeds the approved scope.'}]
-        elif os.environ.get('FAKE_GATE_MINOR') or os.environ.get('FAKE_GATE_LOW'):
-            findings = [{'severity': 'low' if os.environ.get('FAKE_GATE_LOW') else 'medium',
-                         'file': 'sum_ints.py', 'line_start': 1,
-                         'line_end': 3, 'confidence': 0.8,
-                         'recommendation': 'simplify the helper',
-                         'body': 'Non-blocking cleanup suggested by the fake gate.'}]
-        answer = {'verdict': 'needs-attention' if findings else 'approve',
-                  'findings': findings,
+        if (once := os.environ.get('FAKE_GATE_MALFORMED_ONCE')):
+            if Path(once).exists():
+                malformed = None
+            else:
+                Path(once).write_text('malformed\n')
+                malformed = malformed or 'evidence'
+        criterion = 'sum_ints returns the integer sum and rejects bool input'
+        fail_items, met = [], True
+        if (scope := os.environ.get('FAKE_GATE_SCOPE')) and 'operator decision: ' + scope not in prompt:
+            blocking, met = blocking or 'scope', False
+        if blocking or malformed not in (None, '', 'unmet'):
+            item = {'basis': 'blocking-class', 'criterion': '', 'blocking_class': 'correctness',
+                    'evidence': os.environ.get('FAKE_GATE_FINDING_FILE', 'sum_ints.py') + ':1 accepts bool input',
+                    'smallest_change': 'reject bool', 'proof': 'test_sum_ints rejects True'}
+            if not met or malformed == 'criterion':
+                item.update(basis='criterion', criterion=criterion, blocking_class='')
+            if malformed:
+                field = 'evidence' if malformed == '1' else malformed
+                if field in item:
+                    item[field] = ''
+            fail_items = [] if malformed == 'none' else [item]
+        answer = {'verdict': 'FAIL' if fail_items or malformed == 'none' else 'PASS',
+                  'criteria': [{'criterion': criterion, 'met': met and malformed != 'unmet' and not fail_items,
+                                'evidence': 'sum_ints.py:1'}],
+                  'fail_items': fail_items,
                   'self_run_evidence': [{'command': configured_test}]}
+        if legacy_gate_schema(args):   # a released coordinator before WI-GATE1 (upgrade tests): its old gate contract
+            answer = {'verdict': 'needs-attention' if fail_items else 'approve', 'self_run_evidence': answer['self_run_evidence'],
+                      'findings': [{'severity': 'high', 'file': os.environ.get('FAKE_GATE_FINDING_FILE', 'sum_ints.py'),
+                                    'line_start': 1, 'line_end': 3, 'confidence': 0.9, 'recommendation': 'reject bool',
+                                    'body': ('Trigger: bool input. Reachability: public API. Impact: wrong sum. Likelihood: '
+                                             'common. Fix cost: one type check. Cheaper response: tests alone do not fix behavior.')}
+                                   for _ in fail_items]}
         command_events = [{'command': configured_test, 'exit_code': 0, 'output': 'OK'}] if vendor == 'codex' else None   # G-b: a Codex gate observes the configured test like the Claude fake
     else:
         role = ('gate' if prompt.startswith('You are an adversarial reviewer') else
@@ -637,6 +669,15 @@ def main():
             revise = True
             prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'docs entry still wrong'}
                      for finding_id in open_ids]
+        withdraw = os.environ.get('FAKE_EXEC_WITHDRAW_GATE_ONCE')   # WI-GATE1: the reviewer tries to withdraw a gate FAIL item
+        if withdraw and role == 'reviewer' and phase == 'EXEC' and '(gate FAIL item)' in prompt and not Path(withdraw).exists():
+            Path(withdraw).write_text('withdrawn\n')
+            gate_ids = {line[2:].split(' ', 1)[0] for line in prompt.splitlines() if line.endswith('(gate FAIL item):')}
+            prior = [{**row, 'disposition': 'withdrawn', 'evidence': 'fake: not a real defect'} if row['id'] in gate_ids else row
+                     for row in prior]
+        if (log := os.environ.get('FAKE_REVIEW_PROMPT_LOG')) and role == 'reviewer' and phase == 'EXEC':
+            with open(log, 'a') as out:   # WI-GATE1: what each EXEC reviewer round was asked to check
+                out.write(json.dumps(prompt) + '\n')
         keep, keep_if = os.environ.get('FAKE_EXEC_STILL_OPEN'), os.environ.get('FAKE_EXEC_STILL_OPEN_IF_FILE')
         if keep and role == 'reviewer' and phase == 'EXEC' and (not keep_if or Path(keep_if).exists()):
             # V316: the open rows whose ledger line has this text stay open; REVISE without a finding of its own

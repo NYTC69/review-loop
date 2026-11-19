@@ -225,16 +225,16 @@
       "needle": "technically correct"
     },
     {
-      "id": "gate_fallback_prompt_blocking_rubric",
+      "id": "gate_fallback_prompt_fail_basis",
       "kind": "contains",
       "path": "scripts/adversarial_gate_fallback_prompt.txt",
-      "needle": "Blocking rubric: every finding with severity critical or high blocks the"
+      "needle": "Verdict: FAIL when an acceptance criterion is not met, or when the change has\na blocking-class defect (correctness, data-loss, security, money) even if no\nwritten criterion covers it."
     },
     {
-      "id": "gate_fallback_prompt_inline_labels",
+      "id": "gate_fallback_prompt_fail_item_fields",
       "kind": "contains",
       "path": "scripts/adversarial_gate_fallback_prompt.txt",
-      "needle": "Cheaper response: <why a lighter response is\ninsufficient>."
+      "needle": "An item missing any of these is malformed and\nthe answer is not a verdict."
     },
     {
       "id": "entry_key_documented_in_config_example",

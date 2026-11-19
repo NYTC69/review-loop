@@ -109,10 +109,10 @@ def writer_prompt(writer, body, paths, test_command, reserved):
 def docs_prompt(docs_file, allowlist, run_id, workitem):
     return ('Role: docs writer, fresh. Phase: DOCS.\n'
             'The reviewed change in this worktree is ready for delivery. Bring the documentation in line with it: '
-            'update docs that describe changed behavior, APIs or logic, and fix stale '
-            'comments in the changed files. Documentation paths you may write: ' + (', '.join(allowlist) or 'none') +
-            '. Any other write (a comment or code fix) sends the change back through EXEC review and the gate; agent, '
-            'skill, protocol, config, manifest and Git files and symlinks are refused. ' +
+            'update docs that describe changed behavior, APIs or logic. Documentation paths you may write: ' +
+            (', '.join(allowlist) or 'none') +
+            '. Any other write (a comment or code fix) is rolled back and recorded; name a stale comment in your answer '
+            'body instead. Agent, skill, protocol, config, manifest and Git files and symlinks are refused. ' +
             (f'Add one entry for run {run_id} to {docs_file} with the work item and the changes, '
              'replacing an earlier entry for this run. Do not state test, check, review or security results unless '
              'you ran or read them yourself in this turn and can name them; final review, security and commit facts '

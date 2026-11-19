@@ -2180,7 +2180,7 @@ def verified_claims_error(answer: dict) -> str:
                 not isinstance(claim['file'], str) or not claim['file'].strip() or
                 type(claim['line']) is not int or claim['line'] < 1):
             return 'verified_claims entries require nonempty claim/file and a positive integer line'
-    if answer.get('status', answer.get('verdict', '')).lower() == 'approve' and not claims:
+    if answer.get('status', answer.get('verdict', '')).lower() in ('approve', 'pass') and not claims:
         return 'approval requires nonempty verified_claims'
     return ''
 
@@ -2240,24 +2240,83 @@ def workitem_reviewer_commands(text: str) -> list[str]:
     return commands
 
 
+GATE_BLOCKING_CLASSES = ('correctness', 'data-loss', 'security', 'money')
+GATE_ITEM_FIELDS = ('evidence', 'smallest_change', 'proof')
+
+
 def gate_schema() -> dict:
-    finding = {'type': 'object', 'properties': {
-        'severity': {'type': 'string', 'enum': ['critical', 'high', 'medium', 'low']},
-        'file': {'type': 'string'}, 'line_start': {'type': 'integer'},
-        'line_end': {'type': 'integer'}, 'confidence': {'type': 'number'},
-        'recommendation': {'type': 'string'}, 'body': {'type': 'string'},
-    }, 'required': ['severity', 'file', 'line_start', 'line_end', 'confidence', 'recommendation', 'body'],
+    """WI-GATE1 (owner 2026-11-19): the gate's one verdict against the acceptance criteria. Every field is required (strict
+    structured output); `criterion` is '' for a blocking-class item and `blocking_class` '' for a criterion item."""
+    criterion = {'type': 'object', 'properties': {
+        'criterion': {'type': 'string'}, 'met': {'type': 'boolean'}, 'evidence': {'type': 'string'},
+    }, 'required': ['criterion', 'met', 'evidence'], 'additionalProperties': False}
+    item = {'type': 'object', 'properties': {
+        'basis': {'type': 'string', 'enum': ['criterion', 'blocking-class']},
+        'criterion': {'type': 'string'},
+        'blocking_class': {'type': 'string', 'enum': [*GATE_BLOCKING_CLASSES, '']},
+        'evidence': {'type': 'string'}, 'smallest_change': {'type': 'string'}, 'proof': {'type': 'string'},
+    }, 'required': ['basis', 'criterion', 'blocking_class', 'evidence', 'smallest_change', 'proof'],
         'additionalProperties': False}
     evidence = {'type': 'object', 'properties': {
         'command': {'type': 'string'},
     }, 'required': ['command'], 'additionalProperties': False}
     return {'type': 'object', 'properties': {
-        'verdict': {'type': 'string', 'enum': ['approve', 'needs-attention']},
-        'findings': {'type': 'array', 'items': finding},
+        'verdict': {'type': 'string', 'enum': ['PASS', 'FAIL']},
+        'criteria': {'type': 'array', 'items': criterion},
+        'fail_items': {'type': 'array', 'items': item},
         'verified_claims': verified_claims_schema(),
         'self_run_evidence': {'type': 'array', 'items': evidence},
-    }, 'required': ['verdict', 'findings', 'self_run_evidence', 'verified_claims'],
+    }, 'required': ['verdict', 'criteria', 'fail_items', 'self_run_evidence', 'verified_claims'],
         'additionalProperties': False}
+
+
+def gate_answer_error(answer) -> str:
+    """WI-GATE1: why a gate answer is not a verdict ('' when it is one). A FAIL needs at least one complete item; a PASS
+    needs every listed criterion met and no item."""
+    if not isinstance(answer, dict) or answer.get('verdict') not in ('PASS', 'FAIL'):
+        return 'verdict must be PASS or FAIL'
+    criteria, items = answer.get('criteria'), answer.get('fail_items')
+    if not isinstance(criteria, list) or not isinstance(items, list):
+        return 'criteria and fail_items must be arrays'
+    for index, row in enumerate(criteria):
+        if (not isinstance(row, dict) or not str(row.get('criterion') or '').strip() or type(row.get('met')) is not bool
+                or not str(row.get('evidence') or '').strip()):
+            return f'criteria[{index}] needs a quoted criterion, met true/false and evidence'
+    if answer['verdict'] == 'PASS':
+        if unmet := [str(row['criterion']).strip() for row in criteria if not row['met']]:
+            return 'PASS with an unmet criterion: ' + '; '.join(unmet)[:300]
+        if items:
+            return 'PASS with fail_items'
+        return ''
+    if not items:
+        return 'FAIL with no fail_items'
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            return f'fail_items[{index}] is not an object'
+        basis = item.get('basis')
+        if basis == 'criterion' and not str(item.get('criterion') or '').strip():
+            return f'fail_items[{index}] (basis criterion) has no quoted criterion'
+        if basis == 'blocking-class' and item.get('blocking_class') not in GATE_BLOCKING_CLASSES:
+            return f'fail_items[{index}] (basis blocking-class) needs blocking_class ' + '|'.join(GATE_BLOCKING_CLASSES)
+        if basis not in ('criterion', 'blocking-class'):
+            return f'fail_items[{index}] needs basis criterion or blocking-class'
+        if missing := [key for key in GATE_ITEM_FIELDS if not str(item.get(key) or '').strip()]:
+            return f'fail_items[{index}] has no ' + ', '.join(missing)
+    return ''
+
+
+def gate_evidence_file(evidence: str) -> str:
+    """The file a gate item's evidence names first (path:line), or '' (a test id, prose)."""
+    match = re.match(r'\s*`?([\w./-]*[\w-]\.[A-Za-z0-9]+|[\w./-]+/[\w.-]+)(?::\d+)?', str(evidence))
+    return match.group(1) if match else ''
+
+
+def gate_item_text(item: dict) -> str:
+    """One gate FAIL item with all four fields, as the author and every later EXEC reviewer read it."""
+    basis = (f"acceptance criterion: \"{item['criterion']}\"" if item.get('basis') == 'criterion'
+             else f"blocking class: {item.get('blocking_class')}")
+    return (f"Basis: {basis}\nEvidence: {item['evidence']}\nSmallest change: {item['smallest_change']}\n"
+            f"Proof it is fixed: {item['proof']}")
 
 
 def missing_rubric(body: str) -> list[str]:
@@ -4431,8 +4490,8 @@ class Coordinator:
         return (git_snapshot(self.workspace)[0] if digest is None else digest) in self.state['rejected_digests']
     def refuse_rejected_tree(self, stale_done: bool = False, allow_author: bool = False) -> None:
         digest, manifest = git_snapshot(self.workspace)
-        if allow_author and not self.rejected_tree(digest) and self.state.pop('terminal_hold_kind', None) == 'rejection_limit':
-            self.state.update(gate_ran=False, force_gate_after_reject=True)   # V319-HOLD R2: a HOLD an older version saved too
+        if allow_author and not self.rejected_tree(digest):
+            self.state.pop('terminal_hold_kind', None)   # WI-GATE1: leaving the rejection-limit HOLD reviews again, no second gate
         if not allow_author and self.rejected_tree(digest):
             self.hold('rejected-tree', terminal_kind=self.state.get('terminal_hold_kind'))
             raise ValueError(self.state['hold_reason'])
@@ -4443,18 +4502,6 @@ class Coordinator:
             tracked = set(subprocess.check_output(['git', 'ls-files', '-z'], cwd=self.workspace).decode().split('\0'))
             raise ValueError(f'stale: {len(changed & tracked)} tracked, {len(changed - tracked)} untracked drift; '
                              'restore the approved tree or start a new run')
-    def _regate_saved_gate_block(self) -> None:
-        """V3110-GATE: an earlier version kept gate_ran after a gate blocker on the stop-after-gate route, so a repair it held
-        for another reason (a rate limit, the invocation cap) reached DONE ungated; the last gate turn's own blockers say so."""
-        life = self.state.get('lifecycle') or {}
-        if (self.state.get('force_gate_after_reject') or self.state['config'].get('review_report')
-                or (worktree_lifecycle.is_worktree(self.state) and life.get('stage') != 'EXEC')):
-            return
-        gate = next((turn for turn in reversed(self.state.get('turns', [])) if turn.get('role') == 'gate'
-                     and isinstance(turn.get('answer'), dict) and not turn.get('error')), None)
-        if gate and any(row.get('severity') in ('critical', 'high') and not missing_rubric(str(row.get('body', '')))
-                        for row in gate['answer'].get('findings', [])):   # the blockers gate_turn counts as valid
-            self.state.update(gate_ran=False, force_gate_after_reject=True)
     def _withdrawal_rows(self) -> list[dict]:
         allowed = ((self.state['status'] == 'DONE' and self.state.get('acceptance_state') == 'PENDING') or
                    (self.state['status'] == 'HOLD' and
@@ -4516,7 +4563,7 @@ class Coordinator:
 
     def _polish_withdrawn_replay(self) -> None:
         """v3.8.4: the operator withdrew the last specialist blockers at a POLISH-Q fix HOLD. The run takes the same way as
-        after a POLISH-Q fix: a new EXEC epoch (reviewer, then gate), then FINISH and POLISH-Q, which reviews only the paths
+        after a POLISH-Q fix: a new EXEC epoch (the reviewer; the gate ran once), then FINISH and POLISH-Q, which reviews only the paths
         changed since the last completed specialist pass; a pass the budget stopped mid-way is dropped and runs again.
         The run stays HOLD; `resume` continues."""
         life = dict(self.state['lifecycle'])
@@ -4524,7 +4571,7 @@ class Coordinator:
             life.pop(key, None)
         self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
                                    'pending': None}   # its request never completes; FINISH begins a new one
-        self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+        self.state.update(phase='EXEC', next='reviewer', delivered_review='')
         print('NOTE: no POLISH-Q blocker remains; resume replays the EXEC review and gate, then FINISH, POLISH-Q (changed '
               'paths only) and the rest of the chain')
 
@@ -4596,8 +4643,7 @@ class Coordinator:
             life = self.state['lifecycle']
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         if len(rejections) >= maximum:
-            # V319-HOLD: a tree that leaves this HOLD (an operator edit and resume, or a note) is reviewed and gated again
-            self.state.update(gate_ran=False, force_gate_after_reject=True)
+            # WI-GATE1: a tree that leaves this HOLD (an operator edit and resume, or a note) is reviewed again, never re-gated
             return self.hold('rejected-tree', terminal_kind='rejection_limit')
         rejection_id = f'R{len(rejections) + 1:03d}'
         record = {'id': rejection_id, 'author': 'operator',
@@ -4611,10 +4657,9 @@ class Coordinator:
         rejections.append(record)
         self.state['acceptance_state'] = 'REJECTED'
         self.state['pending_rejection_id'] = rejection_id
-        self.state.update(status='ACTIVE', phase='EXEC', next='author', gate_ran=False,
+        self.state.update(status='ACTIVE', phase='EXEC', next='author',
                           delivered_review='')
         self.state.get('advisory_repair_attempts', {}).pop('EXEC', None)
-        self.state['force_gate_after_reject'] = True
         self.save()
         self.write_comparison()
         return 'ACTIVE'
@@ -4733,8 +4778,7 @@ class Coordinator:
 
     def start_polish_or_done(self) -> str:
         if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
-            if blocking := self.blocking_open_findings():   # repair round: author fix, then reviewer and a new gate
-                self.state['gate_ran'] = False
+            if blocking := self.blocking_open_findings():   # repair round: author fix, then the reviewer (the gate ran once)
                 if self.state['exec_rounds'] >= self.exec_round_limit():
                     return self.round_limit_hold('EXEC round limit reached')
                 self.state.update(next='author', phase='EXEC',
@@ -4742,10 +4786,10 @@ class Coordinator:
                 self.save()
                 return 'ACTIVE'
             reviewed = git_snapshot(self.workspace)[0]
-            reviewer, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])
-            if {reviewer.get('snapshot_before'), gate.get('snapshot_before')} != {reviewed}:
-                self.state.update(gate_ran=False, next='reviewer')   # resume re-reviews and re-gates this tree
-                return self.hold('stale EXEC approval: the reviewer and the gate did not both review the current tree')
+            reviewer, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])   # gate: the one original gate turn
+            if reviewer.get('snapshot_before') != reviewed:   # WI-GATE1: only the reviewer's tree binds; no second gate
+                self.state.update(next='reviewer')   # resume re-reviews this tree
+                return self.hold('stale EXEC approval: the reviewer did not review the current tree')
             self.set_effective_verdict('APPROVE')
             self.state['lifecycle'].pop('writer_replay', None)   # D09 §2: a converged writer replay has used its one chance
             self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
@@ -5117,7 +5161,7 @@ class Coordinator:
             self.verified_claims_prompt(),
             REVIEW_HISTORY_GUIDANCE,
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
-            self.allowed_command_prompt(), self.open_findings_prompt(),
+            self.allowed_command_prompt(), self.open_findings_prompt() + self.gate_items_prompt() + self.rejection_notes_prompt(),
             self._test_instruction(),
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
@@ -5140,7 +5184,6 @@ class Coordinator:
                 '\nDo not report exit codes; the coordinator reads tool results directly.' +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\n' + REVIEW_HISTORY_GUIDANCE +
-                '\n' + CLASS_LABEL_GUIDANCE.format(field='body') +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
                 self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json))
 
@@ -5548,7 +5591,8 @@ class Coordinator:
         """FIELD-31: review history the run's own change adds to the code (a finding id in a test title or a comment) is a
         blocking finding for the author, at the cost of a normal EXEC round, instead of the fresh shadow/gate HOLD. Only added
         lines of context/delta.patch count; every other input, report mode and the last EXEC round keep that HOLD."""
-        fresh = 'on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject') or replaying
+        fresh = (self.args.shadow == 'on' or replaying or   # WI-GATE1: a fresh role still to scan: the shadow, or the gate once
+                 (self.args.adversarial_gate == 'on' and not self.state.get('gate_ran')))
         if (phase != 'EXEC' or not fresh or self.state['config'].get('review_report')
                 or self.state['exec_rounds'] >= self.exec_round_limit() or self._recorded_shadow_result(phase, sequence)):
             return []
@@ -6811,7 +6855,7 @@ class Coordinator:
                                  f'CLI reported {reported_model}')
             approves_exec = (phase == 'EXEC' and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
-                              (role == 'gate' and answer.get('verdict') == 'approve')))
+                              (role == 'gate' and answer.get('verdict') == 'PASS')))
             if approves_exec and self.args.test_command is None and self.state['config'].get('review_report'):   # LG2-b2
                 receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
             elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
@@ -6858,9 +6902,7 @@ class Coordinator:
             operator_note.update(status='delivered', delivered_sequence=seq)
             self.state.pop('pending_operator_note_id', None)
             if phase in ('PLAN', 'EXEC'):   # a lifecycle writer keeps its own stage flow
-                self.state['pending_author_result_sequence'] = seq
-                self.state['gate_ran'] = False
-                self.state['force_gate_after_reject'] = True
+                self.state['pending_author_result_sequence'] = seq   # WI-GATE1: reviewed again, never re-gated
         self.save()
         return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role,
                 'open_finding_ids': receipt.get('open_finding_ids', [])}
@@ -6969,10 +7011,28 @@ class Coordinator:
         self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
                                    'docs_revise': self._save_approval_manifest('docs-revise')}   # the reviewed DOCS tree:
         self.state['lifecycle'].pop('docs_only', None)   # its operator records may follow the author's docs-only fix
-        self.state.update(phase='EXEC', next='author', gate_ran=False,
+        self.state.update(phase='EXEC', next='author',
                           delivered_review=worktree_lifecycle.delivered_findings('docs-review', rows))
         if self.state['exec_rounds'] >= self.exec_round_limit():
             self.round_limit_hold('EXEC round limit reached after a DOCS write')
+
+    def _docs_capture_dir(self, request: dict) -> Path:
+        return self.internal / 'docs' / request['request_id']
+
+    def _docs_writer_route(self, tree: str, rows: list[dict]) -> None:
+        """WI-GATE1: a docs review REVISE in DOCS goes back to a new docs writer attempt on the reviewed tree (the DOCS
+        stage cap bounds it); EXEC is not reopened."""
+        self.state['lifecycle'].update(candidate_oid=tree, docs_feedback=[row['id'] for row in rows])
+        self.state['next'] = 'docs'
+
+    def _docs_feedback_prompt(self) -> str:
+        ids = set((self.state.get('lifecycle') or {}).get('docs_feedback') or [])
+        rows = [row for row in self.state['finding_ledger'] if row['id'] in ids and row['status'] == 'open']
+        if not rows:
+            return ''
+        return ('\n\nThe fresh docs review of the current documentation requested changes. Fix them in the documentation '
+                'paths you may write; a fresh docs review checks them again:\n'
+                + worktree_lifecycle.delivered_findings('docs-review', rows))
 
     def _docs_revise_rows(self) -> list[dict]:
         blocking = self.blocking_open_findings()
@@ -7059,9 +7119,9 @@ class Coordinator:
         self.state['lifecycle'].pop('writer_git', None)
         if answer['status'] == 'HOLD':
             self.hold('finisher: ' + answer['body'])
-        elif self.state['lifecycle']['stage'] == 'EXEC':   # FINISH wrote: new convergence, reviewer then gate
+        elif self.state['lifecycle']['stage'] == 'EXEC':   # FINISH wrote: new convergence, the reviewer only (the gate ran once)
             self.state['exec_rounds'] += 1
-            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
             if self.state['exec_rounds'] > self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after a FINISH write')
         else:
@@ -7069,8 +7129,10 @@ class Coordinator:
         self.save()
 
     def worktree_docs_turn(self) -> None:
-        """ADR-11 DOCS: a fresh docs writer; its allowlisted writes get a fresh docs review with an
-        observed test, a protected path HOLDs, and any other write replays EXEC (reviewer, then gate)."""
+        """ADR-11 DOCS: a fresh docs writer; its allowlisted writes get a fresh docs review with an observed test, a
+        protected path HOLDs. WI-GATE1: DOCS never reopens EXEC: a write outside the allowlist is rolled back to the
+        pre-DOCS tree and recorded (HOLD only when the rollback fails), and a docs review REVISE goes back to the docs writer
+        (bounded by the DOCS stage cap)."""
         self._close_writer_replay_rounds()   # D09 F3: the writer replay's own rounds end where DOCS begins
         life, workspace = self.state['lifecycle'], self.workspace
         allow = set(self._docs_allowlist())
@@ -7100,7 +7162,8 @@ class Coordinator:
                              (workspace / path).resolve() != Path(os.path.normpath(workspace / path))):   # no symlink on the path
                 raise RuntimeError('a docs allowlist path is now a directory or reached through a symlink: ' +
                                    ', '.join(bad) + '; restore it or abort')   # the writer would write through it
-            atomic_json(base_file, manifest)
+            self._writer_capture(self._docs_capture_dir(request))   # WI-GATE1: the restore point of an outside write,
+            atomic_json(base_file, manifest)   # taken first, so a saved base always has one
         try:   # bound to the POLISH-Q-approved tree before the writer runs
             base = json.loads(base_file.read_text(encoding='utf-8'))
         except (OSError, ValueError) as exc:
@@ -7110,19 +7173,37 @@ class Coordinator:
         def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
             self._docs_budget()
             return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
-                                                  self.run_dir.name, self.workitem.read_text(encoding='utf-8')) + self.operator_rulings_prompt('author')   # V317-B3
+                                                  self.run_dir.name, self.workitem.read_text(encoding='utf-8')) + self.operator_rulings_prompt('author') + self._docs_feedback_prompt()   # V317-B3
         result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
         before, after = dict(base), dict(manifest)
         changed = worktree_lifecycle.manifest_delta(before, after)
-        denied = [path for path in changed if worktree_lifecycle.docs_denied(path, after.get(path))]
         outside = [path for path in changed if path not in allow]
+        rollback_error = None
+        if outside:   # WI-GATE1: DOCS never reopens EXEC; the outside write is put back to the pre-DOCS tree and recorded
+            try:
+                rolled_back = self._revert_paths(outside, self._docs_capture_dir(request), result['sequence'], 'docs-outside')
+                print('NOTE: the DOCS writer changed paths outside the docs allowlist; they were rolled back: '
+                      + ', '.join(outside[:10]))
+                self.progress('docs-rollback', paths=outside[:20])
+            except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+                rollback_error = f'DOCS writer changed paths outside the docs allowlist ({", ".join(outside[:10])}) and the rollback failed: {exc}; restore them or abort'
+            if not rollback_error:
+                tree, manifest = git_snapshot(workspace)
+                after = dict(manifest)
+                changed = worktree_lifecycle.manifest_delta(before, after)
+                if left := [path for path in changed if path not in allow]:
+                    rollback_error = 'DOCS rollback left paths outside the docs allowlist changed: ' + ', '.join(left[:10]) + '; restore them or abort'
+        denied = [path for path in changed if worktree_lifecycle.docs_denied(path, after.get(path))]
         receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': result['sequence'], 'docs_paths': changed,
-                   'docs_written': {path: after.get(path) for path in changed if path in allow}}
+                   'docs_written': {path: after.get(path) for path in changed if path in allow},
+                   **({'rolled_back_outside': outside, 'rollback_diff': rolled_back} if outside and not rollback_error else {})}
         reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
+                            *([rollback_error] if rollback_error else []),
                             *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
                               if denied else [])]) or None
+        outside = [path for path in changed if path not in allow]   # empty unless the rollback failed (then the run HOLDs)
         if changed and not denied and not outside:   # v3.7.2: a docs-only change keeps the operator's records for the tree it left
             writer = next((turn for turn in self.state['turns'] if turn.get('sequence') == result['sequence']), {})
             from_trees = {request['candidate_oid'], *([writer['snapshot_before']] if writer.get('snapshot_before') else [])}
@@ -7132,30 +7213,24 @@ class Coordinator:
                       f"(docs-only change: {', '.join(changed[:10])})")
         opv.void_stale(self, tree, atomic_json)   # any other change voids them, as after every author turn
         owned = self._docs_owned()
-        replay = bool(outside)
-        if not reason and not replay and (changed or owned):   # every DOCS-written doc gets a fresh docs review
+        revise = False
+        if not reason and (changed or owned):   # every DOCS-written doc gets a fresh docs review
             review = self._docs_review_turn(tree, sorted({*changed, *owned}))
             receipt['review'] = review
-            replay = review['status'] != 'APPROVE'   # its findings go to the persistent EXEC reviewer, then the gate
-        if not reason and not replay and (blocking := self.blocking_open_findings()):
+            revise = review['status'] != 'APPROVE'   # WI-GATE1: its findings go back to the docs writer
+        if not reason and not revise and (blocking := self.blocking_open_findings()):
             reason = 'DOCS cannot advance with open blocking findings: ' + ', '.join(row['id'] for row in blocking)
-        receipt['route'] = 'HOLD' if reason else 'EXEC' if replay else 'SECURITY'
+        receipt['route'] = 'HOLD' if reason else 'DOCS' if revise else 'SECURITY'
         self.state['lifecycle'] = lifecycle_spine.complete(
             self.state['lifecycle'], {**receipt, 'status': 'HOLD' if reason else 'READY'})
         self.state['lifecycle'].pop('writer_git', None)
-        if not reason:   # reviewed (SECURITY) or about to be (EXEC replay): DOCS owns what it wrote (values: audit only)
+        self.state['lifecycle'].pop('docs_feedback', None)
+        if not reason:   # reviewed (SECURITY) or about to be (a docs writer fix): DOCS owns what it wrote (values: audit only)
             self.state['lifecycle']['docs_owned'] = {**self.state['lifecycle'].get('docs_owned', {}), **receipt['docs_written']}
         if reason:
             self.hold(reason)
-        elif replay and not outside:   # v3.8.1: a docs review REVISE on docs-only writes: the EXEC author fixes the docs
-            self._docs_author_route(self._docs_revise_rows())
-        elif replay:   # a code or comment write: new EXEC convergence, reviewer then gate
-            life = self.state['lifecycle']
-            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
-            self.state['exec_rounds'] += 1
-            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
-            if self.state['exec_rounds'] > self.exec_round_limit():
-                self.round_limit_hold('EXEC round limit reached after a DOCS write')
+        elif revise:
+            self._docs_writer_route(tree, self._docs_revise_rows())
         else:
             self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree,   # SECURITY binds the DOCS output
                                            docs_approval=self._save_approval_manifest('docs'))
@@ -7168,6 +7243,8 @@ class Coordinator:
         an earlier DOCS HOLD in this epoch, a code change) keeps today's writer path."""
         life = self.state['lifecycle']
         replaying = life.get('docs_skip') == request['request_id'] and life['pending'] == request
+        if life.get('docs_feedback') and not replaying:   # WI-GATE1: a docs review REVISE waits for the docs writer
+            return False
         approved = self._approval_manifest(life.get('docs_approval'))
         previous = next((row for row in reversed(life['receipts'])
                          if row.get('stage') == 'DOCS' and row.get('epoch') == life['epoch']), None)
@@ -7196,14 +7273,14 @@ class Coordinator:
         revise = bool(review) and review['status'] != 'APPROVE'
         reason = (None if revise or not (blocking := self.blocking_open_findings()) else
                   'DOCS cannot advance with open blocking findings: ' + ', '.join(row['id'] for row in blocking))
-        receipt['route'] = 'HOLD' if reason else 'EXEC' if revise else 'SECURITY'
+        receipt['route'] = 'HOLD' if reason else 'DOCS' if revise else 'SECURITY'
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'],
                                                            {**receipt, 'status': 'HOLD' if reason else 'READY'})
         self.state['lifecycle'].pop('docs_skip', None)
         if reason:
             self.hold(reason)
         elif revise:
-            self._docs_author_route(self._docs_revise_rows())
+            self._docs_writer_route(tree, self._docs_revise_rows())
         else:
             self.state['lifecycle'].update(stage='SECURITY', candidate_oid=tree,
                                            docs_approval=self._save_approval_manifest('docs'))
@@ -7241,10 +7318,10 @@ class Coordinator:
         self.state['lifecycle'].pop('docs_only', None)
         if review['status'] != 'APPROVE':
             self._docs_author_route(self._docs_revise_rows())
-        elif blocking:   # another role's blocker is open: today's full replay, reviewer then gate
+        elif blocking:   # another role's blocker is open: the EXEC reviewer again
             life = self.state['lifecycle']
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
-            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
         else:
             allow = set(self._docs_allowlist())
             manifest = dict(git_snapshot(self.workspace)[1])
@@ -7395,14 +7472,14 @@ class Coordinator:
         life = self.state['lifecycle']
         request = worktree_lifecycle.stage_request(life, 'security')
         tree = git_snapshot(self.workspace)[0]
-        if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: EXEC review and gate again
+        if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: EXEC review again
             life = lifecycle_spine.complete(lifecycle_spine.begin(life, request),
                                             {**request, 'status': 'HOLD', 'output_oid': tree, 'route': 'EXEC'})
             self.state['lifecycle'] = {key: value for key, value in life.items()
                                        if key not in ('security_base', 'security_turn', 'security_review')}
             self.state['lifecycle'].update(stage='EXEC', epoch=life['epoch'] + 1, candidate_oid=None)
             self.state['exec_rounds'] += 1
-            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
             if self.state['exec_rounds'] > self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after a SECURITY-stage change')
             self.save()
@@ -7798,10 +7875,10 @@ class Coordinator:
             life['fix_base'] = tree
             self.state.update(next='polish-fix', delivered_review=worktree_lifecycle.delivered_findings('polish-q', remaining))
             self.hold('POLISH-Q blockers remain after the fix: ' + ', '.join(row['id'] for row in remaining))
-        else:   # the fix wrote: a new EXEC convergence (reviewer, then gate), then FINISH and POLISH-Q again
+        else:   # the fix wrote: a new EXEC convergence (the reviewer), then FINISH and POLISH-Q again
             life.pop('fix_base')
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
-            self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
         self.save()
 
     def worktree_polish_turn(self) -> None:
@@ -7903,7 +7980,7 @@ class Coordinator:
         self.state['advisory_fix'] = {'state': 'ran', 'findings': [row['id'] for row in findings], 'epoch': life['epoch'] + 1,
                                       'start': self.state['exec_rounds']}
         self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
-        self.state.update(phase='EXEC', next='author', gate_ran=False,
+        self.state.update(phase='EXEC', next='author',
                           delivered_review=self.advisory_message(findings, 'advisory-fix-round'))
         self.progress('advisory-fix', state='ran', detail=f'{len(findings)} non-blocking findings to the author')
         return True
@@ -8138,7 +8215,7 @@ class Coordinator:
 
     def _writer_replay(self) -> None:
         """§2: kept writes start a new EXEC convergence (the polish-fix transition, counted like a FINISH write): the EXEC
-        reviewer, shadow and gate, FINISH and fresh specialists review the writer diff before DOCS."""
+        reviewer and shadow, FINISH and fresh specialists review the writer diff before DOCS (the gate ran once)."""
         life, marker = self.state['lifecycle'], self.state['lifecycle']['quality_writers']
         replay = {'epoch': life['epoch'] + 1, 'from_epoch': life['epoch'], 'sequence': self.state['sequence'],
                   'writers': [w for w in worktree_lifecycle.QUALITY_WRITERS['both'] if (marker.get(w) or {}).get('state') == 'wrote'],
@@ -8146,14 +8223,14 @@ class Coordinator:
         self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None, 'writer_replay': replay}
         self.state['writer_replay_rounds'] = {'start': self.state['exec_rounds'], 'used': None}   # F3: its own budget
         self.state['exec_rounds'] += 1
-        self.state.update(phase='EXEC', next='reviewer', gate_ran=False, delivered_review='')
+        self.state.update(phase='EXEC', next='reviewer', delivered_review='')
         self.progress('quality-writer', writer=', '.join(replay['writers']), state=f"replay epoch {replay['epoch']}")
         if self.state['exec_rounds'] > self.exec_round_limit():
             self.round_limit_hold('EXEC round limit reached after a writer pass')
 
     def _writer_review_rollback(self, source: str, sequence: int) -> bool:
-        """§2 "one chance in review": a replay non-approval other than eligible advisory REVISE, or a failing gate,
-        rolls back the writers, marks each writer that wrote `rolled-back:review`, and reopens rows the replay closed
+        """§2 "one chance in review": a replay non-approval other than eligible advisory REVISE (the gate never reviews a
+        replay: it ran once, before FINISH) rolls back the writers, marks each writer that wrote `rolled-back:review`, and reopens rows the replay closed
         except operator-withdrawn rows, which stay withdrawn.
         New blockers outside writer files stay open and take EXEC repair. Otherwise new open rows are withdrawn and a
         POLISH-Q READY receipt on base_oid cites the previous epoch's receipts on that digest; then DOCS."""
@@ -8172,7 +8249,7 @@ class Coordinator:
             replay.update(writers=[w for w in replay['writers'] if w not in targets], partial=True, sequence=self.state['sequence'],
                           statuses={row['id']: row['status'] for row in self.state['finding_ledger']})
             self.state['exec_rounds'] += 1   # the replay's one fix round (F3 budget): review the kept change again
-            self.state.update(next='reviewer', gate_ran=False, delivered_review='', pending_reviewer_result_sequence=None)
+            self.state.update(next='reviewer', delivered_review='', pending_reviewer_result_sequence=None)
             self.progress('quality-writer', writer=', '.join(targets), state='rolled-back:review', detail='the other writer is reviewed again')
             if self.state['exec_rounds'] > self.exec_round_limit():
                 self.round_limit_hold('EXEC round limit reached after a writer rollback')
@@ -8188,11 +8265,10 @@ class Coordinator:
         if retained:
             life.pop('writer_replay')
             life['candidate_oid'] = None
-            self.state.update(gate_ran=False, pending_reviewer_result_sequence=None)
+            self.state.update(pending_reviewer_result_sequence=None)
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
-                self.round_limit_hold('EXEC round limit reached after adversarial gate' if source == 'gate'
-                                      else 'EXEC round limit reached')
+                self.round_limit_hold('EXEC round limit reached')
                 return True
             self.state.update(next='author', delivered_review=self._writer_repair_review(retained))
             self.save()
@@ -8208,7 +8284,7 @@ class Coordinator:
         life = lifecycle_spine.complete(lifecycle_spine.begin(life, request), {
             **request, 'status': 'READY', 'output_oid': base, 'writer_state': 'rolled-back:review', 'cites': cites})
         self.state['lifecycle'] = lifecycle_spine.advance(life)   # POLISH-Q -> DOCS
-        self.state.update(next='docs', delivered_review='', gate_ran=False, pending_reviewer_result_sequence=None)
+        self.state.update(next='docs', delivered_review='', pending_reviewer_result_sequence=None)
         self.save()
         return True
 
@@ -8264,12 +8340,12 @@ class Coordinator:
         named = set().union(*owners) if owners else set()
         return sorted(named) if blocking and all(owners) and len(named) == 1 else []
 
-    def _revert_paths(self, paths: list[str], keep: Path, sequence: int) -> str:
+    def _revert_paths(self, paths: list[str], keep: Path, sequence: int, label: str = 'polish-q-review-partial') -> str:
         """F2: put these paths back to base_oid's content from base_capture's tree (a path absent there is deleted) and
         verify them; the other writer's files stay. The diff is kept as evidence."""
         recorded = json.loads((keep / 'record.json').read_text(encoding='utf-8'))
         base_tree, perms = recorded['tree'], recorded.get('perms') or {}
-        diff = self.evidence / f"{self.state['sequence']:03d}-polish-q-review-partial.workspace-change.diff"
+        diff = self.evidence / f"{self.state['sequence']:03d}-{label}.workspace-change.diff"
         now = readonly_guard.state(self.workspace, keep)['tree']
         winplat.write_text(diff, self._git(['diff', '--binary', '--no-ext-diff', '--no-textconv', base_tree, now, '--', *paths]))
         for path in paths:
@@ -8288,7 +8364,7 @@ class Coordinator:
                     os.chmod(target, perms.get(path, 0o755 if mode == '100755' else 0o644))
         if left := self._git_names(['diff', '--name-only', '-z', base_tree, readonly_guard.state(self.workspace, keep)['tree'],
                                     '--', *paths]):
-            raise RuntimeError(f'POLISH-Q review rollback: {", ".join(left)} could not be put back; restore by hand, see {diff}')
+            raise RuntimeError(f'{label} rollback: {", ".join(left)} could not be put back; restore by hand, see {diff}')
         return str(diff)
 
     def _writer_capture(self, keep: Path) -> str:
@@ -8474,7 +8550,8 @@ class Coordinator:
         `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
         rounds, added = self.state.get('writer_replay_rounds'), self._round_extensions('EXEC')
         ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) + added +
-                    ((self.state.get('advisory_fix') or {}).get('state') == 'ran'))   # ADVFIX: its own one round
+                    ((self.state.get('advisory_fix') or {}).get('state') == 'ran') +   # ADVFIX: its own one round
+                    bool(self.state.get('gate_extra_round')))   # WI-GATE1 Q3: one fix round after a gate FAIL at the cap
         if rounds and rounds.get('used') is None:   # L100: an operator extension always lands on top, never inside the max
             return max(rounds['start'] + 2, ordinary - added) + added
         return ordinary + (rounds['used'] if rounds else 0)
@@ -8514,8 +8591,6 @@ class Coordinator:
                 for writer in worktree_lifecycle.QUALITY_WRITERS['both'])
             self.state.update(next='author', delivered_review=(self._writer_repair_review(rows, 'round-limit-extension')
                               if rolled_back else worktree_lifecycle.delivered_findings('round-limit-extension', rows)))
-            if held['hold_reason'] == ROUND_LIMIT_REASONS[2]:   # V319-HOLD R3: the repair of a gate-blocked tree is gated,
-                self.state.update(gate_ran=False, force_gate_after_reject=True)   # also for a HOLD an earlier version saved
 
     def _close_writer_replay_rounds(self) -> None:
         if (rounds := self.state.get('writer_replay_rounds')) and rounds.get('used') is None:
@@ -8539,6 +8614,7 @@ class Coordinator:
         snapshot = result['snapshot']
         answer = result['answer']
         self._ignore_operator_dispositions(result)
+        self._refuse_gate_item_withdrawals(answer)
         try:
             missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                result.get('open_finding_ids'), 'persistent-reviewer')
@@ -8554,6 +8630,7 @@ class Coordinator:
             result['answer'] = copy.deepcopy(result['answer'])
             answer = result['answer']
             self._ignore_operator_dispositions(result)
+            self._refuse_gate_item_withdrawals(answer)
             try:
                 missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                   result.get('open_finding_ids'), 'persistent-reviewer')
@@ -8657,8 +8734,8 @@ class Coordinator:
             for receipt in self.state.get('turns', []):
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         plan_history = (self._plan_history_issue() if phase == 'PLAN' and answer['status'] == 'APPROVE'
-                        and ('on' in (self.args.shadow, self.args.adversarial_gate) or self.state.get('force_gate_after_reject'))
-                        else None)   # only when a fresh role (shadow, gate, or a gate forced by an operator note) will scan
+                        and (self.args.shadow == 'on' or (self.args.adversarial_gate == 'on' and not self.state.get('gate_ran')))
+                        else None)   # only when a fresh role (the shadow, or the gate that has not run yet) will scan
         if plan_history:   # FIELD-11: the fresh shadow/gate would refuse this plan after EXEC; refuse the approval now, recorded like RF-5
             refusal = 'PLAN APPROVE rejected: ' + plan_history
             self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
@@ -8724,7 +8801,9 @@ class Coordinator:
                 if secrets:
                     self.hold(self._secret_scan_hold_reason())
                     return
-                self.round_limit_hold(f'{phase} round limit reached')
+                self.round_limit_hold('EXEC round limit reached after adversarial gate' if phase == 'EXEC' and
+                                      self.state.get('gate_extra_round') and self.gate_fail_open_items()
+                                      else f'{phase} round limit reached')   # WI-GATE1 Q3: no round after the extra one
                 return
             self.state['review_findings'] = answer['full_review']
             # V317-G1: the phase's one advisory-only repair attempt says so and gives each row left open with its summary;
@@ -8809,7 +8888,7 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('stale EXEC approval')
             return
-        elif (self.args.adversarial_gate == 'on' or self.state.get('force_gate_after_reject')) and not self.state['gate_ran']:
+        elif self.args.adversarial_gate == 'on' and not self.state['gate_ran']:   # WI-GATE1: the gate runs once per work item
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')
@@ -8862,9 +8941,116 @@ class Coordinator:
                         'open_finding_ids': receipt.get('open_finding_ids')}
         return None
 
+    def _gate_turns(self) -> list[dict]:
+        """WI-GATE1: the error-free EXEC gate turns, in order (a malformed answer is marked `gate_malformed`)."""
+        return [turn for turn in self.state.get('turns', []) if turn.get('role') == 'gate' and turn.get('phase') == 'EXEC'
+                and not turn.get('error') and not turn.get('verified_claims_error') and isinstance(turn.get('answer'), dict)]
+
+    def _gate_verdict_turn(self) -> Optional[dict]:
+        """The one gate turn whose answer is a verdict: a valid answer, or one an earlier version recorded (old schema)."""
+        return next((turn for turn in self._gate_turns() if not turn.get('gate_malformed')
+                     and ('findings' in turn['answer'] or not gate_answer_error(turn['answer']))), None)
+
+    def _settle_saved_gate(self) -> None:
+        """WI-GATE1 (owner 2026-11-19): the gate runs once per work item. A state an earlier version saved may have reset
+        gate_ran after a gate turn (a FAIL, a repair, a reject, a note, an extension, a lifecycle change) or set
+        force_gate_after_reject: both are settled here so no second gate runs. Its blocking gate rows become the FAIL items
+        every later EXEC review carries."""
+        self.state.pop('force_gate_after_reject', None)
+        verdict = self._gate_verdict_turn()
+        if verdict and not self.state.get('gate_ran') and self.state.get('next') != 'gate':
+            self.state['gate_ran'] = True   # next == 'gate' is settled by gate_turn (an unprocessed or a legacy re-gate)
+        if verdict and 'gate_fail_items' not in self.state:
+            self.state['gate_fail_items'] = [
+                {'id': row['id'], 'basis': 'legacy', 'criterion': '', 'blocking_class': '',
+                 'evidence': row.get('body') or row.get('summary', ''), 'smallest_change': row.get('summary', ''),
+                 'proof': 'the reviewer confirms the defect described above is fixed', 'sequence': row.get('origin_round')}
+                for row in self.state.get('finding_ledger', [])
+                if row.get('source') == 'adversarial-gate' and blocks_by_severity(row)]
+
+    def gate_fail_open_items(self) -> list[dict]:
+        """The gate FAIL items whose ledger row is still open (closed only as fixed)."""
+        status = {row['id']: row['status'] for row in self.state.get('finding_ledger', [])}
+        return [item for item in self.state.get('gate_fail_items') or [] if status.get(item['id']) == 'open']
+
+    def gate_items_prompt(self) -> str:
+        """WI-GATE1: every later EXEC reviewer round carries each open gate FAIL item in full as a mandatory check."""
+        items = self.gate_fail_open_items()
+        if not items:
+            return ''
+        rows = '\n'.join(f"- {item['id']} (gate FAIL item):\n  " + (
+            gate_item_text(item) if item.get('basis') != 'legacy' else 'Evidence: ' + item['evidence']).replace('\n', '\n  ')
+            for item in items)
+        return ('## Mandatory gate checks\nThe adversarial gate ran once and failed this work item on the items below. Each is a '
+                'blocking check in this review: verify the fix against its evidence and its proof. Dispose each as fixed only '
+                'when the proof holds on the current tree, otherwise still_open; a gate FAIL item cannot be withdrawn (a '
+                'withdrawn disposition is recorded as still_open). There is no second gate: your APPROVE with every item fixed '
+                'ends EXEC review.\n' + rows + '\n')
+
+    def rejection_notes_prompt(self) -> str:
+        """WI-GATE1 Q4 (owner 2026-11-19): every operator rejection note reaches every later EXEC review round."""
+        notes = [row for row in self.state.get('rejections', []) if row.get('text')]
+        if not notes:
+            return ''
+        return ('## Operator rejection notes (acceptance feedback; check that the current tree addresses each)\n' +
+                '\n'.join(f"[{row['id']}]\n{row['text'].strip()}" for row in notes) + '\n')
+
+    def _refuse_gate_item_withdrawals(self, answer: dict) -> list[str]:
+        """WI-GATE1: a reviewer `withdrawn` disposition of an open gate FAIL item is recorded as still_open."""
+        ids = {item['id'] for item in self.gate_fail_open_items()}
+        refused = []
+        for row in answer.get('prior_findings') or []:
+            if row.get('id') in ids and row.get('disposition') == 'withdrawn':
+                row['disposition'] = 'still_open'
+                row['evidence'] = 'withdrawal refused: a gate FAIL item closes only as fixed. ' + str(row.get('evidence', ''))
+                refused.append(row['id'])
+        return refused
+
+    def gate_fail_extra_round(self) -> bool:
+        """WI-GATE1 Q3 (owner 2026-11-19): a gate FAIL that arrives with the EXEC round limit used up still gets exactly one
+        fix + review round beyond the cap (the FAIL items as mandatory checks); a REVISE in that round HOLDs. The one switch
+        for this policy: return False to HOLD at once ('EXEC round limit reached after adversarial gate')."""
+        return True
+
+    def _gate_answer(self) -> Optional[dict]:
+        """The gate verdict to process: an unprocessed recorded one (a crash after the turn), else a new dispatch with one
+        fresh re-dispatch after a malformed answer. None after a HOLD."""
+        recorded = self._gate_verdict_turn()
+        if recorded:
+            return {'answer': copy.deepcopy(recorded['answer']), 'sequence': recorded['sequence'],
+                    'snapshot': recorded.get('snapshot_before')}
+        malformed = [turn for turn in self._gate_turns() if turn.get('gate_malformed')]
+        while len(malformed) < 2:
+            self.materialize_review_context()
+            snapshot, _ = git_snapshot(self.workspace)
+            prompt = self._gate_prompt(snapshot)
+            if malformed:
+                prompt += ('\n\nNote from the coordinator: your previous answer was not a valid verdict ('
+                           + malformed[-1]['gate_malformed'] + '). Review again and answer with a complete verdict.')
+            result = self.invoke('gate', 'EXEC', prompt, gate_schema(), fresh=True)
+            error = gate_answer_error(result['answer'])
+            if not error:
+                return result
+            receipt = next(turn for turn in self.state['turns'] if turn.get('sequence') == result['sequence'])
+            receipt['gate_malformed'] = error
+            atomic_json(self.evidence / f"{result['sequence']:03d}-exec-gate.receipt.json", receipt)
+            self.render(result, 'adversarial-malformed', 'EXEC')
+            self.progress('verdict', verdict='MALFORMED', source='gate', open=self._progress_open())
+            self.save()
+            malformed.append(receipt)
+        self.hold('malformed gate verdict: ' + malformed[-1]['gate_malformed'])
+        return None
+
     def gate_turn(self) -> None:
+        verdict = self._gate_verdict_turn()
+        reviewed = max((turn['sequence'] for turn in self.state.get('turns', []) if turn.get('role') == 'reviewer'
+                        and turn.get('phase') == 'EXEC' and not turn.get('error')), default=0)
+        if self.state.get('gate_ran') or (verdict and verdict['sequence'] < reviewed):
+            self.state['gate_ran'] = True   # WI-GATE1: a re-gate an earlier version queued; the reviewer approved this tree
+            self.start_polish_or_done()
+            return
         secrets = self._secret_scan_findings('EXEC', self.state['sequence'])   # V312-S: a tree that changed since the review
-        if secrets and not self.state['config'].get('review_report'):
+        if secrets and not self.state['config'].get('review_report'):   # the gate is not invoked: it stays pending
             self.set_effective_verdict('REVISE')
             if self.state['exec_rounds'] >= self.exec_round_limit():
                 self.hold(self._secret_scan_hold_reason())
@@ -8876,39 +9062,26 @@ class Coordinator:
             self.state['next'] = 'author'
             self.save()
             return
-        self.materialize_review_context()
-        snapshot, _ = git_snapshot(self.workspace)
-        result = self.invoke('gate', 'EXEC', self._gate_prompt(snapshot), gate_schema(), fresh=True)
+        result = self._gate_answer()
+        if result is None:
+            return
         answer = result['answer']
-        original_findings = list(answer['findings'])
-        valid, discarded, valid_indexes, discarded_indexes = [], [], [], []
-        for index, finding in enumerate(original_findings):
-            if finding['severity'] in ('critical', 'high'):
-                missing = missing_rubric(finding['body'])
-                if missing:
-                    discarded.append({**finding, 'discard_reason': 'missing: ' + ', '.join(missing)})
-                    discarded_indexes.append(index)
-                else:
-                    valid.append(finding)
-                    valid_indexes.append(index)
-        answer['discarded_blocking'] = discarded
-        recorded = self.record_findings('adversarial-gate', 'EXEC', result['sequence'], original_findings)
-        answer['findings'] = recorded
-        valid = [recorded[index] for index in valid_indexes]
-        for index in discarded_indexes:
-            ledger = next(row for row in self.state['finding_ledger'] if row['id'] == recorded[index]['id'])
-            ledger['status'] = 'withdrawn'
-            self._progress_finding(ledger)
-            ledger['status_history'].append({'round': result['sequence'], 'status': 'withdrawn',
-                                             'evidence': 'program rejected malformed blocking rubric'})
-        self.write_ledger()
+        snapshot = result.get('snapshot') or git_snapshot(self.workspace)[0]
+        items = answer['fail_items'] if answer['verdict'] == 'FAIL' else []
+        rows = [{'severity': 'high', 'file': gate_evidence_file(item['evidence']),
+                 'summary': '[gate FAIL] ' + ' '.join((item['criterion'] if item['basis'] == 'criterion'
+                                                       else item['blocking_class'] + ': ' + item['smallest_change']).split())[:200],
+                 'body': gate_item_text(item)} for item in items]
+        recorded = self.record_findings('adversarial-gate', 'EXEC', result['sequence'], rows)
+        self.state['gate_fail_items'] = [{'id': row['id'], **{key: item[key] for key in
+                                          ('basis', 'criterion', 'blocking_class', 'evidence', 'smallest_change', 'proof')},
+                                          'sequence': result['sequence']} for row, item in zip(recorded, items)]
         self.render(result, 'adversarial', 'EXEC')
-        self.progress('verdict', verdict=answer['verdict'].upper(), source='gate', open=self._progress_open())
-        self.state['gate_ran'] = True
-        self.state['force_gate_after_reject'] = False
+        self.progress('verdict', verdict=answer['verdict'], source='gate', open=self._progress_open())
+        self.state['gate_ran'] = True   # WI-GATE1: once per work item; never reset
         if self.state['exec_comparisons']:
             self.state['exec_comparisons'][-1]['gate'] = {
-                'verdict': answer['verdict'], 'findings': self.comparison_findings(answer)}
+                'verdict': answer['verdict'], 'findings': self.comparison_findings({'findings': recorded})}
         if self.state['config'].get('review_report'):
             self.state.setdefault('report_progress', {})['gate'] = True
             self.state['next'] = 'polish-q'
@@ -8916,29 +9089,25 @@ class Coordinator:
                 self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
             self.save()
             return
-        if valid and self._writer_review_rollback('gate', result['sequence']):   # D09 §2: a writer replay's gate failed
+        if not recorded:
+            self.start_polish_or_done()
             return
-        structural = self._structural_block_hold('gate', result['sequence'], valid)
-        if valid:   # V319-HOLD R2: on every route the repaired tree needs its own gate before DONE (an extension included)
-            self.state.update(gate_ran=False, force_gate_after_reject=True)
-            self.set_effective_verdict('REVISE')
-            if self.state['exec_rounds'] >= self.exec_round_limit():
+        structural = self._structural_block_hold('gate', result['sequence'], recorded)
+        self.set_effective_verdict('REVISE')
+        if self.state['exec_rounds'] >= self.exec_round_limit():
+            if not self.gate_fail_extra_round():
                 self.round_limit_hold('EXEC round limit reached after adversarial gate')
                 return
-            advisory = [row for row in self.nonblocking_open_findings()
-                        if row['id'] not in {finding['id'] for finding in valid}]
-            self.state['delivered_review'] = json.dumps({
-                'source': 'adversarial-gate', 'status': answer['verdict'],
-                'findings': [{key: row[key] for key in ('id', 'severity', 'file', 'body')}
-                             for row in valid],
-                'advisory': self.advisory_rows(advisory),
-            }, ensure_ascii=False)
-            self.state['next'] = 'author'
-            if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence)
-                self._structural_hold(structural)
-                return
-        else:
-            self.start_polish_or_done()
+            self.state['gate_extra_round'] = {'sequence': result['sequence'], 'at_round': self.state['exec_rounds']}
+        advisory = self.nonblocking_open_findings()
+        self.state['delivered_review'] = json.dumps({
+            'source': 'adversarial-gate', 'status': 'FAIL',
+            'findings': [{'id': row['id'], 'severity': 'HIGH', 'file': row['file'], 'body': row['body']} for row in recorded],
+            'advisory': self.advisory_rows(advisory),
+        }, ensure_ascii=False)
+        self.state['next'] = 'author'
+        if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence)
+            self._structural_hold(structural)
             return
         self.save()
 
@@ -9064,7 +9233,7 @@ class Coordinator:
                 return self.hold('DONE state rejected with open blocking findings: ' +
                                  ', '.join(row['id'] for row in blocking))
             return 'DONE'
-        self._regate_saved_gate_block()   # V3110-GATE: a gate-blocked repair an earlier version held is gated before DONE
+        self._settle_saved_gate()   # WI-GATE1: a state an earlier version saved never gates a second time
         if not (self.state.get('active') or self.state.get('uncertain_active')):
             self._refuse_past_deadline('resume')   # F2b: before any state change, so the HOLD (and RLO) survives
         past_deadline = self._wi_deadline_issue(record=False)   # with an uncertain turn: settle it below, then HOLD instead of a dispatch
