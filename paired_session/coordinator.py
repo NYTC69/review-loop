@@ -5055,7 +5055,7 @@ class Coordinator:
         even under --sandbox, so the post-turn guards (git, global config, context digest, run-dir inodes) remain the check."""
         workspace = Path(workspace or self.workspace).resolve()
         if re.search(r'[*?\[\]{}(),]', str(workspace)):
-            raise ValueError('the workspace path must not hold agy rule metacharacters (* ? [ ] { } ( ) ,) for a gemini author')
+            raise ValueError('the workspace path must not hold agy rule metacharacters (* ? [ ] { } ( ) ,) for a gemini author; move or rename the checkout')
         protected = [self.run_dir.resolve(), *([] if self.context.resolve().is_relative_to(self.run_dir.resolve()) else [self.context.resolve()])]
         return {'permissions': {'allow': [f'write_file({workspace}/*)', 'read_file(*)', 'command(*)'],
                                 'deny': [*(f'write_file({path}/*)' for path in protected), 'read_url(*)', 'execute_url(*)', 'mcp(*)']}}
@@ -10261,6 +10261,8 @@ def gemini_turn(rows: list, stdout: str, stderr: str) -> tuple[dict, Optional[st
             raise UnusableReply('agy returned an empty response and no structured_output')   # F14: the gate's one retry
         answer = unwrap_json(response)
     session = result.get('conversation_id') or next((row.get('conversation_id') for row in rows if row.get('event') == 'init'), None)
+    if not isinstance(session, str) or not session:   # a resumed turn needs it (--conversation); fail closed, not at Popen
+        raise ValueError('agy returned no conversation_id')
     return answer, session, [gemini_usage(result, 'result')]
 
 

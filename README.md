@@ -431,7 +431,7 @@ only where the operator profile or the CLI flags name it:
   for the other vendors.
 - Author: agy runs with `--sandbox` and settings that allow file writes in the workspace only (never the run
   directory), file reads and shell commands, and deny URLs and MCP; it gets the post-turn checks of a Claude author
-  (git HEAD and control files, plus refs and the index for the lifecycle writers; global config, the coordinator context and the run directory's files) and the
+  (git HEAD and control files, plus refs and the index for the lifecycle writers; global config and the coordinator context), plus a check of the run directory's files, and the
   author's own `TMPDIR`, as a Codex author.
 - agy's `~/.gemini/antigravity-cli/settings.json` is snapshotted around each gemini turn like the other vendors'
   global config: after a completed gemini turn, a change of only `trustedWorkspaces` or `model` (agy writes these

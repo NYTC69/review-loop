@@ -375,6 +375,8 @@ class GeminiAdapterTests(unittest.TestCase):
                          [('make test', None, False, 'started; no exit status when the turn ended'), ('false', 1, True, None)])
         self.assertEqual(calls[1], {'tool': 'command_execution', 'input': {'command': 'false'}, 'error': True})
         self.assertEqual(rc.gemini_turn(rows, '', '')[:2], ({'verdict': 'approve'}, 'c1'))
+        with self.assertRaisesRegex(ValueError, 'agy returned no conversation_id'):   # WI-GEM2 review
+            rc.gemini_turn([{'event': 'result', 'result': {'status': 'SUCCESS', 'response': '{"verdict": "approve"}'}}], '', '')
         self.assertTrue(rc.failed_turn_did_work('gemini', self._lines(rows[:1])))
 
     def test_an_empty_success_reply_is_unusable_so_the_gate_gets_its_retry(self):
