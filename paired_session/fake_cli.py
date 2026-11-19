@@ -789,7 +789,7 @@ def main():
 
     if (replies := os.environ.get('FAKE_GATE_REPLIES')) and locals().get('role') == 'gate' and isinstance(answer, dict):
         # WI-GATE1 R2 F9: one reply kind per gate call, in order (then 'ok'): text (not JSON), null (verdict null),
-        # noclaims (no verified_claims), empty (FAIL without items), ok. FAKE_GATE_REPLIES_COUNT names the counter file.
+        # noclaims (no verified_claims), empty (FAIL without items), unmettest, timeout, ok. FAKE_GATE_REPLIES_COUNT names the counter file.
         counter = Path(os.environ['FAKE_GATE_REPLIES_COUNT'])
         index = int(counter.read_text()) if counter.exists() else 0
         counter.write_text(str(index + 1))
@@ -803,6 +803,13 @@ def main():
             answer.pop('verified_claims', None)
         elif kind == 'empty':
             answer.update(verdict='FAIL', fail_items=[])
+        elif kind == 'unmettest':   # R3 F9: PASS with an unmet criterion and no observed test run
+            answer.update(verdict='PASS', fail_items=[])
+            answer['criteria'][0]['met'] = False
+            command_events = []
+        elif kind == 'timeout':   # R3 F13: the turn outlives the coordinator's --timeout and is killed
+            import time
+            time.sleep(600)
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
     if isinstance(answer, str):
         pass

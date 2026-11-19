@@ -310,6 +310,28 @@ class GateOnceTests(unittest.TestCase):
                 self.assertEqual(sum(bool(turn.get('gate_malformed')) for turn in state['turns']), 1 if done else 2)
                 self.clean()
 
+    def test_a_gate_timeout_is_one_dispatch_and_not_a_malformed_verdict(self):
+        # R3 F13: a turn failure is not a completed reply: no re-dispatch, the pre-R3 HOLD with its own reason
+        counter = self.root / 'timeout.count'
+        result = self.run_coordinator(*OFF, '--timeout', '5', env={'FAKE_GATE_REPLIES': 'timeout', 'FAKE_GATE_REPLIES_COUNT': str(counter)})
+        self.assertEqual(int(counter.read_text()), 1)
+        self.assertIn('HOLD', result.stdout, result.stdout + result.stderr)
+        self.assertIn('timed out after', result.stdout, result.stdout + result.stderr)
+        self.assertNotIn('malformed gate verdict', result.stdout)
+        state = self.state()
+        self.assertEqual(len(gates(state)), 1)
+        self.assertFalse(any(turn.get('gate_malformed') for turn in state['turns']))
+
+    def test_a_pass_with_an_unmet_criterion_and_no_test_is_malformed_not_a_test_evidence_hold(self):
+        # R3 F9: the reply is validated before the test-evidence check, so it uses the one re-dispatch
+        counter = self.root / 'unmettest.count'
+        result = self.run_coordinator(*OFF, env={'FAKE_GATE_REPLIES': 'unmettest', 'FAKE_GATE_REPLIES_COUNT': str(counter)})
+        self.assertEqual(int(counter.read_text()), 2, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        self.assertNotIn('lacks an observed successful configured test', result.stdout)
+        state = self.state()
+        self.assertIn('PASS with an unmet criterion', gates(state)[0]['gate_malformed'])
+
     def test_one_malformed_answer_then_a_verdict_is_the_single_gate(self):
         result = self.run_coordinator(*OFF, env={**FAIL, 'FAKE_GATE_MALFORMED_ONCE': str(self.root / 'malformed-once')})
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
