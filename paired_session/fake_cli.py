@@ -526,7 +526,8 @@ def main():
                     item[field] = ''
             fail_items = [] if malformed == 'none' else [item]
         answer = {'verdict': 'FAIL' if fail_items or malformed == 'none' else 'PASS',
-                  'criteria': [{'criterion': criterion, 'met': met and malformed != 'unmet' and not fail_items,
+                  'criteria': [{'criterion': criterion, 'met': malformed != 'unmet' and not any(   # R1 F4: an unmet criterion has its item
+                      item['basis'] == 'criterion' for item in fail_items),
                                 'evidence': 'sum_ints.py:1'}],
                   'fail_items': fail_items,
                   'self_run_evidence': [{'command': configured_test}]}
@@ -644,6 +645,10 @@ def main():
             revise = True
             findings = [{'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs describe the wrong behavior',
                          'failure_scenario': 'a reader trusts the stale changelog entry'}]
+        if 'Role: docs reviewer,' in prompt and os.environ.get('FAKE_DOCS_REVIEW_CODE_COMMENT'):   # WI-GATE1 R1 F6: every time
+            revise = True
+            findings = [*findings, {'severity': 'MAJOR', 'file': 'sum_ints.py', 'summary': 'stale code comment',
+                                    'failure_scenario': 'the comment describes the old behavior'}]
         disposition = 'fixed'
         prior = [{'id': finding_id, 'disposition': disposition,
                   'evidence': 'fake verified disposition'} for finding_id in open_ids]

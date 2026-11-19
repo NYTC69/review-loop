@@ -2278,10 +2278,20 @@ def gate_answer_error(answer) -> str:
     criteria, items = answer.get('criteria'), answer.get('fail_items')
     if not isinstance(criteria, list) or not isinstance(items, list):
         return 'criteria and fail_items must be arrays'
+    for key in ('verified_claims', 'self_run_evidence'):   # R1 F3: every required key, before anything is recorded
+        if not isinstance(answer.get(key), list):
+            return f'{key} must be an array'
     for index, row in enumerate(criteria):
-        if (not isinstance(row, dict) or not str(row.get('criterion') or '').strip() or type(row.get('met')) is not bool
-                or not str(row.get('evidence') or '').strip()):
+        if (not isinstance(row, dict) or not isinstance(row.get('criterion'), str) or not row['criterion'].strip()
+                or type(row.get('met')) is not bool or not isinstance(row.get('evidence'), str)
+                or not row['evidence'].strip()):
             return f'criteria[{index}] needs a quoted criterion, met true/false and evidence'
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            return f'fail_items[{index}] is not an object'
+        if wrong := [key for key in ('basis', 'criterion', 'blocking_class', *GATE_ITEM_FIELDS)
+                     if not isinstance(item.get(key), str)]:
+            return f'fail_items[{index}] needs string keys: ' + ', '.join(wrong)
     if answer['verdict'] == 'PASS':
         if unmet := [str(row['criterion']).strip() for row in criteria if not row['met']]:
             return 'PASS with an unmet criterion: ' + '; '.join(unmet)[:300]
@@ -2291,8 +2301,6 @@ def gate_answer_error(answer) -> str:
     if not items:
         return 'FAIL with no fail_items'
     for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            return f'fail_items[{index}] is not an object'
         basis = item.get('basis')
         if basis == 'criterion' and not str(item.get('criterion') or '').strip():
             return f'fail_items[{index}] (basis criterion) has no quoted criterion'
@@ -2302,6 +2310,10 @@ def gate_answer_error(answer) -> str:
             return f'fail_items[{index}] needs basis criterion or blocking-class'
         if missing := [key for key in GATE_ITEM_FIELDS if not str(item.get(key) or '').strip()]:
             return f'fail_items[{index}] has no ' + ', '.join(missing)
+    claimed = {' '.join(item['criterion'].split()) for item in items if item['basis'] == 'criterion'}
+    if orphan := [row['criterion'].strip() for row in criteria   # R1 F4: each unmet criterion is a repair obligation
+                  if not row['met'] and ' '.join(row['criterion'].split()) not in claimed]:
+        return 'unmet criterion without a fail item: ' + '; '.join(orphan)[:300]
     return ''
 
 
@@ -4798,6 +4810,14 @@ class Coordinator:
             self.state['next'] = 'finish'
             self.save()
             return 'ACTIVE'
+        if not self.state['config'].get('review_report'):   # R1 F7: the stop-after-gate DONE binds the reviewer's tree too
+            reviewer, _ = worktree_lifecycle.reviewed_turns(self.state['turns'])
+            if reviewer and reviewer.get('snapshot_before') != git_snapshot(self.workspace)[0]:
+                print('NOTE: the tree changed after the EXEC reviewer approved; the reviewer reviews it before DONE '
+                      '(the gate verdict stands)')
+                self.state.update(next='reviewer', phase='EXEC')
+                self.save()
+                return 'ACTIVE'
         return self.done()
 
     def resume_polish(self) -> str:
@@ -5591,7 +5611,7 @@ class Coordinator:
         """FIELD-31: review history the run's own change adds to the code (a finding id in a test title or a comment) is a
         blocking finding for the author, at the cost of a normal EXEC round, instead of the fresh shadow/gate HOLD. Only added
         lines of context/delta.patch count; every other input, report mode and the last EXEC round keep that HOLD."""
-        fresh = (self.args.shadow == 'on' or replaying or   # WI-GATE1: a fresh role still to scan: the shadow, or the gate once
+        fresh = (self.args.shadow == 'on' or   # WI-GATE1: a fresh role still to scan: the shadow, or the gate once (R1 F8: a replay too)
                  (self.args.adversarial_gate == 'on' and not self.state.get('gate_ran')))
         if (phase != 'EXEC' or not fresh or self.state['config'].get('review_report')
                 or self.state['exec_rounds'] >= self.exec_round_limit() or self._recorded_shadow_result(phase, sequence)):
@@ -6953,7 +6973,8 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['plan_rewrite'] = True   # the audit trail names the extra turn
             self.progress('plan_rewrite', status='written', sequence=result['sequence'])
         self.state['delivered_review'] = ''
-        self.state['next'] = self._post_author_next()
+        # R1 F5: a rejection fix is the persistent EXEC reviewer's (with the rejection notes), never the docs-only shortcut
+        self.state['next'] = 'reviewer' if rejection else self._post_author_next()
         self.state.pop('pending_author_result_sequence', None)
         self.save()
 
@@ -7003,18 +7024,6 @@ class Coordinator:
             return 'reviewer'
         life['docs_only'] = {'paths': changed, 'tree': tree}
         return 'docs-review'
-
-    def _docs_author_route(self, rows: list[dict]) -> None:
-        """v3.8.1: a docs review REVISE on an all-docs change goes to the EXEC author (the fix), not the reviewer; the
-        author turn counts the round, so the limit is checked here without spending one."""
-        life = self.state['lifecycle']
-        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None,
-                                   'docs_revise': self._save_approval_manifest('docs-revise')}   # the reviewed DOCS tree:
-        self.state['lifecycle'].pop('docs_only', None)   # its operator records may follow the author's docs-only fix
-        self.state.update(phase='EXEC', next='author',
-                          delivered_review=worktree_lifecycle.delivered_findings('docs-review', rows))
-        if self.state['exec_rounds'] >= self.exec_round_limit():
-            self.round_limit_hold('EXEC round limit reached after a DOCS write')
 
     def _docs_capture_dir(self, request: dict) -> Path:
         return self.internal / 'docs' / request['request_id']
@@ -7291,7 +7300,8 @@ class Coordinator:
     def worktree_docs_review_only_turn(self) -> None:
         """v3.8.1 docs-only fix: an EXEC author change that touched only docs paths since the EXEC convergence skips the
         reviewer, shadow, gate, FINISH and POLISH-Q: the fresh docs review runs on that tree; APPROVE goes to SECURITY,
-        REVISE back to the author, and any other open blocker replays EXEC in full."""
+        REVISE to the DOCS writer (WI-GATE1 R1 F5), and any other open blocker replays EXEC in full. A rejection fix never
+        takes this route (author_turn sends it to the reviewer)."""
         life = self.state['lifecycle']
         scope = life.get('docs_only') or {}
         tree = git_snapshot(self.workspace)[0]
@@ -7311,13 +7321,13 @@ class Coordinator:
         self.save()
         review = self._docs_review_turn(tree, sorted({*paths, *self._docs_owned()}))
         blocking = self.blocking_open_findings()
-        route = 'EXEC' if review['status'] != 'APPROVE' or blocking else 'SECURITY'
+        route = ('DOCS' if review['status'] != 'APPROVE' else 'EXEC' if blocking else 'SECURITY')
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
             **request, 'status': 'READY', 'output_oid': tree, 'sequence': review['sequence'], 'docs_paths': paths,
             'docs_written': {}, 'docs_only': True, 'review': review, 'route': route})
         self.state['lifecycle'].pop('docs_only', None)
         if review['status'] != 'APPROVE':
-            self._docs_author_route(self._docs_revise_rows())
+            self._docs_writer_route(tree, self._docs_revise_rows())
         elif blocking:   # another role's blocker is open: the EXEC reviewer again
             life = self.state['lifecycle']
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
@@ -7359,10 +7369,13 @@ class Coordinator:
             raise RuntimeError('docs reviewer reviewed a tree other than the one under review')
         answer = result['answer']
         findings = worktree_lifecycle.normalized_findings('docs-reviewer', answer['full_review'], 'docs reviewer')
-        blocking = [row for row in findings if blocks_by_severity(row)]   # v3.8.1: the security tag alone does not block
         if answer['status'] == 'HOLD' or (answer['status'] != 'APPROVE' and not findings and not any(
                 row.get('disposition') == 'still_open' for row in answer.get('prior_findings') or [])):
             raise RuntimeError(unusable_review('docs reviewer', answer) + '; resume reviews again')
+        manifest = dict(git_snapshot(self.workspace)[1])   # R1 F6: a path the DOCS writer cannot edit is no DOCS repair
+        backlog = [row for row in findings if row.get('file') and not self._doc_path(row['file'], manifest.get(row['file']))]
+        findings = [row for row in findings if row not in backlog]
+        blocking = [row for row in findings if blocks_by_severity(row)]   # v3.8.1: the security tag alone does not block
         record = None if (observed := self._observed_test(answer)) else self._operator_test_record(tree)
         if not observed and record is None:
             cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
@@ -7379,12 +7392,35 @@ class Coordinator:
                 self.state['finding_ledger'] = ledger   # a malformed answer leaves no partial disposition
                 raise RuntimeError(f'docs reviewer omitted dispositions for open docs rows ({exc}); resume reviews again') from exc
         self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer or the next docs review disposes them
+        self.add_run_backlog('docs-reviewer', 'DOCS', result['sequence'], backlog)
         self.render(result, 'docs-reviewer', 'DOCS')
         still = [row for row in self.open_findings() if row['id'] in {item['id'] for item in owned} and blocks_by_severity(row)]
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking or still else 'APPROVE', 'observed_test': observed,
                 'finding_ids': [row['id'] for row in self.state['finding_ledger']
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
                 **({'operator_test_evidence': record['id']} if record else {})}
+
+    def add_run_backlog(self, source: str, phase: str, sequence: int, rows: list[dict]) -> None:
+        """WI-GATE1 R1 F6: non-blocking observations kept for later, outside the ledger: the state's `backlog` list and
+        backlog.md in the run dir (a later step carries them to the repository BACKLOG.md at accept). Never a repair."""
+        entries = self.state.setdefault('backlog', [])
+        known = {(row['source'], row['file'], row['summary']) for row in entries}
+        added = []
+        for row in rows:
+            entry = {'source': source, 'phase': phase, 'sequence': sequence, 'severity': str(row.get('severity', '')).upper(),
+                     'file': row.get('file', ''), 'summary': str(row.get('summary', '')),
+                     'failure_scenario': str(row.get('failure_scenario', ''))}
+            if (entry['source'], entry['file'], entry['summary']) not in known:
+                known.add((entry['source'], entry['file'], entry['summary']))
+                entries.append(entry)
+                added.append(entry)
+        if not added:
+            return
+        atomic_text(self.run_dir / 'backlog.md', '# Run backlog (non-blocking)\n\n' + ''.join(
+            f"- [{row['source']} {row['phase']} #{row['sequence']}] {row['severity']} {row['file']}: {row['summary']}"
+            + (f" ({row['failure_scenario']})" if row['failure_scenario'] else '') + '\n' for row in entries))
+        print(f"NOTE: {len(added)} {source} observation(s) on paths the stage cannot edit went to the run backlog "
+              f"({self.run_dir / 'backlog.md'}): " + ', '.join(row['file'] for row in added[:10]))
 
     def _redispatch_budget(self, phase: str, voided: Exception) -> None:
         """INT-2c: a W read-only re-dispatch counts against its stage cap like any dispatch (the callers check room for their
@@ -8655,7 +8691,7 @@ class Coordinator:
         persistent_findings = list(answer['full_review'])
         self.render(result, 'supervisor', phase)
         shadow = None
-        writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: a writer replay always has one
+        writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: the replay epoch, if any
         replaying = bool(writer_replay) and writer_replay['epoch'] == (self.state.get('lifecycle') or {}).get('epoch')
         failures = (self._test_failure_findings(answer, result['sequence'])
                     if phase == 'EXEC' and not self.state['config'].get('review_report') else [])
@@ -8670,7 +8706,7 @@ class Coordinator:
             answer['full_review'].extend(secrets)
             if answer['status'] == 'APPROVE':
                 answer['status'] = 'REVISE'
-        if not leak and not failures and phase == 'EXEC' and (self.args.shadow == 'on' or replaying):
+        if not leak and not failures and phase == 'EXEC' and self.args.shadow == 'on':   # R1 F8: a replay honors --shadow off
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
@@ -8960,13 +8996,37 @@ class Coordinator:
         verdict = self._gate_verdict_turn()
         if verdict and not self.state.get('gate_ran') and self.state.get('next') != 'gate':
             self.state['gate_ran'] = True   # next == 'gate' is settled by gate_turn (an unprocessed or a legacy re-gate)
-        if verdict and 'gate_fail_items' not in self.state:
+        if verdict and 'gate_fail_items' not in self.state:   # legacy verdict rows; else the blocking gate rows on record
+            rows = (self._legacy_gate_rows(verdict) if 'findings' in verdict['answer'] else
+                    [row for row in self.state.get('finding_ledger', [])
+                     if row.get('source') == 'adversarial-gate' and blocks_by_severity(row)])
             self.state['gate_fail_items'] = [
                 {'id': row['id'], 'basis': 'legacy', 'criterion': '', 'blocking_class': '',
                  'evidence': row.get('body') or row.get('summary', ''), 'smallest_change': row.get('summary', ''),
-                 'proof': 'the reviewer confirms the defect described above is fixed', 'sequence': row.get('origin_round')}
-                for row in self.state.get('finding_ledger', [])
-                if row.get('source') == 'adversarial-gate' and blocks_by_severity(row)]
+                 'proof': 'the reviewer confirms the defect described above is fixed', 'sequence': verdict['sequence']}
+                for row in rows]
+
+    def _legacy_gate_rows(self, turn: dict) -> list[dict]:
+        """R1 F1: the valid blockers (critical/high with the full rubric) of a gate verdict an earlier version saved, as
+        ledger rows. Rows it already recorded keep their ids (record_findings matches the finding index); a verdict saved
+        before its findings were recorded is recorded now, with the release's rule for a blocker without its rubric."""
+        findings = [{key: value for key, value in finding.items() if key != 'id'}   # the release saved the recorded ids in it
+                    for finding in turn['answer'].get('findings') or [] if isinstance(finding, dict)]
+        recorded = self.record_findings('adversarial-gate', 'EXEC', turn['sequence'], findings)
+        ledger = {row['id']: row for row in self.state['finding_ledger']}
+        rows = []
+        for finding, entry in zip(findings, recorded):
+            if str(finding.get('severity', '')).lower() not in ('critical', 'high'):
+                continue
+            row = ledger[entry['id']]
+            if not missing_rubric(str(finding.get('body', ''))):
+                rows.append(row)
+            elif row['status'] == 'open':
+                row['status'] = 'withdrawn'
+                row['status_history'].append({'round': turn['sequence'], 'status': 'withdrawn',
+                                              'evidence': 'program rejected malformed blocking rubric'})
+        self.write_ledger()
+        return rows
 
     def gate_fail_open_items(self) -> list[dict]:
         """The gate FAIL items whose ledger row is still open (closed only as fixed)."""
@@ -9019,7 +9079,8 @@ class Coordinator:
         if recorded:
             return {'answer': copy.deepcopy(recorded['answer']), 'sequence': recorded['sequence'],
                     'snapshot': recorded.get('snapshot_before')}
-        malformed = [turn for turn in self._gate_turns() if turn.get('gate_malformed')]
+        start = self.state.get('gate_attempt_from', 0)   # R1 F2: a resume after the HOLD below starts a new bounded attempt
+        malformed = [turn for turn in self._gate_turns() if turn.get('gate_malformed') and turn['sequence'] > start]
         while len(malformed) < 2:
             self.materialize_review_context()
             snapshot, _ = git_snapshot(self.workspace)
@@ -9038,13 +9099,26 @@ class Coordinator:
             self.progress('verdict', verdict='MALFORMED', source='gate', open=self._progress_open())
             self.save()
             malformed.append(receipt)
-        self.hold('malformed gate verdict: ' + malformed[-1]['gate_malformed'])
+        self.state['gate_attempt_from'] = self.state['sequence']   # the receipts stay; resume dispatches the gate afresh
+        self.hold('malformed gate verdict: ' + malformed[-1]['gate_malformed'] + '; fix the gate model or prompt and resume '
+                  '(a new attempt: one try and one re-dispatch), or abort')
         return None
 
     def gate_turn(self) -> None:
         verdict = self._gate_verdict_turn()
         reviewed = max((turn['sequence'] for turn in self.state.get('turns', []) if turn.get('role') == 'reviewer'
                         and turn.get('phase') == 'EXEC' and not turn.get('error')), default=0)
+        if verdict and 'findings' in verdict['answer'] and verdict['sequence'] > reviewed:
+            # R1 F1: an earlier version's verdict on the reviewed tree, not yet routed (a HOLD or a stop before delivery)
+            self._settle_saved_gate()
+            self.state['gate_ran'] = True
+            ids = {item['id'] for item in self.state.get('gate_fail_items') or []}
+            rows = [row for row in self.state['finding_ledger'] if row['id'] in ids and row['status'] == 'open']
+            if not rows:
+                self.start_polish_or_done()
+                return
+            self._route_gate_fail(rows, verdict['sequence'], None)
+            return
         if self.state.get('gate_ran') or (verdict and verdict['sequence'] < reviewed):
             self.state['gate_ran'] = True   # WI-GATE1: a re-gate an earlier version queued; the reviewer approved this tree
             self.start_polish_or_done()
@@ -9092,13 +9166,16 @@ class Coordinator:
         if not recorded:
             self.start_polish_or_done()
             return
-        structural = self._structural_block_hold('gate', result['sequence'], recorded)
+        self._route_gate_fail(recorded, result['sequence'], self._structural_block_hold('gate', result['sequence'], recorded))
+
+    def _route_gate_fail(self, recorded: list[dict], sequence: int, structural: Optional[dict]) -> None:
+        """The post-gate repair: the FAIL items go to the author; at the EXEC round cap, Q3's one extra round."""
         self.set_effective_verdict('REVISE')
         if self.state['exec_rounds'] >= self.exec_round_limit():
             if not self.gate_fail_extra_round():
                 self.round_limit_hold('EXEC round limit reached after adversarial gate')
                 return
-            self.state['gate_extra_round'] = {'sequence': result['sequence'], 'at_round': self.state['exec_rounds']}
+            self.state['gate_extra_round'] = {'sequence': sequence, 'at_round': self.state['exec_rounds']}
         advisory = self.nonblocking_open_findings()
         self.state['delivered_review'] = json.dumps({
             'source': 'adversarial-gate', 'status': 'FAIL',
