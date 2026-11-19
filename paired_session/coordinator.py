@@ -9812,7 +9812,7 @@ def gemini_turn(rows: list, stdout: str, stderr: str) -> tuple[dict, Optional[st
     if not isinstance(answer, dict):
         response = result.get('response')
         if not isinstance(response, str) or not response.strip():
-            raise ValueError('agy returned an empty response and no structured_output')
+            raise UnusableReply('agy returned an empty response and no structured_output')   # F14: the gate's one retry
         answer = unwrap_json(response)
     session = result.get('conversation_id') or next((row.get('conversation_id') for row in rows if row.get('event') == 'init'), None)
     return answer, session, [gemini_usage(result, 'result')]

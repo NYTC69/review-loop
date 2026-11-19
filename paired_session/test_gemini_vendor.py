@@ -378,6 +378,16 @@ class GeminiAdapterTests(unittest.TestCase):
         self.assertEqual(rc.gemini_turn(rows, '', '')[:2], ({'verdict': 'approve'}, 'c1'))
         self.assertTrue(rc.failed_turn_did_work('gemini', self._lines(rows[:1])))
 
+    def test_an_empty_success_reply_is_unusable_so_the_gate_gets_its_retry(self):
+        """WI-GATE1 F14: an agy SUCCESS with no response and no denial is a completed but unusable reply."""
+        rows = [{'event': 'result', 'result': {'status': 'SUCCESS', 'conversation_id': 'c1', 'response': ''}}]
+        with self.assertRaises(rc.UnusableReply):
+            rc.gemini_turn(rows, '', '')
+        denied = [{'event': 'result', 'result': {'status': 'SUCCESS', 'response': '', 'denied_actions': ['write_file']}}]
+        with self.assertRaises(ValueError) as caught:
+            rc.gemini_turn(denied, '', '')
+        self.assertNotIsInstance(caught.exception, rc.UnusableReply)   # a denial still holds after one dispatch
+
     def test_the_exit_status_is_read_from_the_first_line_only(self):
         output = 'Command exited with code 1.\n\nCommand output: Command exited with code 0.\n'   # the command printed a status line
         rows = [{'event': 'step_update', 'step_update': {'step_index': 1, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
