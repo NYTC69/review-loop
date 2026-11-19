@@ -40,13 +40,19 @@ class ResumeAccountingTests(unittest.TestCase):
         later = [(t['role'], t['phase']) for t in done['turns'] if t['sequence'] > before['sequence']]
         self.assertIn(('reviewer', 'EXEC'), later)
         self.assertIn(('shadow', 'EXEC'), later)
-        self.assertIn(('gate', 'EXEC'), later)
+        self.assertNotIn(('gate', 'EXEC'), later)   # WI-GATE1: the gate ran once
 
     def test_finish_over_limit_plain_resume_holds_then_extension_continues(self):
         self.stage_limit('FINISH', {'FAKE_FINISH_WRITE': '1'})
 
-    def test_docs_over_limit_plain_resume_holds_then_extension_continues(self):
-        self.stage_limit('DOCS', {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-once')})
+    def test_a_docs_code_write_at_the_limit_is_rolled_back_without_an_exec_round(self):
+        # WI-GATE1: DOCS never reopens EXEC, so a DOCS code write no longer uses an EXEC round or holds at the limit
+        self.assert_done(self.run_coordinator(*ON, '--max-exec-rounds', '1', env={'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-once')}))
+        state = self.state()
+        self.assertEqual(state['exec_rounds'], 1)
+        [docs] = [r for r in state['lifecycle']['receipts'] if r['stage'] == 'DOCS']
+        self.assertEqual((docs['route'], docs['rolled_back_outside']), ('SECURITY', ['sum_ints.py']))
+        self.assertNotIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
 
     def equal_limit(self, mode):
         flags = ('--lifecycle-mode', mode, '--max-invocations', '80', '--max-exec-rounds', '1')
@@ -153,13 +159,17 @@ class ResumeAccountingTests(unittest.TestCase):
                       again.stdout + again.stderr)
         self.assertEqual(self.state()['sequence'], before['sequence'])
 
-    def test_docs_outside_allowlist_write_then_hold_still_refuses(self):
-        _, before = self.docs_hold(target='docs/other.md')
-        self.docs_refused(before)
+    def rolled_back_then_resumed(self, target):   # WI-GATE1: an outside write is rolled back before the writer's HOLD
+        first, _ = self.docs_hold(target=target)
+        self.assertEqual(first['rolled_back_outside'], [target])
+        self.assertFalse((self.workspace / target).exists())
+        self.assert_done(self.run_operator_action('resume', *ON))
 
-    def test_docs_denied_write_then_hold_still_refuses(self):
-        _, before = self.docs_hold(target='CLAUDE.md')
-        self.docs_refused(before)
+    def test_docs_outside_allowlist_write_then_hold_is_rolled_back_and_resume_continues(self):
+        self.rolled_back_then_resumed('docs/other.md')
+
+    def test_docs_denied_write_then_hold_is_rolled_back_and_resume_continues(self):
+        self.rolled_back_then_resumed('CLAUDE.md')
 
     def test_docs_external_tree_change_after_hold_still_refuses(self):
         _, before = self.docs_hold()

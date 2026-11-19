@@ -75,8 +75,9 @@ class WriterReplayAdvisoryTests(unittest.TestCase):
         self.assertTrue(all(r.get('advisory') for r in rows))
         self.assertNotIn('writer_replay', state['lifecycle'])
         replay = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > writer['sequence']]
-        for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):
+        for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('author', 'FINISH')):
             self.assertIn(step, replay)
+        self.assertNotIn(('gate', 'EXEC'), replay)   # WI-GATE1: the gate ran once, before FINISH
         self.assertEqual([s[0] for s in self.stages(state)][-2:], ['DOCS', 'SECURITY'])
         return rows
 

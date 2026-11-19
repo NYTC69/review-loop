@@ -1,6 +1,6 @@
 """ADVFIX (owner 2026-10-06, "加一轮修非阻塞"; field run ws28 changed no code with 14 MINOR/LOW findings open): with
 --advisory-fix-round, the first clean POLISH-Q exit gives the author one fix round for the open non-blocking findings,
-then the normal chain (EXEC reviewer, shadow, gate, FINISH, specialists), once per run, before the quality writers, on
+then the normal chain (EXEC reviewer, shadow, FINISH, specialists; the gate runs once per work item), once per run, before the quality writers, on
 its own round outside --max-exec-rounds."""
 import json
 import unittest
@@ -51,8 +51,9 @@ class AdvisoryFixRoundTests(unittest.TestCase):
                          ['FINISH', 'POLISH-Q', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])   # the re-review chain, then on
         author = next(t for t in state['turns'] if t['role'] == 'author' and t['phase'] == 'EXEC')
         after = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > author['sequence']]
-        for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):
+        for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('author', 'FINISH')):
             self.assertIn(step, after)
+        self.assertNotIn(('gate', 'EXEC'), after)   # WI-GATE1: the gate ran once, before the advisory round
         self.assertEqual(state['exec_rounds'], 2)   # max 1 + its own round: no round-limit HOLD
         self.assertTrue(any(row['status'] == 'open' and row['severity'] == 'MINOR' for row in state['finding_ledger']))   # stays advisory
         self.assertTrue(wl.advisory_report_line(state).startswith('- 非阻塞修复轮（advisory fix round）：已运行（'))

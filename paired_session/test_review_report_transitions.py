@@ -69,7 +69,7 @@ class ReviewReportTransitionTests(unittest.TestCase):
     def test_gate_request_changes_still_runs_polish_q_and_keeps_findings_open(self):
         self.change()
         state = self.assert_report_path(self.run_coordinator(*FLAGS, env={'FAKE_GATE_BLOCK': '1'}))
-        self.assertEqual(state['exec_comparisons'][0]['gate']['verdict'], 'needs-attention')   # gate schema's REQUEST_CHANGES verdict
+        self.assertEqual(state['exec_comparisons'][0]['gate']['verdict'], 'FAIL')   # WI-GATE1 gate schema: PASS or FAIL
         self.assertTrue(any(f['source'] == 'adversarial-gate' and f['status'] == 'open'
                             for f in state['finding_ledger']))
         self.assertTrue(state['gate_ran'])

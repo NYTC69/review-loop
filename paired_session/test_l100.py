@@ -52,24 +52,26 @@ class AddRoundsTests(unittest.TestCase):
                 self.assertEqual((state['exec_rounds'], state['config']['max_exec_rounds']), (2, 1))
                 self.assertIn('操作员追加轮次（resume --add-rounds）：EXEC +1', review_report.delivery_section(state))
 
-    def w_hold_then_continue(self, env, reason):
+    def w_hold_then_continue(self, env, reason, resume_env=None):
         flags = ('--max-exec-rounds', '1', '--lifecycle-mode', 'on', '--max-invocations', '60')
         held = self.run_coordinator(*flags, env=env)
         self.assertEqual(held.stdout.strip().splitlines()[-1], 'HOLD: ' + reason, held.stdout + held.stderr)
         before = self.state()
-        resumed = self.run_operator_action('resume', *flags, '--add-rounds', '1', env=env)
+        resumed = self.run_operator_action('resume', *flags, '--add-rounds', '1', env=env if resume_env is None else resume_env)
         self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
         state = self.state()
         after = [turn for turn in state['turns'] if turn['sequence'] > before['sequence']]
         self.assertEqual(after[0]['role'], 'author')   # the fix author first: no review or gate re-dispatched
         return before, state, after
 
-    def test_a_w_gate_hold_goes_to_the_fix_author_then_the_gate_runs_again(self):
-        before, state, after = self.w_hold_then_continue({'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-once')},
-                                                         'EXEC round limit reached after adversarial gate')
-        self.assertEqual(before['next'], 'gate')
+    def test_a_w_gate_hold_goes_to_the_fix_author_and_the_gate_does_not_run_again(self):
+        # WI-GATE1 Q3: the FAIL at the cap got one extra round; its REVISE holds, the extension goes to the fix author
+        before, state, after = self.w_hold_then_continue({'FAKE_GATE_BLOCK': '1', 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'},
+                                                         'EXEC round limit reached after adversarial gate', {'FAKE_GATE_BLOCK': '1'})
+        self.assertEqual(before['next'], 'reviewer')
         roles = [(turn['role'], turn['phase']) for turn in after]
-        self.assertLess(roles.index(('author', 'EXEC')), roles.index(('gate', 'EXEC')))   # fixed, then gated again
+        self.assertIn(('author', 'EXEC'), roles)
+        self.assertNotIn(('gate', 'EXEC'), roles)   # fixed and reviewed; the gate ran once
         [gate_row] = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate' and row['severity'].upper() == 'HIGH']
         prompt = self.run_dir / 'evidence' / f"{after[0]['sequence']:03d}-exec-author.prompt.txt"
         self.assertIn(gate_row['id'], prompt.read_text())
@@ -84,7 +86,7 @@ class AddRoundsTests(unittest.TestCase):
         prompt = (self.run_dir / 'evidence' / f"{after[0]['sequence']:03d}-{after[0]['phase'].lower()}-author.prompt.txt").read_text()
         self.assertNotIn('round-limit-extension', prompt)   # the fix leg's own delivered blockers, not a redirected author turn
         self.assertIn(finding['id'], prompt)
-        self.assertIn(('gate', 'EXEC'), [(turn['role'], turn['phase']) for turn in after])   # the fix replays EXEC and gate
+        self.assertNotIn(('gate', 'EXEC'), [(turn['role'], turn['phase']) for turn in after])   # WI-GATE1: EXEC review only
 
     def test_report_mode_refuses_and_changes_nothing(self):
         co = self.coordinator('--max-exec-rounds', '1')

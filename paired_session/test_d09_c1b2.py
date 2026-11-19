@@ -1,6 +1,6 @@
 """D09 C1-b2 (paired_session/docs/d09-cap1-writer-passes.md §2 "Reviewer after a writer" and "One chance in review", §5):
-a kept writer change replays EXEC review, shadow, gate, FINISH and the specialists before DOCS (exec_rounds + 1, like a
-FINISH write); a non-approval other than eligible advisory REVISE, or a failing gate, rolls the tree back to base_oid
+a kept writer change replays EXEC review, shadow, FINISH and the specialists before DOCS (exec_rounds + 1, like a
+FINISH write; WI-GATE1: no second gate); a non-approval other than eligible advisory REVISE rolls the tree back to base_oid
 instead of a fix round. New blockers outside writer files take EXEC repair; writer-file and advisory rows are withdrawn.
 A kept change needs a passing local check (C1-b3's executor, test_d09_c1b3.py); these tests drive the run in
 process with `_writer_local_check` patched, so the replay paths are tested apart from the test command."""
@@ -41,7 +41,7 @@ class D09C1b2Tests(unittest.TestCase):
         return [(row['stage'], row.get('role')) for row in state['lifecycle']['receipts']]
 
     # --- §5 tests 1, 2 and 12: a kept write is reviewed on the replay, then DOCS ---------------------------------------------
-    def test_a_kept_write_replays_review_gate_finish_and_specialists_before_docs(self):
+    def test_a_kept_write_replays_review_finish_and_specialists_before_docs(self):
         base = self.change()
         co, status = self.drive(FAKE_WRITER_WRITE='simplifier', FAKE_WRITER_FILE='writer_note.py')
         self.assertEqual(status, 'DONE', co.state.get('hold_reason'))
@@ -58,8 +58,9 @@ class D09C1b2Tests(unittest.TestCase):
         self.assertEqual((state['lifecycle']['epoch'], state['exec_rounds']), (1, 2))   # one replay epoch, counted like FINISH
         replay = [t for t in state['turns'] if t['sequence'] > marker['test-writer']['sequence']]
         roles = [(t['role'], t['phase']) for t in replay]
-        for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):
+        for step in (('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('author', 'FINISH')):
             self.assertIn(step, roles)
+        self.assertNotIn(('gate', 'EXEC'), roles)   # WI-GATE1: the gate ran once, before FINISH
         self.assertNotIn(('author', 'POLISH-Q'), roles)   # the writers do not run again in the replay
         self.assertEqual(state['lifecycle']['writer_counts'], {'simplifier': 1, 'test-writer': 1})
         exec_review = next(t for t in replay if t['role'] == 'reviewer' and t['phase'] == 'EXEC')
@@ -186,11 +187,15 @@ class D09C1b2Tests(unittest.TestCase):
                          ['FINISH', 'FINISH', 'POLISH-Q', 'POLISH-Q', 'POLISH-Q', 'FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
 
-    def test_a_failing_replay_gate_rolls_back_to_base(self):
-        base = self.change()
+    def test_a_replay_is_never_gated_so_a_gate_cannot_roll_it_back(self):   # WI-GATE1: the 'gate' rollback source is gone
+        self.change()
         co, status = self.drive(FAKE_WRITER_WRITE='simplifier', FAKE_WRITER_FILE='writer_note.py',
                                 FAKE_GATE_BLOCK_IF_FILE=str(self.workspace / 'writer_note.py'), FAKE_GATE_FINDING_FILE='writer_note.py')
-        self.rolled_back(co, status, base, 'gate', ['simplifier'])
+        self.assertEqual(status, 'DONE', co.state.get('hold_reason'))
+        state = self.state()
+        self.assertEqual(state['lifecycle']['quality_writers']['simplifier']['state'], 'wrote')
+        self.assertEqual([t['role'] for t in state['turns']].count('gate'), 1)
+        self.assertTrue((self.workspace / 'writer_note.py').is_file())
 
     def test_a_test_writer_change_alone_is_restored_from_base_capture(self):   # the simplifier skipped (small change)
         base = self.change(small=True)

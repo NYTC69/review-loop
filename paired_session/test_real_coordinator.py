@@ -1609,8 +1609,9 @@ sys.exit(result.returncode)
             with patch.object(co, 'archive_abandoned_turn') as archive:
                 self.assertEqual(co.resume(retry_uncertain=True), 'DONE')
         archive.assert_called_once()
-        self.assertEqual(co.state['turns'][-1]['role'], 'gate')
-        self.assertEqual(co.state['turns'][-2]['role'], 'reviewer')
+        # WI-GATE1: a reject after DONE goes author -> reviewer; the gate does not run again
+        self.assertEqual(co.state['turns'][-1]['role'], 'reviewer')
+        self.assertEqual(co.state['turns'][-2]['role'], 'author')
 
     def test_rejected_tree_blocks_retry_uncertain(self):
         co = self.rejected_done_coordinator()
@@ -1661,7 +1662,7 @@ sys.exit(result.returncode)
         self.assertIn('requires an existing coordinator run', result.stdout)
         self.assertFalse((self.run_dir / 'state.json').exists())
 
-    def test_reject_reopens_exec_through_review_and_gate_before_accept(self):
+    def test_reject_reopens_exec_through_review_without_a_second_gate_before_accept(self):
         completed = self.run_coordinator('--polish-round', 'off')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         before = json.loads((self.run_dir / 'state.json').read_text())
@@ -1677,7 +1678,7 @@ sys.exit(result.returncode)
         self.assertEqual(state['rejections'][0]['status'], 'delivered')
         self.assertEqual(state['rejections'][0]['author'], 'operator')
         recent = [turn for turn in state['turns'] if turn['sequence'] > sequence_before]
-        self.assertEqual([turn['role'] for turn in recent], ['author', 'reviewer', 'shadow', 'gate'])
+        self.assertEqual([turn['role'] for turn in recent], ['author', 'reviewer', 'shadow'])   # WI-GATE1: no re-gate
         author = recent[0]
         receipt = json.loads((self.run_dir / 'evidence' /
                               f"{author['sequence']:03d}-exec-author.receipt.json").read_text())
@@ -1687,7 +1688,6 @@ sys.exit(result.returncode)
                      f"{author['sequence']:03d}-exec-author.prompt.txt").read_text())
         self.assertGreater(state['exec_reviews'], before['exec_reviews'])
         self.assertTrue(state['gate_ran'])
-        self.assertIn('gate', state['exec_comparisons'][-1])
         accepted = self.run_operator_action('accept')
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
         self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['status'], 'ACCEPTED')
@@ -1995,7 +1995,7 @@ sys.exit(result.returncode)
         self.assertEqual(len(after), len(before))
         self.assertNotIn('pending_author_result_sequence', json.loads(co.state_path.read_text()))
 
-    def test_plan_hold_note_forces_exec_gate_even_when_optional_gate_off(self):
+    def test_plan_hold_note_does_not_force_a_gate_when_optional_gate_off(self):
         co = rc.Coordinator(rc.parser().parse_args(self.command('--shadow', 'off',
                            '--adversarial-gate', 'off', '--polish-round', 'off')[2:]))
         co.hold('operator clarification requested')
@@ -2008,7 +2008,8 @@ sys.exit(result.returncode)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'DONE')
         self.assertGreaterEqual(state['plan_reviews'], 1)
-        self.assertTrue(list((self.run_dir / 'evidence').glob('*-gate.receipt.json')))
+        # WI-GATE1: force_gate_after_reject is retired; an operator note never turns on an optional gate
+        self.assertFalse(list((self.run_dir / 'evidence').glob('*-gate.receipt.json')))
 
     def test_exec_scope_change_printed_fake_successor_reaches_done(self):
         old = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
@@ -4107,14 +4108,14 @@ sys.exit(result.returncode)
         self.assertIn('node verify-real-data.mjs', co.reviewer_flags()['reviewer_commands'])
 
 
-    def test_nonblocking_gate_finding_gets_id_and_enters_polish(self):
+    def test_gate_reports_no_nonblocking_findings(self):
+        # WI-GATE1: the gate answers PASS or FAIL; a non-blocking observation is no FAIL item and opens no row
         result = self.run_coordinator(env={'FAKE_GATE_MINOR': '1'})
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        gate_rows = [row for row in state['finding_ledger']
-                     if row['source'] == 'adversarial-gate']
-        self.assertEqual(len(gate_rows), 1)
-        self.assertRegex(gate_rows[0]['id'], r'^F\d{3}$')
+        self.assertFalse([row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate'])
+        [gate] = [turn for turn in state['turns'] if turn['role'] == 'gate']
+        self.assertEqual(gate['answer']['verdict'], 'PASS')
 
     def test_large_observed_output_is_not_delivered_and_round_render_is_bounded(self):
         result = self.run_coordinator('--exercise-revisions', '--shadow', 'off',
@@ -5083,7 +5084,7 @@ sys.exit(result.returncode)
                             for t in state['turns']))
 
 
-    def test_lifecycle_gate_blocker_starts_new_gate_convergence(self):
+    def test_lifecycle_gate_blocker_is_repaired_and_reviewed_without_a_second_gate(self):
         co = self.coordinator('--shadow', 'off', '--polish-round', 'off')
         co.state.update(phase='EXEC', next='gate', exec_rounds=1)
         co.state['config']['lifecycle_mode'] = 'on'
@@ -5093,17 +5094,16 @@ sys.exit(result.returncode)
             with patch.dict(os.environ, {'FAKE_GATE_BLOCK_ONCE': str(marker)}):
                 co.gate_turn()
                 self.assertEqual(co.state['next'], 'author')
-                self.assertFalse(co.state['gate_ran'])
+                self.assertTrue(co.state['gate_ran'])   # WI-GATE1: the gate runs once
+                [item] = co.state['gate_fail_items']
                 co.author_turn()
                 co.reviewer_turn()
-                self.assertEqual(co.state['next'], 'gate')
-                co.gate_turn()
-        self.assertTrue(co.state['gate_ran'])
-        self.assertEqual(sum(turn['role'] == 'gate' for turn in co.state['turns']), 2)
-        self.assertEqual(co.state['status'], 'DONE')
-        gates = [turn for turn in co.state['turns'] if turn['role'] == 'gate']
-        self.assertEqual(gates[-1]['answer']['verdict'], 'approve')
-        self.assertNotEqual(gates[0]['snapshot_before'], gates[1]['snapshot_before'])
+                self.assertNotEqual(co.state['next'], 'gate')
+        self.assertEqual(sum(turn['role'] == 'gate' for turn in co.state['turns']), 1)
+        [gate] = [turn for turn in co.state['turns'] if turn['role'] == 'gate']
+        self.assertEqual(gate['answer']['verdict'], 'FAIL')
+        row = next(r for r in co.state['finding_ledger'] if r['id'] == item['id'])
+        self.assertEqual(row['status'], 'fixed')
 
     def test_specialist_blocker_can_only_be_disposed_by_its_owner(self):
         co = self.coordinator()
@@ -5132,13 +5132,16 @@ sys.exit(result.returncode)
         co.apply_dispositions(disposition, 3, owner_role='specialist:python-reviewer')
         self.assertEqual(ledger['status'], 'fixed')
 
-    def test_malformed_gate_blocker_is_recorded_but_not_delivered(self):
+    def test_malformed_gate_verdict_is_redispatched_once_then_holds_undelivered(self):
+        # WI-GATE1: a FAIL item missing its evidence is no verdict; one fresh re-dispatch, then HOLD
         result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_MALFORMED': '1'})
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['status'], 'HOLD')
+        self.assertIn('malformed gate verdict', state['hold_reason'])
         self.assertEqual(state['exec_rounds'], 2)
-        gate_md = next((self.run_dir / 'rounds').glob('*-adversarial-*.md')).read_text()
-        self.assertIn('discard_reason', gate_md)
+        self.assertEqual([turn['role'] for turn in state['turns']][-2:], ['gate', 'gate'])
+        self.assertNotIn('adversarial-gate', state['delivered_review'])
 
     def test_exec_approve_without_self_run_evidence_holds(self):
         # Exercise the invariant directly because the standard fake emits allowed evidence.

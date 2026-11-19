@@ -56,26 +56,23 @@ class BlockClassTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(self.state()['status'], 'ACCEPTED')
 
-    def test_gate_blocks_between_reviewer_approvals_hold_on_the_third(self):
+    def test_the_single_gate_block_counts_once_and_the_repaired_approval_ends_review(self):
+        # WI-GATE1: the gate runs once per work item, so a gate block can no longer recur between reviewer approvals
         co = self.coordinator('--shadow', 'off', '--polish-round', 'off', '--max-exec-rounds', '9')
         co.state.update(phase='EXEC', next='gate', exec_rounds=1)
-        co.state['config']['lifecycle_mode'] = 'on'   # the gate re-runs after every reviewer approval (the WI-81 loop)
+        co.state['config']['lifecycle_mode'] = 'on'
         with patch.object(co, '_author_tmp_isolated', return_value=True):
             co._freeze_role_dispatch()
             with patch.dict(os.environ, {'FAKE_GATE_BLOCK': '1', 'FAKE_FINDING_CLASS': 'evidence-path-leak'}):
-                for _ in range(2):
-                    co.gate_turn()
-                    self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'author'))
-                    co.author_turn()
-                    co.reviewer_turn()
-                    self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'gate'))   # an approval routed to the gate is neutral
                 co.gate_turn()
+                self.assertEqual((co.state['status'], co.state['next']), ('ACTIVE', 'author'))
+                co.author_turn()
+                co.reviewer_turn()
         state = co.state
-        self.assertEqual((state['status'], state['next']), ('HOLD', 'author'))
-        self.assertRegex(state['hold_reason'], r'finding class evidence-path-leak blocked 3 consecutive reviews '
-                                               r'\(gate #\d+: F\d+; gate #\d+: F\d+; gate #\d+: F\d+\)')
-        gate_rows = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate']
-        self.assertTrue(all(row['summary'].startswith('[class: evidence-path-leak] ') for row in gate_rows))   # visible to the reviewer
+        self.assertEqual(state['status'], 'DONE')   # the approval with the FAIL item fixed ends review: no second gate
+        self.assertEqual([turn['role'] for turn in state['turns']].count('gate'), 1)
+        self.assertEqual([(event['source'], event['block']) for event in state['block_class_events']],
+                         [('gate', True), ('reviewer', False)])
 
     def test_labels_are_explicit_and_mixed_sources_share_a_class(self):
         use_lifecycle_on(self, self)

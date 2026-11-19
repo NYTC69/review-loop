@@ -272,7 +272,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn(DONE, again.stdout)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
 
-    def test_a_finish_write_reopens_exec_review_and_gate_before_finishing_again(self):
+    def test_a_finish_write_reopens_exec_review_without_a_second_gate_before_finishing_again(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_WRITE': '1'})
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
@@ -283,7 +283,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         between = [(row['role'], row['phase']) for row in state['turns']
                    if first['sequence'] < row['sequence'] < second['sequence']]
         self.assertIn(('reviewer', 'EXEC'), between)
-        self.assertIn(('gate', 'EXEC'), between)   # a new convergence spends its own gate
+        self.assertNotIn(('gate', 'EXEC'), between)   # WI-GATE1: the gate runs once; the reviewer reviews the write
         self.assertIn('# finisher fix', (self.workspace / 'sum_ints.py').read_text())
 
     def test_a_finisher_hold_and_an_uncertain_finish_turn_resume_with_stable_requests(self):
@@ -355,7 +355,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertEqual(stale.start_polish_or_done(), 'HOLD')
                 self.assertIn('stale EXEC approval', stale.state['hold_reason'])
                 self.assertEqual((stale.state['lifecycle']['stage'], stale.state['lifecycle']['candidate_oid'],
-                                  stale.state['gate_ran'], stale.state['next']), ('EXEC', None, False, 'reviewer'))
+                                  stale.state['gate_ran'], stale.state['next']), ('EXEC', None, True, 'reviewer'))   # WI-GATE1: gate stays spent
 
     def test_lifecycle_keys_are_operator_only_for_worktree_runs(self):
         profile = self.workspace / '.review-loop' / 'paired-session.json'
@@ -630,7 +630,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
             self.assertEqual(co._drive_loop(), 'HOLD')
         self.assertEqual((co.state['next'], co.state['hold_reason']), ('polish-recheck', 'rechecked'))
 
-    def test_a_fixed_specialist_blocker_replays_exec_and_gate_then_finish_and_polish_q(self):
+    def test_a_fixed_specialist_blocker_replays_exec_review_then_finish_and_polish_q(self):
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
@@ -643,8 +643,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(([row['name'] for row in fix['recheck_turns']], fix['tree']), (['code-reviewer'], second['candidate_oid']))
         between = [(row['role'], row['phase']) for row in state['turns']
                    if fix['recheck_turns'][0]['sequence'] < row['sequence'] < second['specialist_turns'][0]['sequence']]
-        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH')):   # the write replays EXEC and gate
+        for step in (('reviewer', 'EXEC'), ('author', 'FINISH')):   # the write replays EXEC review
             self.assertIn(step, between)
+        self.assertNotIn(('gate', 'EXEC'), between)   # WI-GATE1: the gate runs once
         self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())
 
     def test_a_same_tree_re_review_of_a_held_blocker_is_refused(self):
@@ -757,7 +758,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((len(writers), len(reviews), docs['sequence'], docs['review']['sequence']),
                          (1, 2, writers[0]['sequence'], reviews[1]['sequence']))   # the writer is reused, not re-run
 
-    def test_the_exec_author_can_fix_a_docs_finding_in_a_docs_owned_entry(self):
+    def test_a_docs_finding_goes_to_the_docs_writer_not_the_exec_author(self):
+        # WI-GATE1: DOCS never reopens EXEC; a docs review REVISE goes back to the DOCS writer
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block'),
                'FAKE_DOCS_FINDING_STILL_OPEN_ONCE': str(self.root / 'docs-open')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--max-exec-rounds', '6',
@@ -765,14 +767,15 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second = self.docs_rows(state)
-        fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC'
-                   and first['review']['sequence'] < turn['sequence'] < second['sequence'])
-        prompt = (self.run_dir / 'evidence' / f"{fix['sequence']:03d}-exec-author.prompt.txt").read_text()
-        self.assertIn('Written by the DOCS stage; edit only to fix a delivered docs finding: CHANGELOG.md.', prompt)
-        self.assertNotIn('Reserved for the DOCS stage', prompt)   # CHANGELOG.md is the whole allowlist and DOCS owns it
+        self.assertNotIn(('author', 'EXEC'), self.after(state, first['review']['sequence']))
+        fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'DOCS'
+                   and first['review']['sequence'] < turn['sequence'] <= second['sequence'])
+        prompt = (self.run_dir / 'evidence' / f"{fix['sequence']:03d}-docs-author.prompt.txt").read_text()
+        self.assertIn('The fresh docs review of the current documentation requested changes.', prompt)
         self.assertEqual((second['route'], second['review']['status']), ('SECURITY', 'APPROVE'))   # entry check passed
         [row] = [row for row in state['finding_ledger'] if row['id'] in first['review']['finding_ids']]
         self.assertEqual(row['status'], 'fixed')
+        self.assertIn(row['id'], prompt)
 
     def docs_review_with(self, answer, findings_before=()):
         co = rc.Coordinator(self.args())
@@ -813,8 +816,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
     def after(self, state, sequence):
         return [(row['role'], row['phase']) for row in state['turns'] if row['sequence'] > sequence]
 
-    def test_a_docs_review_revise_goes_to_the_author_then_only_the_docs_review_and_security(self):
-        # v3.8.1: an in-allowlist docs REVISE is fixed by the EXEC author; the docs-only fix skips reviewer, gate, FINISH, POLISH-Q
+    def test_a_docs_review_revise_goes_to_the_docs_writer_then_only_the_docs_review_and_security(self):
+        # WI-GATE1: a docs REVISE goes back to the DOCS writer; no EXEC round, reviewer, gate, FINISH or POLISH-Q
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
@@ -822,24 +825,24 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         first, second = self.docs_rows(state)
         [finding] = first['review']['finding_ids']
         self.assertEqual((first['route'], first['review']['status'], second['route'], second['review']['status'],
-                          second.get('docs_only'), second['docs_paths']),
-                         ('EXEC', 'REVISE', 'SECURITY', 'APPROVE', True, ['CHANGELOG.md']))
+                          second['docs_paths']),
+                         ('DOCS', 'REVISE', 'SECURITY', 'APPROVE', ['CHANGELOG.md']))
         self.assertEqual(self.after(state, first['review']['sequence']),
-                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+                         [('author', 'DOCS'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
         [row] = [row for row in state['finding_ledger'] if row['id'] == finding]
         self.assertEqual((row['source'], row['severity'], row['status']), ('docs-reviewer', 'MAJOR', 'fixed'))
         self.assertEqual(row['status_history'][-1], {'round': second['review']['sequence'], 'status': 'fixed',
                                                      'evidence': 'corrected entry present'})   # the docs reviewer closed it
         fix = next(turn for turn in state['turns'] if turn['role'] == 'author' and turn['sequence'] > first['sequence'])
-        prompt = (self.run_dir / 'evidence' / f"{fix['sequence']:03d}-exec-author.prompt.txt").read_text()
-        self.assertIn('"source": "docs-review"', prompt)   # the docs findings were delivered to the author
+        prompt = (self.run_dir / 'evidence' / f"{fix['sequence']:03d}-docs-author.prompt.txt").read_text()
+        self.assertIn('"source": "docs-review"', prompt)   # the docs findings were delivered to the docs writer
         prompt = (self.run_dir / 'evidence' / f"{second['review']['sequence']:03d}-docs-reviewer.prompt.txt").read_text()
         self.assertIn('(1 open, owned by you)', prompt)
         self.assertEqual(list(state['lifecycle']['docs_owned']), ['CHANGELOG.md'])
         self.assertIn('# corrected entry', (self.workspace / 'CHANGELOG.md').read_text())
         self.assertEqual(state['lifecycle']['docs_approval']['tree'], rc.git_snapshot(self.workspace)[0])
 
-    def test_an_unresolved_docs_row_goes_back_to_the_author_within_the_round_budget(self):
+    def test_an_unresolved_docs_row_goes_back_to_the_docs_writer_without_an_exec_round(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block'),
                'FAKE_DOCS_FIX_FAILS_ONCE': str(self.root / 'fix-fails')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', '--max-exec-rounds', '6', env=env)
@@ -847,31 +850,24 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         state = json.loads((self.run_dir / 'state.json').read_text())
         first, second, third = self.docs_rows(state)
         self.assertEqual([(row['route'], row['review']['status']) for row in (first, second, third)],
-                         [('EXEC', 'REVISE'), ('EXEC', 'REVISE'), ('SECURITY', 'APPROVE')])
+                         [('DOCS', 'REVISE'), ('DOCS', 'REVISE'), ('SECURITY', 'APPROVE')])
         self.assertEqual(second['review']['finding_ids'], [])   # a still_open-only REVISE is usable, not a HOLD
         self.assertEqual(self.after(state, first['review']['sequence']),
-                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('author', 'EXEC'), ('reviewer', 'DOCS'),
+                         [('author', 'DOCS'), ('reviewer', 'DOCS'), ('author', 'DOCS'), ('reviewer', 'DOCS'),
                           ('reviewer', 'SECURITY')])
         [row] = [row for row in state['finding_ledger'] if row['id'] in first['review']['finding_ids']]
         self.assertEqual([item['status'] for item in row['status_history']][-2:], ['still_open', 'fixed'])
-        self.assertEqual(state['exec_rounds'], 3)
+        self.assertEqual(state['exec_rounds'], 1)
 
-    def test_a_docs_revise_at_the_round_limit_holds_and_add_rounds_gives_the_author_a_turn(self):
+    def test_a_docs_revise_at_the_exec_round_limit_needs_no_extension(self):
+        # WI-GATE1: the docs writer fixes a docs REVISE inside DOCS, so the EXEC round limit does not apply
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
-        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
-        self.assertIn('HOLD: EXEC round limit reached after a DOCS write', held.stdout, held.stdout + held.stderr)
+        done = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual((state['lifecycle']['stage'], state['next'], state['exec_rounds']), ('EXEC', 'author', 1))
-        count = len(state['turns'])
-        plain = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
-        self.assertIn('HOLD: EXEC round limit reached after a DOCS write', plain.stdout, plain.stdout + plain.stderr)
-        self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), count)   # no round past the cap
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--add-rounds', '1',
-                                         env=env)
-        self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
-        state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual([(row['role'], row['phase']) for row in state['turns'][count:]],
-                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+        self.assertEqual(state['exec_rounds'], 1)
+        self.assertFalse(state.get('round_extensions'))
+        self.assertNotIn('round_limit_hold', state)
 
     def test_a_docs_only_reject_after_done_runs_only_the_author_the_docs_review_and_security(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1'}   # acts on the rejection only
@@ -940,8 +936,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                     if row['stage'] == 'POLISH-Q']
         self.assertNotIn('delta_paths', polish)   # no earlier pass recorded: the whole change
         steps = self.after(after, state['sequence'])
-        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH'), ('author', 'DOCS')):
+        for step in (('reviewer', 'EXEC'), ('author', 'FINISH'), ('author', 'DOCS')):
             self.assertIn(step, steps)
+        self.assertNotIn(('gate', 'EXEC'), steps)   # WI-GATE1: a reject never re-gates
         self.assertEqual(json.dumps(after['role_dispatch_manifest'], sort_keys=True), manifest)   # byte-identical
 
     def test_a_minor_security_reviewer_finding_is_listed_but_reaches_done_and_is_withdrawable(self):
@@ -1179,55 +1176,48 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertFalse(co._docs_writer_skip(wl.stage_request(co.state['lifecycle'], 'docs-writer')))
         self.assertIsNone(co.state['lifecycle']['pending'])
 
-    def test_a_docs_comment_write_replays_exec_review_and_gate(self):
+    def test_a_docs_code_comment_write_is_rolled_back_without_reopening_exec(self):
+        # WI-GATE1: DOCS never reopens EXEC; a write outside the docs allowlist is rolled back and recorded
         env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        self.assertIn('NOTE: the DOCS writer changed paths outside the docs allowlist; they were rolled back: sum_ints.py',
+                      result.stdout)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        first, second = self.docs_rows(state)
-        self.assertEqual((first['status'], first['route'], first['docs_paths'], first['docs_written'], first['epoch']),
-                         ('READY', 'EXEC', ['sum_ints.py'], {}, 0))
-        self.assertEqual((second['route'], second['docs_paths'], second['epoch'], second['candidate_oid']),
-                         ('SECURITY', [], 1, first['output_oid']))
-        between = [(row['role'], row['phase']) for row in state['turns']
-                   if first['sequence'] < row['sequence'] < second['sequence']]
-        for step in (('reviewer', 'EXEC'), ('gate', 'EXEC'), ('author', 'FINISH'), ('reviewer', 'POLISH-Q')):
-            self.assertIn(step, between)   # the comment fix is reviewed and gated like any code write
-        self.assertIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
+        [docs] = self.docs_rows(state)
+        self.assertEqual((docs['route'], docs['rolled_back_outside']), ('SECURITY', ['sum_ints.py']))
+        self.assertNotIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
+        self.assertFalse([turn for turn in state['turns'] if turn['phase'] == 'EXEC' and turn['sequence'] > docs['sequence']])
 
-    def test_a_docs_write_past_the_exec_round_limit_holds(self):
+    def test_a_docs_write_past_the_exec_round_limit_is_rolled_back_without_a_hold(self):
         env = {'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-exec-rounds', '1', env=env)
-        self.assertIn('HOLD: EXEC round limit reached after a DOCS write', result.stdout, result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(state['round_limit_hold']['hold_reason'], 'EXEC round limit reached after a DOCS write')
-        self.assertEqual((state['lifecycle']['stage'], state['lifecycle']['epoch'], state['next']), ('EXEC', 1, 'reviewer'))
+        self.assertNotIn('round_limit_hold', state)
+        self.assertEqual((state['exec_rounds'], state['lifecycle']['epoch']), (1, 0))
 
-    def test_a_docs_write_to_a_protected_path_holds_until_it_is_restored(self):
+    def test_a_docs_write_to_a_protected_path_is_rolled_back(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_LIFECYCLE_DOCS_FILE': 'CLAUDE.md'})
-        self.assertIn('HOLD: DOCS writer changed protected paths: CLAUDE.md; restore them or abort', result.stdout,
-                      result.stdout + result.stderr)
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn('HOLD: DOCS tree differs from the POLISH-Q-approved tree', again.stdout, again.stdout + again.stderr)
-        (self.workspace / 'CLAUDE.md').unlink()   # operator restore
-        restored = self.run_operator_action('resume', '--lifecycle-mode', 'on')
-        self.assertIn(DONE, restored.stdout, restored.stdout + restored.stderr)
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        self.assertIn('they were rolled back: CLAUDE.md', result.stdout)
+        self.assertFalse((self.workspace / 'CLAUDE.md').exists())
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual([(row['request_id'], row['route']) for row in self.docs_rows(state)],
-                         [('w-DOCS-0-0', 'HOLD'), ('w-DOCS-0-1', 'SECURITY')])
+        self.assertEqual([(row['request_id'], row['route'], row['rolled_back_outside']) for row in self.docs_rows(state)],
+                         [('w-DOCS-0-0', 'SECURITY', ['CLAUDE.md'])])
 
-    def test_docs_own_entry_survives_a_replay_and_may_be_rewritten(self):
+    def test_docs_own_entry_is_kept_when_a_code_write_beside_it_is_rolled_back(self):
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code-once')}
         result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        first, second = self.docs_rows(state)
+        [docs] = self.docs_rows(state)
         digest = hashlib.sha256((self.workspace / 'CHANGELOG.md').read_bytes()).hexdigest()
-        self.assertEqual((first['route'], first['docs_paths'], first['docs_written']),
-                         ('EXEC', ['CHANGELOG.md', 'sum_ints.py'], {'CHANGELOG.md': digest}))
+        self.assertEqual((docs['route'], docs['rolled_back_outside'], docs['docs_written']),
+                         ('SECURITY', ['sum_ints.py'], {'CHANGELOG.md': digest}))
         self.assertEqual(state['lifecycle']['docs_owned'], {'CHANGELOG.md': digest})
-        self.assertEqual((second['route'], second['docs_paths'], second['epoch']), ('SECURITY', [], 1))   # entry check passed
-        self.assertEqual(second['review']['status'], 'APPROVE')   # a no-op DOCS still reviews its owned entry
+        self.assertEqual(docs['review']['status'], 'APPROVE')
+        self.assertNotIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
 
     def test_docs_paths_are_exact_documentation_files_and_an_empty_docs_file_turns_the_default_off(self):
         co = rc.Coordinator(self.args('--docs-file', ''))
@@ -1253,9 +1243,10 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         co.evidence.mkdir(parents=True, exist_ok=True)
         return request, co.evidence / f"{request['request_id']}-docs-base.json", manifest
 
-    def test_a_recorded_docs_writer_turn_is_reused_and_a_deletion_replays_exec(self):
+    def test_a_recorded_docs_writer_turn_is_reused_and_a_deletion_is_rolled_back(self):
         co = rc.Coordinator(self.args())
         request, base, manifest = self.start_docs_attempt(co)
+        co._writer_capture(co._docs_capture_dir(request))   # WI-GATE1: the coordinator saves the restore point first
         rc.atomic_json(base, manifest)
         (self.workspace / 'tracked.txt').unlink()   # the writer deleted a tracked file, then the coordinator crashed
         co.state['turns'].append({'role': 'author', 'phase': 'DOCS', 'sequence': co.state['sequence'] + 1,
@@ -1265,9 +1256,10 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         with mock.patch.object(co, 'invoke', side_effect=AssertionError('second docs writer dispatch')):
             co.worktree_docs_turn()
         [docs] = self.docs_rows(co.state)
-        self.assertEqual((docs['request_id'], docs['route'], docs['docs_paths'], docs['sequence']),
-                         (request['request_id'], 'EXEC', ['tracked.txt'], co.state['sequence'] + 1))
-        self.assertEqual((co.state['next'], co.state['exec_rounds'], co.state['lifecycle']['epoch']), ('reviewer', rounds + 1, 1))
+        self.assertEqual((docs['request_id'], docs['route'], docs['rolled_back_outside'], docs['sequence']),
+                         (request['request_id'], 'SECURITY', ['tracked.txt'], co.state['sequence'] + 1))
+        self.assertTrue((self.workspace / 'tracked.txt').exists())   # WI-GATE1: the deletion is rolled back, not replayed
+        self.assertEqual((co.state['next'], co.state['exec_rounds'], co.state['lifecycle']['epoch']), ('security', rounds, 0))
 
     def test_a_missing_or_foreign_docs_base_holds_before_the_writer(self):
         for write, message in ((None, 'DOCS base manifest is unreadable'),
@@ -1524,7 +1516,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                   if row['stage'] == 'SECURITY']
         self.assertEqual(routes, ['DONE', 'DONE'])
 
-    def test_reject_on_a_worktree_done_reopens_exec_and_runs_every_stage_again(self):
+    def test_reject_on_a_worktree_done_reopens_exec_and_runs_every_stage_but_the_gate_again(self):
         self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60').stdout)
         first = json.loads((self.run_dir / 'state.json').read_text())
         rejected = self.run_operator_action('reject', '--lifecycle-mode', 'on', '--max-invocations', '60',
@@ -1537,7 +1529,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(later, ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
         reopened = [(row['role'], row['phase']) for row in state['turns'] if row['sequence'] > first['sequence']]
         self.assertEqual(reopened[0], ('author', 'EXEC'))
-        self.assertIn(('gate', 'EXEC'), reopened)
+        self.assertNotIn(('gate', 'EXEC'), reopened)   # WI-GATE1: a reject after DONE goes author -> reviewer
         self.assertIn('# rejection applied', (self.workspace / 'sum_ints.py').read_text())
 
     def test_a_successor_inherits_its_parent_delivery_baseline(self):
@@ -1902,8 +1894,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         co = rc.Coordinator(self.args())
         co.state['gate_ran'] = True
         with mock.patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F007', 'summary': 'gate blocker'}]):
-            self.assertEqual(co.start_polish_or_done(), 'ACTIVE')   # the author repairs; reviewer and a new gate follow
-        self.assertEqual((co.state['next'], co.state['phase'], co.state['gate_ran']), ('author', 'EXEC', False))
+            self.assertEqual(co.start_polish_or_done(), 'ACTIVE')   # the author repairs; the reviewer follows (WI-GATE1: no new gate)
+        self.assertEqual((co.state['next'], co.state['phase'], co.state['gate_ran']), ('author', 'EXEC', True))
         self.assertEqual(json.loads(co.state['delivered_review'])['findings'][0]['id'], 'F007')
         self.assertEqual((co.state['lifecycle']['stage'], co.state['lifecycle']['candidate_oid']), ('EXEC', None))
         co.state.update(gate_ran=True, exec_rounds=co.exec_round_limit())

@@ -305,7 +305,7 @@ class WithdrawalTests(unittest.TestCase):
     def test_withdraw_at_a_round_limit_hold_after_a_finish_write_names_add_rounds(self):
         # V317-G2 (B): the FINISH write used the next EXEC round (exec_rounds 2 > limit 1); plain resume keeps the HOLD
         flags = ('--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--max-invocations', '80')
-        env = {'FAKE_FINISH_WRITE': '1', 'FAKE_GATE_MINOR': '1'}
+        env = {'FAKE_FINISH_WRITE': '1', 'FAKE_EXEC_APPROVE_MINOR': '1'}   # WI-GATE1: the open row is a reviewer MINOR
         held = self.run_coordinator(*flags, env=env)
         self.assertIn('HOLD: EXEC round limit reached after a FINISH write', held.stdout, held.stdout + held.stderr)
         state = self.state()
@@ -326,12 +326,13 @@ class WithdrawalTests(unittest.TestCase):
             with self.subTest(route=route):
                 self.run_dir = self.root / ('field-' + route)
                 flags = ('--lifecycle-mode', route, '--max-exec-rounds', '1', '--max-invocations', '100')
-                env = {'FAKE_GATE_SCOPE': REASON, 'FAKE_EXEC_STILL_OPEN': 'expanded export scope'}
+                # WI-GATE1: no gate runs after a send-back, so the open advisory row is the EXEC reviewer's MINOR
+                env = {'FAKE_EXEC_APPROVE_MINOR': '1', 'FAKE_EXEC_STILL_OPEN': 'advisory naming'}
                 done = self.run_coordinator(*flags)
                 self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
                 sent_back = self.run_operator_action('reject', *flags, '--text', 'Add export requirements.', env=env)
                 self.assertIn(DONE, sent_back.stdout, sent_back.stdout + sent_back.stderr)
-                self.assertTrue(any(row['source'] == 'adversarial-gate' and row['severity'] == 'MEDIUM'
+                self.assertTrue(any(row['source'] == 'persistent-reviewer' and row['severity'] == 'MINOR'
                                     for row in self.state()['finding_ledger']))
                 # V316 now exits a pure still_open re-review with successful test evidence. Missing observed
                 # test evidence retains the historical round-limit HOLD, without undoing that completed batch.
@@ -348,7 +349,7 @@ class WithdrawalTests(unittest.TestCase):
                 self.cli_withdraw(ids, *flags)
                 withdrawn = self.state()
                 self.assertEqual(withdrawn['turns'], before['turns'])
-                resumed = self.run_operator_action('resume', *flags, env=env)
+                resumed = self.run_operator_action('resume', *flags, env={'FAKE_EXEC_STILL_OPEN': 'advisory naming'})   # no new MINOR
                 self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                 after = self.state()
                 later = [t for t in after['turns'] if t['sequence'] > before['sequence']]
@@ -358,7 +359,8 @@ class WithdrawalTests(unittest.TestCase):
                 self.assertEqual((after['exec_rounds'], len(after['rejections'])), (before['exec_rounds'], 2))
                 self.assertEqual(after['operator_rulings'], withdrawn['operator_rulings'])
                 self.assertFalse(any(row['status'] == 'open' for row in after['finding_ledger']))
-                for role in ('shadow', 'gate'):
+                self.assertFalse([t for t in later if t['role'] == 'gate'])   # WI-GATE1: the gate ran once
+                for role in ('shadow',):
                     turns = [t for t in later if t['role'] == role]
                     self.assertTrue(turns)
                     text = (self.run_dir / 'evidence' / f"{turns[0]['sequence']:03d}-exec-{role}.prompt.txt").read_text()

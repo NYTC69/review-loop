@@ -54,7 +54,7 @@ class ConcurrentSettingsChangeTests(unittest.TestCase):
                       'turn is kept and the next turn starts from the new settings', result.stdout)
         [gate] = self.turns(state, 'gate')   # one gate turn: kept, not re-run
         self.assertNotIn('error', gate)
-        self.assertEqual(gate['answer']['verdict'], 'approve')
+        self.assertEqual(gate['answer']['verdict'], 'PASS')
         changes = gate['global_config_changes']
         self.assertEqual((changes['status'], changes['findings']), ('PASS', []))
         self.assertEqual(changes['concurrent_settings_change'], {'before': sha(self.old_settings), 'after': sha(NEW_SETTINGS)})

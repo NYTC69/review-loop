@@ -16,15 +16,14 @@ class AdvisoryOnceTests(unittest.TestCase):
         for name, flags in (('off', OFF), ('on', ON)):
             with self.subTest(route=name):
                 self.run_dir = self.root / name
-                done = self.run_coordinator(*flags, '--max-exec-rounds', '4', env={
-                    'FAKE_GATE_BLOCK_ONCE': str(self.root / (name + '-gate')),
-                    'FAKE_GATE_BLOCK_WITH': 'low', 'FAKE_EXEC_STILL_OPEN': 'simplify the helper'})
+                done = self.run_coordinator(*flags, '--max-exec-rounds', '4', env={   # WI-GATE1: a reviewer MINOR row
+                    **v316.SHAPED, 'FAKE_EXEC_STILL_OPEN': v316.KEEP})
                 self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
                 state = json.loads((self.run_dir / 'state.json').read_text())
                 verdicts = [r['effective_verdict'] for r in state['review_verdicts'] if r['phase'] == 'EXEC']
                 self.assertEqual(verdicts, ['APPROVE', 'REVISE', 'APPROVE_WITH_ADVISORY'])
                 self.assertEqual(state['exec_rounds'], 3)
-                v316.RoundLimitStillOpenTests.assert_exit(self, state, 'LOW')
+                v316.RoundLimitStillOpenTests.assert_exit(self, state, 'MINOR')
                 self.assertEqual(len([t for t in state['turns'] if t['role'] == 'author' and t['phase'] == 'EXEC']), 3)
 
     def record_review(self, co, phase, severity=None, security=False, **changes):

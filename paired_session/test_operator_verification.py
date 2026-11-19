@@ -216,32 +216,35 @@ class DocsCarryOverTests(unittest.TestCase):
         self.assertIn(f'Carried over from tree {old[:12]}: only DOCS allowlist paths changed by the docs writer: CHANGELOG.md',
                       prompt)
 
-    def test_a_docs_finding_fixed_by_the_author_keeps_the_record_for_the_next_docs_review(self):
+    def test_a_docs_finding_fixed_by_the_docs_writer_keeps_the_record_for_the_next_docs_review(self):
+        # WI-GATE1: a docs review REVISE goes back to the docs writer (not the EXEC author); each writer attempt carries it
         old = self.held_at_docs_with_a_record()
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block'),
                'FAKE_DOCS_REVIEW_NO_TEST': '1'}   # no docs review runs the test: each relies on the host record
         done = self.run_operator_action('resume', '--lifecycle-mode', 'on', env=env)
         self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
-        self.assertIn("carried over to the author's docs-only change (CHANGELOG.md)", done.stdout)
         state, tree = self.state(), rc.git_snapshot(self.workspace)[0]
         first, second = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS' and row['status'] == 'READY']
         self.assertEqual((first['route'], first['review']['operator_test_evidence'], first['opv_carried']),
-                         ('EXEC', 'V001', ['V001']))   # the writer carried it to its tree; the docs finding went to the author
-        self.assertEqual((second['docs_only'], second['route'], second['review']['operator_test_evidence'],
-                          second['review']['observed_test']), (True, 'SECURITY', 'V001', None))
+                         ('DOCS', 'V001', ['V001']))   # the writer carried it to its tree; the docs finding went back to it
+        self.assertEqual((second['route'], second['opv_carried'], second['review']['operator_test_evidence'],
+                          second['review']['observed_test']), ('SECURITY', ['V001'], 'V001', None))
         [row] = state['operator_verifications']
         self.assertEqual((row['status'], row['tree_sha256'], [carry['by'] for carry in row['carried']]),
-                         ('current', tree, ['docs-writer', 'author']))
+                         ('current', tree, ['docs-writer', 'docs-writer']))
         self.assertEqual((row['carried'][0]['from_tree'], row['carried'][1]['from_tree']),
-                         (old, first['output_oid']))   # the author's carry starts from the DOCS tree the review sent back
+                         (old, first['output_oid']))   # the second carry starts from the DOCS tree the review sent back
 
-    def test_a_docs_write_outside_the_allowlist_voids_the_record(self):
+    def test_a_docs_write_outside_the_allowlist_is_rolled_back_and_the_record_is_carried(self):
+        # WI-GATE1: the outside write is rolled back, so only the allowlisted docs changed and the record is carried
         self.held_at_docs_with_a_record()
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_CODE_ONCE': str(self.root / 'code-once')}
         self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        [row] = self.state()['operator_verifications']
-        self.assertEqual((row['status'], row['voided']['reason']), ('voided', 'tree changed'))
-        self.assertNotIn('carried', row)
+        state = self.state()
+        [row] = state['operator_verifications']
+        self.assertEqual((row['status'], [carry['paths'] for carry in row['carried']]), ('current', [['CHANGELOG.md']]))
+        docs = [r for r in state['lifecycle']['receipts'] if r['stage'] == 'DOCS' and r['status'] == 'READY'][-1]
+        self.assertEqual(docs['rolled_back_outside'], ['sum_ints.py'])
 
     def test_carry_docs_only_moves_only_intact_records_bound_to_the_trees_it_left(self):
         co = self.coordinator()

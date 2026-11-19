@@ -124,7 +124,8 @@ class ApprovalEvidenceTests(unittest.TestCase):
         self.assertEqual((row['exit_code'], row['error']), (-1, True))
         if timed_out:
             self.assertEqual(rc.tool_timeout_seconds([row]), 600)
-        self.assertIn('approve', (co.evidence / f"{receipt['sequence']:03d}-exec-{role}.stdout.jsonl").read_text().lower())
+        self.assertIn('pass' if role == 'gate' else 'approve',   # WI-GATE1 gate schema: PASS or FAIL
+                      (co.evidence / f"{receipt['sequence']:03d}-exec-{role}.stdout.jsonl").read_text().lower())
 
     def test_gate_tool_timeout_holds_with_cause(self):
         self.check_approval('gate', True)

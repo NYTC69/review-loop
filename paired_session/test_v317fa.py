@@ -109,14 +109,15 @@ class FilenameAndReportTests(unittest.TestCase):
     def test_report_run_keeps_gate_and_reviewer_explanations(self):
         (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
         done = self.run_coordinator('--review-only', '--review-report', '--lifecycle-mode', 'on',
-                                    env={'FAKE_GATE_MINOR': '1', 'FAKE_EXEC_APPROVE_MINOR': '1'})
+                                    env={'FAKE_GATE_BLOCK': '1', 'FAKE_EXEC_APPROVE_MINOR': '1'})
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual(state['status'], 'REPORTED')
         gate = next(row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate')
-        self.assertEqual((gate['line_start'], gate['line_end']), (1, 3))
+        self.assertEqual(gate['file'], 'sum_ints.py')   # WI-GATE1: a FAIL item (evidence file:line), no line range
         text = (self.run_dir / 'review-report.md').read_text()
-        self.assertIn('`sum_ints.py:1-3`: simplify the helper\n  Non-blocking cleanup suggested by the fake gate.', text)
+        self.assertIn('`sum_ints.py`: [gate FAIL] correctness: reject bool\n  Basis: blocking class: correctness', text)
+        self.assertIn('Proof it is fixed: test_sum_ints rejects True', text)
         self.assertIn('`sum_ints.py`: advisory naming\n  the name hides the intent', text)
 
 

@@ -1,7 +1,9 @@
 """V316 (owner 2026-10-13; four field runs held with `EXEC round limit reached`): at the EXEC round limit, a REVISE
 without any finding that only reports earlier non-blocking rows `still_open` (gate MEDIUM/LOW rows after a repair round)
 ends as APPROVE_WITH_ADVISORY instead of HOLD. A round that is still available, a blocking row left open, a failing
-configured test, no self-run evidence and a changed tree keep their behavior."""
+configured test, no self-run evidence and a changed tree keep their behavior.
+WI-GATE1: the gate reports no MEDIUM/LOW rows any more, so the driven runs take their non-blocking row from the EXEC
+reviewer (a MINOR on its first approval) next to the gate's one FAIL item."""
 import json
 import os
 import unittest
@@ -11,7 +13,8 @@ from paired_session import test_worktree_lifecycle as twl
 
 rc, DONE = twl.rc, twl.DONE
 LIMIT = 'EXEC round limit reached'
-KEEP = 'simplify the helper'   # the fake gate's MEDIUM/LOW row; its HIGH row is 'reject bool'
+KEEP = 'advisory naming'   # the first EXEC reviewer approval's MINOR row; the gate's FAIL item is 'reject bool'
+SHAPED = {'FAKE_GATE_BLOCK': '1', 'FAKE_EXEC_APPROVE_MINOR': '1'}
 OFF = ('--lifecycle-mode', 'off', '--shadow', 'off')   # the stop-after-gate route
 ON = ('--lifecycle-mode', 'on', '--max-invocations', '60')
 
@@ -23,14 +26,12 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         return json.loads((self.run_dir / 'state.json').read_text())
 
     def gate_shaped(self, *flags, keep=KEEP):
-        """The first gate blocks with a HIGH and a LOW row; every re-review after it is a REVISE without a finding that
-        reports the rows named `keep` still_open and the others fixed."""
-        return self.run_coordinator(*flags, env={'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-once'),
-                                                 'FAKE_GATE_BLOCK_WITH': 'low', 'FAKE_EXEC_STILL_OPEN': keep})
+        """The reviewer approves with a MINOR row and the gate fails with one item; every re-review after it is a REVISE
+        without a finding that reports the rows named `keep` still_open and the others fixed."""
+        return self.run_coordinator(*flags, env={**SHAPED, 'FAKE_EXEC_STILL_OPEN': keep})
 
     def gate_in_process(self, *flags):
-        with mock.patch.dict(os.environ, {'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-once'),
-                                          'FAKE_GATE_BLOCK_WITH': 'low', 'FAKE_EXEC_STILL_OPEN': KEEP}):
+        with mock.patch.dict(os.environ, {**SHAPED, 'FAKE_EXEC_STILL_OPEN': KEEP}):
             co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
             return co, co.drive()
 
@@ -38,15 +39,15 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         return [(row['reviewer_raw_verdict'], row['effective_verdict']) for row in state['review_verdicts'] if row['phase'] == 'EXEC']
 
     def assert_exit(self, state, severity):
-        """The last EXEC review was a REVISE without a finding, taken as APPROVE_WITH_ADVISORY; the gate row it left open
-        is still open and marked advisory."""
+        """The last EXEC review was a REVISE without a finding, taken as APPROVE_WITH_ADVISORY; the advisory row it left
+        open is still open and marked advisory."""
         last = [row for row in state['review_verdicts'] if row['phase'] == 'EXEC'][-1]
         self.assertEqual((last['reviewer_raw_verdict'], last['effective_verdict']), ('REVISE', 'APPROVE_WITH_ADVISORY'))
         answer = next(turn for turn in state['turns'] if turn['sequence'] == last['sequence'])['answer']
         self.assertEqual(answer['full_review'], [])
         [kept] = [row['id'] for row in answer['prior_findings'] if row['disposition'] == 'still_open']
         [row] = [row for row in state['finding_ledger'] if row.get('advisory')]
-        self.assertEqual((row['id'], row['source'], row['severity'], row['status']), (kept, 'adversarial-gate', severity, 'open'))
+        self.assertEqual((row['id'], row['source'], row['severity'], row['status']), (kept, 'persistent-reviewer', severity, 'open'))
         self.assertNotIn('round_limit_hold', state)
         return row
 
@@ -54,7 +55,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         done = self.gate_shaped(*ON, '--max-exec-rounds', '2')
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
         state = self.state()
-        row = self.assert_exit(state, 'LOW')
+        row = self.assert_exit(state, 'MINOR')
         self.assertEqual(state['exec_rounds'], 2)   # the repair round was the last one
         self.assertEqual([r['stage'] for r in state['lifecycle']['receipts']], ['FINISH', 'POLISH-Q', 'DOCS', 'SECURITY'])
         [high] = [r for r in state['finding_ledger'] if r['severity'] == 'HIGH']
@@ -64,13 +65,13 @@ class RoundLimitStillOpenTests(unittest.TestCase):
             [line] = [line for line in (self.run_dir / name).read_text().splitlines() if line.startswith(f"| {row['id']} ")]
             self.assertIn('| open (advisory) |', line)
         self.assertIn('| REVISE | APPROVE_WITH_ADVISORY |', (self.run_dir / 'review-comparison.md').read_text())
-        self.assertIn(f"verdict · APPROVE_WITH_ADVISORY · raw REVISE · (1 open: {row['id']} LOW)", done.stdout)
+        self.assertIn(f"verdict · APPROVE_WITH_ADVISORY · raw REVISE · (1 open: {row['id']} MINOR)", done.stdout)
 
     def test_the_exit_on_the_stop_after_gate_route(self):
         done = self.gate_shaped(*OFF, '--max-exec-rounds', '2')
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
         state = self.state()
-        self.assert_exit(state, 'LOW')
+        self.assert_exit(state, 'MINOR')
         self.assertEqual((state['exec_rounds'], 'lifecycle' in state), (2, False))
         self.assertEqual(self.exec_verdicts(state)[0], ('APPROVE', 'APPROVE'))   # the review before the gate blocked
 
@@ -85,7 +86,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
                 self.assertEqual(self.exec_verdicts(state), [('APPROVE', 'APPROVE'), ('REVISE', 'REVISE'), ('REVISE', 'APPROVE_WITH_ADVISORY')])
                 authors = [turn['sequence'] for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'EXEC']
                 self.assertEqual((len(authors), state['exec_rounds']), (3, 3))   # first advisory REVISE repairs; second exits before the cap (V317-ONCE)
-                row = self.assert_exit(state, 'LOW')
+                row = self.assert_exit(state, 'MINOR')
                 prompt = (self.run_dir / 'evidence' / f'{authors[2]:03d}-exec-author.prompt.txt').read_text()
                 self.assertIn(json.dumps({'id': row['id'], 'fixed': False, 'evidence': 'fake: not addressed'})[1:-1], prompt)
 
@@ -96,8 +97,8 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         self.assertEqual(self.exec_verdicts(state)[-1], ('REVISE', 'REVISE'))
         self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
 
-    def test_an_operator_send_back_round_that_leaves_a_gate_medium_open_takes_the_exit(self):
-        env = {'FAKE_GATE_MINOR': '1', 'FAKE_EXEC_STILL_OPEN': KEEP}   # every gate run leaves one MEDIUM row, never a blocker
+    def test_an_operator_send_back_round_that_leaves_an_advisory_row_open_takes_the_exit(self):
+        env = {'FAKE_EXEC_APPROVE_MINOR': '1', 'FAKE_EXEC_STILL_OPEN': KEEP}   # one MINOR row, never a blocker; the gate passes
         flags = (*OFF, '--max-exec-rounds', '1')
         done = self.run_coordinator(*flags, env=env)
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
@@ -108,9 +109,9 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         self.assertIn(DONE, rejected.stdout, rejected.stdout + rejected.stderr)
         state = self.state()
         self.assertEqual((state['exec_rounds'], state['config']['max_exec_rounds'], len(state['rejections'])), (2, 1, 1))
-        self.assertEqual(self.assert_exit(state, 'MEDIUM')['id'], medium['id'])
+        self.assertEqual(self.assert_exit(state, 'MINOR')['id'], medium['id'])
         later = [(turn['role'], turn['phase']) for turn in state['turns'] if turn['sequence'] > first['sequence']]
-        self.assertEqual(later, [('author', 'EXEC'), ('reviewer', 'EXEC'), ('gate', 'EXEC')])   # the gate after a send-back
+        self.assertEqual(later, [('author', 'EXEC'), ('reviewer', 'EXEC')])   # WI-GATE1: no gate after a send-back
 
     def test_the_advisory_fix_round_re_review_that_only_reports_rows_still_open_takes_the_exit(self):
         """ADVFIX: "one fix round, never a second for advisory findings" also when the re-review has no finding of its own
@@ -176,9 +177,9 @@ class RoundLimitStillOpenTests(unittest.TestCase):
                 (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
                 co, status = self.gate_in_process('--review-only', *route, '--max-exec-rounds', '2')
                 self.assertEqual(status, 'DONE', co.state.get('hold_reason'))
-                self.assert_exit(self.state(), 'LOW')
+                self.assert_exit(self.state(), 'MINOR')
                 self.assertEqual(self.state()['exec_rounds'], 2)
-                (self.root / 'gate-once').unlink()
+                (self.root / 'gate-once').unlink(missing_ok=True)
 
     def test_secret_still_present_with_low_at_limit_holds(self):
         (self.workspace / 'settings.txt').write_text('aws_key = ' + 'AKIA' + 'ABCDEFGHIJKLMNOP' + '\n')
@@ -228,7 +229,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         self.assertEqual(status, 'HOLD')
         self.assertIn('SECURITY sensitive paths: deploy.pem', co.state['hold_reason'])
         state = self.state()
-        self.assert_exit(state, 'LOW')
+        self.assert_exit(state, 'MINOR')
         self.assertEqual((state['status'], state['lifecycle']['stage']), ('HOLD', 'SECURITY'))
         self.assertEqual(state['lifecycle']['receipts'][-1]['status'], 'HOLD')
 

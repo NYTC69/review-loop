@@ -1,11 +1,11 @@
 """V319-HOLD: HOLDs whose named exits work, driven through the fake provider CLIs.
 
-1. At the post-DONE rejection limit, a tree the operator changes and resumes is reviewed and gated before DONE, on the
+1. At the post-DONE rejection limit, a tree the operator changes and resumes is reviewed (WI-GATE1: not gated again) before DONE, on the
    stop-after-gate route and on the full lifecycle; `reject --scope-change` from that HOLD starts a working successor.
 2. SECURITY classifies a file name with a TAB or a backslash; a name it still cannot classify HOLDs with an exit that works.
 3. The PLAN round-limit advisory exit, reached by a driven run (not through the one-attempt rule).
-4. V3110-GATE: a gate-blocked repair that the release before held at the invocation cap is gated on resume; a run whose
-   last gate approved is not gated again.
+4. V3110-GATE, superseded by WI-GATE1 (the gate runs once): a gate-blocked repair that the release before held is
+   reviewed on resume, not gated again; a run whose last gate approved is not gated again.
 The rewrite-only PLAN review with only advisory rows left open is in test_v317_plan."""
 import json
 import subprocess
@@ -80,7 +80,7 @@ class HoldExitTests(unittest.TestCase):
         self.assertIn('HOLD: ' + LIMIT, held.stdout, held.stdout + held.stderr)
         return self.state()['sequence']
 
-    def test_an_operator_edit_after_the_rejection_limit_is_reviewed_and_gated_before_done(self):
+    def test_an_operator_edit_after_the_rejection_limit_is_reviewed_before_done(self):
         for mode in (OFF, ON):   # the stop-after-gate route and the full lifecycle
             with self.subTest(mode=mode[1]):
                 held_at = self.at_rejection_limit(mode)
@@ -94,13 +94,14 @@ class HoldExitTests(unittest.TestCase):
                 self.assertIn(twl.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                 state = self.state()
                 after = [turn for turn in state['turns'] if turn['sequence'] > held_at]
-                gates = [turn for turn in after if turn['role'] == 'gate']
-                self.assertTrue(gates, [(turn['role'], turn['phase']) for turn in after])
+                roles = [(turn['role'], turn['phase']) for turn in after]
+                self.assertIn(('reviewer', 'EXEC'), roles)
+                self.assertNotIn(('gate', 'EXEC'), roles)   # WI-GATE1: the gate ran once, before the first DONE
                 self.assertIn('raise TypeError("integers only")', (self.workspace / 'sum_ints.py').read_text())
-                if mode is OFF:   # DONE carries exactly the tree the new gate reviewed
-                    self.assertEqual(gates[-1]['snapshot_before'], state['approved_snapshot'])
-                else:             # FINISH..SECURITY ran after the new EXEC review and gate converged
-                    self.assertGreater(state['lifecycle']['exec_convergence']['gate_sequence'], held_at)
+                if mode is OFF:   # DONE carries exactly the tree the reviewer approved
+                    self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
+                else:             # FINISH..SECURITY ran after the new EXEC review converged
+                    self.assertGreater(state['lifecycle']['exec_convergence']['reviewer_sequence'], held_at)
                     self.assertEqual(after[-1]['phase'], 'SECURITY')
                 self.clean_workspace()
 
@@ -131,7 +132,7 @@ class HoldExitTests(unittest.TestCase):
                 self.assertIn(('gate', 'EXEC'), [(turn['role'], turn['phase']) for turn in turns])
                 self.clean_workspace()
 
-    def test_a_rejection_limit_hold_saved_by_the_release_before_is_gated_after_an_edit(self):
+    def test_a_rejection_limit_hold_saved_by_the_release_before_is_reviewed_after_an_edit(self):
         launcher = self.released_launcher()
         for mode in (OFF, ON):
             with self.subTest(mode=mode[1]):
@@ -158,16 +159,14 @@ class HoldExitTests(unittest.TestCase):
                 state = self.state()
                 after = [(turn['role'], turn['phase']) for turn in state['turns'] if turn['sequence'] > held_at]
                 self.assertEqual(after[:2], [('author', 'EXEC'), ('reviewer', 'EXEC')])
-                self.assertIn(('gate', 'EXEC'), after)
-                gate = [turn for turn in state['turns'] if turn['role'] == 'gate'][-1]
+                self.assertNotIn(('gate', 'EXEC'), after)   # WI-GATE1: no re-gate after an upgrade either
                 if mode is OFF:
-                    self.assertEqual(gate['snapshot_before'], state['approved_snapshot'])
+                    self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
                 else:
-                    self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], gate['sequence'])
                     self.assertEqual(after[-1], ('reviewer', 'SECURITY'))
                 self.clean_workspace()
 
-    def test_a_gate_round_limit_hold_saved_by_the_release_before_gates_the_repair(self):
+    def test_a_gate_round_limit_hold_saved_by_the_release_before_reviews_the_repair_without_a_second_gate(self):
         launcher = self.released_launcher()
         for mode in (OFF, ON):
             with self.subTest(mode=mode[1]):
@@ -186,20 +185,19 @@ class HoldExitTests(unittest.TestCase):
                 after = [turn for turn in state['turns'] if turn['sequence'] > held_at]
                 self.assertEqual([(turn['role'], turn['phase']) for turn in after[:2]], [('author', 'EXEC'), ('reviewer', 'EXEC')])
                 gates = [turn for turn in state['turns'] if turn['role'] == 'gate']
-                self.assertEqual(len(gates), 2)
-                self.assertGreater(gates[-1]['sequence'], held_at)
-                self.assertNotEqual(gates[0]['snapshot_before'], gates[-1]['snapshot_before'])
+                self.assertEqual(len(gates), 1)   # WI-GATE1: the saved gate verdict stands; the reviewer checks the repair
+                self.assertLessEqual(gates[0]['sequence'], held_at)
                 if mode is OFF:
-                    self.assertEqual(gates[-1]['snapshot_before'], state['approved_snapshot'])
+                    self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
                 else:
-                    self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], gates[-1]['sequence'])
+                    self.assertEqual(after[-1]['phase'], 'SECURITY')
                 blocker = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate'
                            and row['severity'].upper() in ('HIGH', 'CRITICAL')]
                 self.assertEqual([row['status'] for row in blocker], ['fixed'])
                 self.clean_workspace()
 
-    def test_a_gate_blocked_repair_the_release_before_held_is_gated_on_resume(self):
-        # V3110-GATE: the release before held the repair at the invocation cap (not a round limit) without forcing the gate
+    def test_a_gate_blocked_repair_the_release_before_held_is_reviewed_on_resume_without_a_second_gate(self):
+        # V3110-GATE: the release before held the repair at the invocation cap; WI-GATE1: the gate is not run again
         launcher = self.released_launcher()
         for mode, cap in ((OFF, '5'), (ON, '6')):   # the cap: the gate's own turn, so the repair's author turn holds
             with self.subTest(mode=mode[1]):
@@ -218,12 +216,12 @@ class HoldExitTests(unittest.TestCase):
                 after = [turn for turn in state['turns'] if turn['sequence'] > held_at]
                 self.assertEqual([(turn['role'], turn['phase']) for turn in after[:2]], [('author', 'EXEC'), ('reviewer', 'EXEC')])
                 gates = [turn for turn in state['turns'] if turn['role'] == 'gate']
-                self.assertEqual(len(gates), 2)   # one new gate, on the repaired tree
-                self.assertNotEqual(gates[0]['snapshot_before'], gates[-1]['snapshot_before'])
+                self.assertEqual(len(gates), 1)   # WI-GATE1: the saved gate verdict stands; the reviewer checks the repair
+                self.assertLessEqual(gates[0]['sequence'], held_at)
                 if mode is OFF:
-                    self.assertEqual(gates[-1]['snapshot_before'], state['approved_snapshot'])
+                    self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
                 else:
-                    self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], gates[-1]['sequence'])
+                    self.assertEqual(after[-1]['phase'], 'SECURITY')
                 self.clean_workspace()
 
     def test_a_run_whose_last_gate_approved_is_not_gated_again_on_resume(self):
@@ -242,32 +240,24 @@ class HoldExitTests(unittest.TestCase):
         self.assertEqual([turn for turn in state['turns'] if turn['sequence'] > held_at and turn['role'] == 'gate'], [])
         self.assertFalse(state.get('force_gate_after_reject'))
 
-    def test_a_tree_the_gate_rejected_is_gated_again_after_its_repair(self):
+    def test_a_tree_the_gate_rejected_is_reviewed_not_gated_again_after_its_repair(self):
         for mode in (OFF, ON):
-            for limit in (False, True):   # a round still left, or the round limit and resume --add-rounds 1
+            for limit in (False, True):   # a round still left, or the gate FAIL at the round limit (WI-GATE1 Q3: one extra round)
                 with self.subTest(mode=mode[1], at_limit=limit):
                     self.run_dir = self.root / f'gate-repair-{mode[1]}-{limit}'
                     rounds = ('--max-exec-rounds', '1') if limit else ()
                     env = {'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'}
                     result = self.run_coordinator(*mode, *rounds, env=env)
-                    if limit:
-                        self.assertIn('HOLD: EXEC round limit reached after adversarial gate', result.stdout,
-                                      result.stdout + result.stderr)
-                        result = self.run_operator_action('resume', *mode, *rounds, '--add-rounds', '1', env=env)
-                    self.assertIn(twl.DONE, result.stdout, result.stdout + result.stderr)
+                    self.assertIn(twl.DONE, result.stdout, result.stdout + result.stderr)   # no HOLD: the extra round
                     state = self.state()
-                    gates = [turn for turn in state['turns'] if turn['role'] == 'gate']
-                    self.assertEqual(len(gates), 2)
-                    first, second = gates
+                    [gate] = [turn for turn in state['turns'] if turn['role'] == 'gate']
                     repair = [(turn['role'], turn['phase']) for turn in state['turns']
-                              if first['sequence'] < turn['sequence'] < second['sequence']]
+                              if turn['sequence'] > gate['sequence'] and turn['phase'] == 'EXEC']
                     self.assertEqual([turn for turn in repair if turn[0] != 'shadow'],
                                      [('author', 'EXEC'), ('reviewer', 'EXEC')])
-                    self.assertNotEqual(first['snapshot_before'], second['snapshot_before'])   # the repaired tree
+                    self.assertIs(bool(state.get('gate_extra_round')), limit)
                     if mode is OFF:
-                        self.assertEqual(second['snapshot_before'], state['approved_snapshot'])
-                    else:
-                        self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], second['sequence'])
+                        self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
                     blocker = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate'
                                and row['severity'].upper() in ('HIGH', 'CRITICAL')]
                     self.assertEqual([row['status'] for row in blocker], ['fixed'])

@@ -70,13 +70,11 @@ class PromptTests(unittest.TestCase):
                 gate = co._gate_prompt(snap)
                 normalized = ' '.join(gate.split())
                 self.assertIn('You are an adversarial reviewer with a skepticism-by-default stance.', gate)
-                self.assertIn('These are topics to inspect, not categories that need a finding.', gate)
-                self.assertIn('do not downgrade them to medium/low.', gate)
-                self.assertIn('have negligible combined risk, or would need clearly disproportionate complexity for an extremely rare low-impact benefit;', normalized)
-                self.assertIn('Report a medium or low finding only when you would really ask the author to change the work for normal supported use.', normalized)
-                self.assertIn('There is no target number of findings;', normalized)
-                self.assertIn('`findings: []` with `verdict: "approve"` is a normal answer.', normalized)
-                self.assertIn(SEVERE_HARM, normalized)
+                # WI-GATE1: the gate's acceptance contract replaced the finding rubric
+                self.assertIn('Verdict: FAIL when an acceptance criterion is not met, or when the change has a blocking-class '
+                              'defect (correctness, data-loss, security, money) even if no written criterion covers it.', normalized)
+                self.assertIn('Do not report non-blocking observations, style or optional improvements.', normalized)
+                self.assertIn('a contrived worst case that needs deliberate misuse is not a blocking-class defect.', normalized)
                 co.materialize_review_context()
                 co.assert_fresh_prompt('shadow', shadow)
                 co.assert_fresh_prompt('gate', gate)

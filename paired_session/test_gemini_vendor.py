@@ -357,7 +357,7 @@ class GeminiAdapterTests(unittest.TestCase):
         co = self.coordinator()
         with patch.dict(os.environ, {'FAKE_GEMINI_TOOL_ERROR': '1'}):   # a tool step in ERROR mid-turn does not fail the turn
             result = co._invoke_once('gate', 'EXEC', GATE_PROMPT, rc.gate_schema(), fresh=True)
-        self.assertEqual(result['answer']['verdict'], 'approve')
+        self.assertEqual(result['answer']['verdict'], 'PASS')   # WI-GATE1 gate schema
         observed = self.receipt(co, 1, 'EXEC', 'gate')['observed_commands']
         self.assertEqual([(row['command'], row['exit_code'], row['source']) for row in observed], [('python3 -m unittest', 0, 'run_command')])
         self.assertNotIn('--conversation', self.calls()[0]['args'])
