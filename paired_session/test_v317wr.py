@@ -86,23 +86,26 @@ class WriterRollbackTests(unittest.TestCase):
         self.assertNotEqual(state['lifecycle']['quality_writers']['simplifier']['state'], 'rolled-back:review')
 
     def test_retained_blocker_at_round_limit_is_repaired_without_a_post_writer_gate(self):
-        # WI-GATE1: the gate ran once before the writers, so the replay ends with the reviewer's approval; no
-        # gate after the writers can reach the round limit and ask for an extension.
+        # WI-GATE1: the gate ran once before the writers; the reviewer raises the retained blocker after the partial
+        # rollback, the author repairs it within the writer replay rounds, and no gate runs after the writers (R2 F12)
         self.change()
         flags = (*d09.RUN, '--max-exec-rounds', '2')
         env = {'FAKE_WRITER_WRITE': 'simplifier,test-writer',
                'FAKE_WRITER_FILE_SIMPLIFIER': 'writer_note.py',
                'FAKE_WRITER_FILE_TEST_WRITER': 'tests/test_extra.py',
                'FAKE_EXEC_REVISE_IF_FILE': str(self.workspace / 'tests/test_extra.py'),
-               'FAKE_WRITER_BLOCK_SOURCE': 'gate'}
+               'FAKE_WRITER_BLOCK_SOURCE': 'reviewer'}
         done = self.run_coordinator(*flags, env=env)
         self.assertIn(d09.DONE, done.stdout, done.stdout + done.stderr)
         state = self.state()
         self.assertEqual(len([t for t in state['turns'] if t['role'] == 'gate']), 1)
         self.assertFalse(state.get('round_extensions'))
-        rolled = [r for r in state['finding_ledger'] if r['file'] == 'sum_ints.py']
-        self.assertFalse([r for r in rolled if r['source'] == 'adversarial-gate'])
-        self.assertTrue(all(r['status'] == 'fixed' for r in rolled))
+        [row] = [r for r in state['finding_ledger'] if r['file'] == 'sum_ints.py']
+        self.assertEqual((row['source'], row['status']), ('persistent-reviewer', 'fixed'))
+        self.assertTrue(all(state['lifecycle']['quality_writers'][w]['state'] == 'rolled-back:review'
+                            for w in ('simplifier', 'test-writer')))
+        gate = next(t for t in state['turns'] if t['role'] == 'gate')
+        self.assertFalse([t for t in state['turns'] if t['role'] == 'gate' and t['sequence'] > gate['sequence']])
 
     def test_resume_between_rollback_and_author_preserves_the_delivered_finding(self):
         self.change()

@@ -204,6 +204,25 @@ class GateOnceTests(unittest.TestCase):
                 if number == 2:
                     self.assertIn('[R002]\nKeep the error message short.', prompt)
 
+    at_rejection_limit = v319.HoldExitTests.at_rejection_limit
+
+    def test_the_note_of_the_rejection_that_hit_the_limit_reaches_the_author_and_reviewer(self):
+        # R2 F11: the note is kept with the rejection-limit HOLD and delivered after the operator's edit and resume
+        log = self.root / 'limit-prompts.jsonl'
+        held_at = self.at_rejection_limit(OFF)
+        state = self.state()
+        self.assertEqual(state['rejections'][-1]['text'], 'Recheck integer inputs.')
+        (self.workspace / 'sum_ints.py').write_text(
+            'def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+            '        raise TypeError("integers only")\n    return sum(values)\n')
+        resumed = self.run_operator_action('resume', *OFF, env={**v319.QUIET, 'FAKE_REVIEW_PROMPT_LOG': str(log)})
+        state = self.assert_one_gate_then_done(resumed)
+        after = [t for t in state['turns'] if t['sequence'] > held_at]
+        self.assertEqual([(t['role'], t['phase']) for t in after], [('author', 'EXEC'), ('reviewer', 'EXEC')])   # no extra round
+        author = (self.run_dir / 'evidence' / f"{after[0]['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn('Recheck integer inputs.', author)
+        self.assertIn('Recheck integer inputs.', self.prompts(log)[-1])
+
     def test_an_operator_note_on_the_repair_turn_does_not_regate(self):
         for mode in (OFF, ON):   # the repair turn (it carries the gate FAIL) is rate limited once: a HOLD that takes a note
             with self.subTest(mode=mode[1]):
@@ -272,6 +291,25 @@ class GateOnceTests(unittest.TestCase):
             self.assertTrue((self.run_dir / 'evidence' / f"{turn['sequence']:03d}-exec-gate.receipt.json").exists())
         self.assertTrue(state['gate_ran'])
 
+    def test_every_unusable_reply_shares_one_retry_budget(self):
+        # R2 F9: a non-JSON reply, verdict null, missing evidence and a schema error each use the one re-dispatch
+        for replies, done in (('text', True), ('null', True), ('noclaims', True), ('text,null', False),
+                              ('noclaims,empty', False), ('empty,text', False)):
+            with self.subTest(replies=replies):
+                self.run_dir = self.root / ('replies-' + replies.replace(',', '-'))
+                counter = self.root / (self.run_dir.name + '.count')
+                result = self.run_coordinator(*OFF, env={'FAKE_GATE_REPLIES': replies, 'FAKE_GATE_REPLIES_COUNT': str(counter)})
+                self.assertEqual(int(counter.read_text()), 2)   # one gate call plus one re-dispatch, never more
+                state = self.state()
+                if done:
+                    self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+                    self.assertTrue(state['gate_ran'])
+                else:
+                    self.assertIn('HOLD: malformed gate verdict', result.stdout, result.stdout + result.stderr)
+                    self.assertFalse(state['gate_ran'])
+                self.assertEqual(sum(bool(turn.get('gate_malformed')) for turn in state['turns']), 1 if done else 2)
+                self.clean()
+
     def test_one_malformed_answer_then_a_verdict_is_the_single_gate(self):
         result = self.run_coordinator(*OFF, env={**FAIL, 'FAKE_GATE_MALFORMED_ONCE': str(self.root / 'malformed-once')})
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
@@ -305,6 +343,22 @@ class GateOnceTests(unittest.TestCase):
         [entry] = state['backlog']
         self.assertEqual((entry['source'], entry['file'], entry['summary']), ('docs-reviewer', 'sum_ints.py', 'stale code comment'))
         self.assertIn('stale code comment', (self.run_dir / 'backlog.md').read_text())
+
+    def test_a_rejection_repair_stays_with_the_exec_reviewer_until_it_approves(self):
+        # R2 F5: a second docs-only correction the EXEC reviewer asks for is reviewed by it again, not by the DOCS shortcut
+        log = self.root / 'docs-again-prompts.jsonl'
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1',
+               'FAKE_AUTHOR_NO_REJECTION_CHANGE': ''}   # the env names are frozen at the start
+        self.assertIn(DONE, self.run_coordinator(*ON, env=env).stdout)
+        first = self.state()
+        rejected = self.run_operator_action('reject', *ON, '--text', 'Name the rejected input.', env={
+            **env, 'FAKE_EXEC_REJECTION_DOCS_REVISE_ONCE': str(self.root / 'again'), 'FAKE_REVIEW_PROMPT_LOG': str(log),
+            'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1'})   # the author's correction touches CHANGELOG.md only
+        state = self.assert_one_gate_then_done(rejected)
+        after = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > first['sequence'] and t['role'] != 'shadow']
+        self.assertEqual(after[:4], [('author', 'EXEC'), ('reviewer', 'EXEC'), ('author', 'EXEC'), ('reviewer', 'EXEC')])
+        self.assertTrue(all('Name the rejected input.' in prompt for prompt in self.prompts(log)))
+        self.assertNotIn('rejection_repair', state)
 
     def test_a_docs_only_review_revise_goes_to_the_docs_writer(self):
         # R1 F5: a pending docs-only REVISE is the DOCS writer's to fix, not the EXEC author's
@@ -439,6 +493,65 @@ class LegacyGateResumeTests(unittest.TestCase):
                 self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                 self.assert_repaired_without_a_gate(state['sequence'], [])
                 self.clean()
+
+    def test_every_saved_v386_gate_verdict_is_imported_and_an_undelivered_one_is_repaired(self):
+        # R2 F1: a second verdict (after a rejection) saved before its findings were recorded is not lost
+        self.run_dir, self.released = self.root / 'v386-second', self.released_launcher()
+        done = self.run_coordinator(*OFF, env={'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'})
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        saved = self.state()
+        saved['config']['max_invocations'] = cap = saved['invocations_used'] + 3   # stop right after the next gate turn
+        self.write_state(saved)
+        held = self.run_operator_action('reject', *OFF, '--max-invocations', str(cap), '--text', 'Recheck bool input.',
+                                        env={'FAKE_GATE_BLOCK': '1', 'FAKE_AUTHOR_WRITE_NEW_REJECTION_TREE': '1'})
+        self.assertIn('HOLD: invocation limit reached', held.stdout, held.stdout + held.stderr)
+        state, self.released = self.state(), None
+        first, second = [t for t in state['turns'] if t['role'] == 'gate' and t['answer']['verdict'] == 'needs-attention']
+        self.assertEqual(state['turns'][-1]['sequence'], second['sequence'])
+        state['finding_ledger'] = [r for r in state['finding_ledger'] if r.get('origin_round') != second['sequence']]
+        state.update(next='gate', delivered_review='', gate_ran=False)
+        self.write_state(state)
+        before = {r['id'] for r in state['finding_ledger'] if r['source'] == 'adversarial-gate'}
+        resumed = self.run_operator_action('resume', *OFF, '--max-invocations', '80', env={'FAKE_AUTHOR_WRITE_NEW_TREE': '1'})
+        self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+        after = self.state()
+        turns = [(t['role'], t['phase']) for t in after['turns'] if t['sequence'] > state['sequence']]
+        self.assertEqual(turns[0], ('author', 'EXEC'))
+        self.assertNotIn(('gate', 'EXEC'), turns)
+        items = {item['id']: item['sequence'] for item in after['gate_fail_items']}
+        self.assertTrue(before <= set(items))   # the first verdict's rows keep their ids
+        [new] = [i for i, seq in items.items() if seq == second['sequence'] and i not in before]
+        self.assertEqual(next(r for r in after['finding_ledger'] if r['id'] == new)['status'], 'fixed')
+
+    def test_a_v386_report_gate_verdict_saved_before_routing_goes_to_polish_q(self):
+        # R2 F10: a saved report-mode verdict takes the report transition (POLISH-Q), never FINISH or an author turn
+        launcher = self.released_launcher()
+        flags = ('--review-only', '--review-report', '--lifecycle-mode', 'on')
+        for blocking in (False, True):
+            with self.subTest(blocking=blocking):
+                self.run_dir, self.released = self.root / f'v386-report-{blocking}', launcher
+                (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
+                env = {'FAKE_GATE_BLOCK': '1'} if blocking else {}
+                held = self.run_coordinator(*flags, '--max-invocations', '3', env=env)
+                self.assertIn('HOLD: POLISH-Q needs at least', held.stdout, held.stdout + held.stderr)   # stopped after the gate
+                state, self.released = self.state(), None
+                self.assertEqual(state['turns'][-1]['role'], 'gate')
+                # as if v3.8.6 stopped right after saving the gate receipt, before its report transition
+                state['finding_ledger'] = [r for r in state['finding_ledger'] if r['source'] != 'adversarial-gate']
+                state.update(next='gate', gate_ran=False)
+                state.get('report_progress', {}).pop('gate', None)
+                state['lifecycle'].update(stage='EXEC', candidate_oid=None)
+                self.write_state(state)
+                resumed = self.run_operator_action('resume', *flags, '--max-invocations', '80', env=env)
+                self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+                after = self.state()
+                self.assertEqual((after['status'], after['lifecycle']['stage']), ('REPORTED', 'REPORTED'))
+                self.assertFalse([t for t in after['turns'] if t['role'] == 'author'])
+                self.assertEqual(len([t for t in after['turns'] if t['role'] == 'gate']), 1)
+                if blocking:   # the saved blocker is reported, not lost
+                    self.assertTrue([r for r in after['finding_ledger'] if r['source'] == 'adversarial-gate'])
+                self.clean()
+
 
 
 class WriterReplayGateOnceTests(unittest.TestCase):

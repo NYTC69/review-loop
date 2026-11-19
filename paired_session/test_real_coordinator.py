@@ -3745,7 +3745,8 @@ sys.exit(result.returncode)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
             state = json.loads((run / 'state.json').read_text())
             self.assertEqual(state['status'], 'HOLD')
-            self.assertIn('verified_claims protocol error after one retry', state['hold_reason'])
+            self.assertIn('malformed gate verdict: approval requires nonempty verified_claims' if role == 'gate' else   # WI-GATE1 R2 F9:
+                          'verified_claims protocol error after one retry', state['hold_reason'])   # the gate's one retry budget
             turns = [t for t in state['turns'] if t['role'] == role]
             self.assertEqual(len(turns), 2)
             self.assertTrue(all(t.get('verified_claims_error') for t in turns))
