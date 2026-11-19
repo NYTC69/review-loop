@@ -1932,13 +1932,21 @@ def model_identity_status(requested: str, reported: Optional[str]) -> str:
     return 'MISMATCH'
 
 
+class UnusableReply(ValueError):
+    """A completed turn whose reply does not decode to a JSON object (WI-GATE1 R3 F13: the gate's one re-dispatch covers this,
+    never a timeout or a failed turn)."""
+
+
 def unwrap_json(value: str) -> dict:
     text = value.strip()
     if text.startswith('```'):
         text = '\n'.join(text.splitlines()[1:-1])
-    result = json.loads(text)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise UnusableReply(str(exc)) from exc
     if not isinstance(result, dict):
-        raise ValueError('structured output is not an object')
+        raise UnusableReply('structured output is not an object')
     return result
 
 
@@ -6894,7 +6902,8 @@ class Coordinator:
                                  f'CLI reported {reported_model}')
             approves_exec = (phase == 'EXEC' and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
-                              (role == 'gate' and answer.get('verdict') == 'PASS')))
+                              (role == 'gate' and answer.get('verdict') == 'PASS'   # R3 F9: only a valid PASS; a malformed
+                               and not gate_answer_error(answer) and not verified_claims_error(answer))))   # one is retried
             if approves_exec and self.args.test_command is None and self.state['config'].get('review_report'):   # LG2-b2
                 receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
             elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
@@ -9122,11 +9131,10 @@ class Coordinator:
             sequence = self.state['sequence']
             try:
                 result = self.invoke('gate', 'EXEC', prompt, gate_schema(), fresh=True, evidence_retry=False)
-            except RuntimeError as exc:   # a completed reply the coordinator could not use (not JSON, a field check)
+            except RuntimeError as exc:   # a completed reply that does not decode (R3 F13: a timeout or failed turn HOLDs as before)
                 cause = exc.__cause__
                 receipt = self.state['turns'][-1] if self.state.get('turns') else {}
-                if (not isinstance(cause, (ValueError, KeyError, TypeError, AttributeError))
-                        or isinstance(cause, (ReadOnlyTurnVoided, RateLimitError, TransientProviderError, TestEvidenceShortfall))
+                if (not isinstance(cause, (UnusableReply, KeyError)) or receipt.get('timed_out')
                         or receipt.get('role') != 'gate' or receipt.get('sequence', 0) <= sequence or not receipt.get('error')):
                     raise
                 result, error = None, 'unusable reply: ' + str(exc)
