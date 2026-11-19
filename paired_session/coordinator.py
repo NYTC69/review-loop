@@ -2180,7 +2180,7 @@ def verified_claims_error(answer: dict) -> str:
                 not isinstance(claim['file'], str) or not claim['file'].strip() or
                 type(claim['line']) is not int or claim['line'] < 1):
             return 'verified_claims entries require nonempty claim/file and a positive integer line'
-    if answer.get('status', answer.get('verdict', '')).lower() in ('approve', 'pass') and not claims:
+    if str(answer.get('status') or answer.get('verdict') or '').lower() in ('approve', 'pass') and not claims:
         return 'approval requires nonempty verified_claims'
     return ''
 
@@ -2588,6 +2588,11 @@ def progress_line(row: dict) -> str:
     if f.get('raw'): f['raw'] = 'raw ' + f['raw']
     if isinstance(f.get('open'), list): f['open'] = f"({len(f['open'])} open: {', '.join(f['open'])})"
     return f'[{when}] ' + ' · '.join(str(x) for x in [label, kind, *f.values()] if x not in (None, '', False))
+
+
+class TestEvidenceShortfall(ValueError):
+    """An EXEC approval without an observed successful configured test (V324-TEST: a fresh role's HOLD, not a malformed
+    gate reply; WI-GATE1 R2 F9 keeps it out of the gate retry budget)."""
 
 
 class ReadOnlyTurnVoided(ValueError):
@@ -4330,7 +4335,11 @@ class Coordinator:
 
     def _worktree_run_cap(self, stage: str) -> int:
         """A run-wide stage budget; each W reject reruns FINISH..SECURITY, so it adds one more allowance."""
-        return budget_policy.BUDGET_CAPS[stage][0] * (1 + len(self.state.get('rejections', [])))
+        return budget_policy.BUDGET_CAPS[stage][0] * (1 + self._counted_rejections())
+
+    def _counted_rejections(self) -> int:
+        """Rejections that granted a round; a note kept at the rejection limit (R2 F11) grants none."""
+        return len([row for row in self.state.get('rejections', []) if not row.get('over_limit')])
 
     def _commit_refusals(self, paths: list[str]) -> None:
         """W04 parity before an auto_commit: no work staged before the run, no content-transforming attribute or
@@ -4654,19 +4663,23 @@ class Coordinator:
         if worktree_lifecycle.is_worktree(self.state):   # W3b: a reject reopens EXEC, then FINISH..SECURITY again
             life = self.state['lifecycle']
             self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
-        if len(rejections) >= maximum:
-            # WI-GATE1: a tree that leaves this HOLD (an operator edit and resume, or a note) is reviewed again, never re-gated
-            return self.hold('rejected-tree', terminal_kind='rejection_limit')
+        at_limit = self._counted_rejections() >= maximum
         rejection_id = f'R{len(rejections) + 1:03d}'
         record = {'id': rejection_id, 'author': 'operator',
                   'timestamp': datetime.now().astimezone().isoformat(), 'target_phase': 'EXEC',
                   'intent': intent,
                   'sha256': hashlib.sha256(feedback.encode('utf-8')).hexdigest(),
                   'source': source, 'text': feedback, 'status': 'pending'}
+        if at_limit:   # R2 F11: the note is kept; the operator's edit and resume deliver it (no automatic round)
+            record['over_limit'] = True
         evidence_path = self.evidence / f'rejection-{rejection_id}.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
         rejections.append(record)
+        if at_limit:
+            # WI-GATE1: a tree that leaves this HOLD (an operator edit and resume, or a note) is reviewed again, never re-gated
+            self.state['pending_rejection_id'] = rejection_id
+            return self.hold('rejected-tree', terminal_kind='rejection_limit')
         self.state['acceptance_state'] = 'REJECTED'
         self.state['pending_rejection_id'] = rejection_id
         self.state.update(status='ACTIVE', phase='EXEC', next='author',
@@ -4803,6 +4816,7 @@ class Coordinator:
                 self.state.update(next='reviewer')   # resume re-reviews this tree
                 return self.hold('stale EXEC approval: the reviewer did not review the current tree')
             self.set_effective_verdict('APPROVE')
+            self.state.pop('rejection_repair', None)   # R2 F5: the EXEC reviewer approved the rejection repair
             self.state['lifecycle'].pop('writer_replay', None)   # D09 §2: a converged writer replay has used its one chance
             self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
                 'tree': reviewed, 'reviewer_sequence': reviewer.get('sequence'), 'gate_sequence': gate.get('sequence'),
@@ -4818,6 +4832,7 @@ class Coordinator:
                 self.state.update(next='reviewer', phase='EXEC')
                 self.save()
                 return 'ACTIVE'
+        self.state.pop('rejection_repair', None)
         return self.done()
 
     def resume_polish(self) -> str:
@@ -6388,7 +6403,9 @@ class Coordinator:
 
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
-               env_overrides: Optional[dict] = None) -> dict:
+               env_overrides: Optional[dict] = None, evidence_retry: bool = True) -> dict:
+        """evidence_retry=False (the gate, WI-GATE1 R2 F9): no evidence-contract retry here; a verified_claims error comes
+        back as result['evidence_error'] and the caller's one retry budget covers it."""
         if role == 'author' and self.state['config'].get('review_report'):
             raise RuntimeError('report mode refuses every author dispatch')
         if self._role_vendor(role) == 'gemini' and (role, phase) not in GEMINI_ROLE_PHASES:   # WI-GEM B2a, before any provider turn
@@ -6469,6 +6486,8 @@ class Coordinator:
             atomic_json(prefix, self.state['turns'][-1])
             self.render(result, role + '-protocol-error', phase)
             self.save()
+            if not evidence_retry:
+                return {**result, 'evidence_error': error}
         raise RuntimeError(f'{role} verified_claims protocol error after one retry: {error}')
 
     def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
@@ -6886,7 +6905,7 @@ class Coordinator:
                 # V324-TEST: a persistent reviewer's completed test failure goes to the author as a normal blocking review.
                 if record is None and not (role == 'reviewer' and not fresh and not self.state['config'].get('review_report')
                         and completed_test_failure(observed_commands, self.args.test_command) is not None):
-                    raise ValueError(f'{role} EXEC approval lacks an observed successful configured test command'
+                    raise TestEvidenceShortfall(f'{role} EXEC approval lacks an observed successful configured test command'
                                      + (cause or ('; the configured test was not observed to completion (no exit status when '
                                                     'the turn ended)' if unfinished else '')))
             old = self.state['sessions'].get(role)
@@ -6960,6 +6979,7 @@ class Coordinator:
                              delivered_phase=phase)
             atomic_json(Path(rejection['evidence']), rejection)
             self.state.pop('pending_rejection_id', None)
+            self.state['rejection_repair'] = rejection['id']   # R2 F5: the EXEC reviewer's until it approves
         key = f'{phase.lower()}_rounds'
         if not rewriting: self.state[key] += 1
         if phase == 'PLAN':
@@ -6973,8 +6993,8 @@ class Coordinator:
                 if receipt.get('sequence') == result['sequence']: receipt['plan_rewrite'] = True   # the audit trail names the extra turn
             self.progress('plan_rewrite', status='written', sequence=result['sequence'])
         self.state['delivered_review'] = ''
-        # R1 F5: a rejection fix is the persistent EXEC reviewer's (with the rejection notes), never the docs-only shortcut
-        self.state['next'] = 'reviewer' if rejection else self._post_author_next()
+        # R1/R2 F5: a rejection repair is the persistent EXEC reviewer's (with the rejection notes) until it approves
+        self.state['next'] = 'reviewer' if self.state.get('rejection_repair') else self._post_author_next()
         self.state.pop('pending_author_result_sequence', None)
         self.save()
 
@@ -7014,7 +7034,7 @@ class Coordinator:
         if life.get('writer_replay') or (advisory.get('state') == 'ran' and advisory.get('epoch') == life.get('epoch')):
             return 'reviewer'   # the advisory fix round and a writer replay keep their own chain back to POLISH-Q
         approved = self._approval_manifest(life.get('exec_convergence'))
-        if approved is None:
+        if approved is None or self.blocking_open_findings():   # R2 F5: an open EXEC blocker is the reviewer's to close
             return 'reviewer'
         tree, manifest = git_snapshot(self.workspace)
         current = dict(manifest)
@@ -8585,7 +8605,7 @@ class Coordinator:
         after a partial rollback); at DOCS the rounds it used (1, or 2 with a fix round) are frozen in
         `writer_replay_rounds` and added to the ordinary limit, so an unused fix round never reaches a later round."""
         rounds, added = self.state.get('writer_replay_rounds'), self._round_extensions('EXEC')
-        ordinary = (self.args.max_exec_rounds + len(self.state.get('rejections', [])) + added +
+        ordinary = (self.args.max_exec_rounds + self._counted_rejections() + added +
                     ((self.state.get('advisory_fix') or {}).get('state') == 'ran') +   # ADVFIX: its own one round
                     bool(self.state.get('gate_extra_round')))   # WI-GATE1 Q3: one fix round after a gate FAIL at the cap
         if rounds and rounds.get('used') is None:   # L100: an operator extension always lands on top, never inside the max
@@ -8996,15 +9016,23 @@ class Coordinator:
         verdict = self._gate_verdict_turn()
         if verdict and not self.state.get('gate_ran') and self.state.get('next') != 'gate':
             self.state['gate_ran'] = True   # next == 'gate' is settled by gate_turn (an unprocessed or a legacy re-gate)
-        if verdict and 'gate_fail_items' not in self.state:   # legacy verdict rows; else the blocking gate rows on record
-            rows = (self._legacy_gate_rows(verdict) if 'findings' in verdict['answer'] else
-                    [row for row in self.state.get('finding_ledger', [])
+        if verdict and 'gate_fail_items' not in self.state:   # every legacy verdict's rows; else the blocking gate rows on record
+            legacy = self._legacy_verdict_turns()   # R2 F1: a verdict after a repair or a rejection counts too
+            rows = ([(turn['sequence'], row) for turn in legacy for row in self._legacy_gate_rows(turn)] if legacy else
+                    [(row.get('origin_round'), row) for row in self.state.get('finding_ledger', [])
                      if row.get('source') == 'adversarial-gate' and blocks_by_severity(row)])
-            self.state['gate_fail_items'] = [
-                {'id': row['id'], 'basis': 'legacy', 'criterion': '', 'blocking_class': '',
-                 'evidence': row.get('body') or row.get('summary', ''), 'smallest_change': row.get('summary', ''),
-                 'proof': 'the reviewer confirms the defect described above is fixed', 'sequence': verdict['sequence']}
-                for row in rows]
+            items, seen = [], set()
+            for sequence, row in rows:
+                if row['id'] not in seen:
+                    seen.add(row['id'])
+                    items.append({'id': row['id'], 'basis': 'legacy', 'criterion': '', 'blocking_class': '',
+                                  'evidence': row.get('body') or row.get('summary', ''), 'smallest_change': row.get('summary', ''),
+                                  'proof': 'the reviewer confirms the defect described above is fixed', 'sequence': sequence})
+            self.state['gate_fail_items'] = items
+
+    def _legacy_verdict_turns(self) -> list[dict]:
+        """The gate verdicts an earlier version saved (its old answer shape), in order."""
+        return [turn for turn in self._gate_turns() if 'findings' in turn['answer'] and not turn.get('gate_malformed')]
 
     def _legacy_gate_rows(self, turn: dict) -> list[dict]:
         """R1 F1: the valid blockers (critical/high with the full rubric) of a gate verdict an earlier version saved, as
@@ -9080,22 +9108,37 @@ class Coordinator:
             return {'answer': copy.deepcopy(recorded['answer']), 'sequence': recorded['sequence'],
                     'snapshot': recorded.get('snapshot_before')}
         start = self.state.get('gate_attempt_from', 0)   # R1 F2: a resume after the HOLD below starts a new bounded attempt
-        malformed = [turn for turn in self._gate_turns() if turn.get('gate_malformed') and turn['sequence'] > start]
-        while len(malformed) < 2:
+        malformed = [turn for turn in self.state.get('turns', []) if turn.get('role') == 'gate' and turn.get('phase') == 'EXEC'
+                     and turn.get('gate_malformed') and turn['sequence'] > start]
+        while len(malformed) < 2:   # R2 F9: one budget for an undecodable reply, a schema error and an evidence error
             self.materialize_review_context()
             snapshot, _ = git_snapshot(self.workspace)
             prompt = self._gate_prompt(snapshot)
             if malformed:
                 prompt += ('\n\nNote from the coordinator: your previous answer was not a valid verdict ('
-                           + malformed[-1]['gate_malformed'] + '). Review again and answer with a complete verdict.')
-            result = self.invoke('gate', 'EXEC', prompt, gate_schema(), fresh=True)
-            error = gate_answer_error(result['answer'])
-            if not error:
-                return result
-            receipt = next(turn for turn in self.state['turns'] if turn.get('sequence') == result['sequence'])
+                           + malformed[-1]['gate_malformed'][:500] + '). Review again and answer with a complete verdict.')
+                if malformed[-1].get('verified_claims_error'):   # the evidence contract, as other roles' one retry states it
+                    prompt += '\nEvidence contract retry: ' + self.verified_claims_prompt()
+            sequence = self.state['sequence']
+            try:
+                result = self.invoke('gate', 'EXEC', prompt, gate_schema(), fresh=True, evidence_retry=False)
+            except RuntimeError as exc:   # a completed reply the coordinator could not use (not JSON, a field check)
+                cause = exc.__cause__
+                receipt = self.state['turns'][-1] if self.state.get('turns') else {}
+                if (not isinstance(cause, (ValueError, KeyError, TypeError, AttributeError))
+                        or isinstance(cause, (ReadOnlyTurnVoided, RateLimitError, TransientProviderError, TestEvidenceShortfall))
+                        or receipt.get('role') != 'gate' or receipt.get('sequence', 0) <= sequence or not receipt.get('error')):
+                    raise
+                result, error = None, 'unusable reply: ' + str(exc)
+            else:
+                receipt = next(turn for turn in self.state['turns'] if turn.get('sequence') == result['sequence'])
+                error = gate_answer_error(result['answer']) or result.get('evidence_error', '')
+                if not error:
+                    return result
             receipt['gate_malformed'] = error
-            atomic_json(self.evidence / f"{result['sequence']:03d}-exec-gate.receipt.json", receipt)
-            self.render(result, 'adversarial-malformed', 'EXEC')
+            atomic_json(self.evidence / f"{receipt['sequence']:03d}-exec-gate.receipt.json", receipt)
+            if result is not None:
+                self.render(result, 'adversarial-malformed', 'EXEC')
             self.progress('verdict', verdict='MALFORMED', source='gate', open=self._progress_open())
             self.save()
             malformed.append(receipt)
@@ -9108,16 +9151,21 @@ class Coordinator:
         verdict = self._gate_verdict_turn()
         reviewed = max((turn['sequence'] for turn in self.state.get('turns', []) if turn.get('role') == 'reviewer'
                         and turn.get('phase') == 'EXEC' and not turn.get('error')), default=0)
-        if verdict and 'findings' in verdict['answer'] and verdict['sequence'] > reviewed:
-            # R1 F1: an earlier version's verdict on the reviewed tree, not yet routed (a HOLD or a stop before delivery)
+        legacy = self._legacy_verdict_turns()
+        if legacy and legacy[-1]['sequence'] > reviewed:
+            # R1/R2 F1: an earlier version's last verdict on the reviewed tree, not yet routed (a HOLD or a stop before
+            # delivery); every legacy verdict's blockers are FAIL items, the open ones go to the repair
             self._settle_saved_gate()
             self.state['gate_ran'] = True
+            if self.state['config'].get('review_report'):   # R2 F10: the report transition, as for a new verdict
+                self._gate_report_transition(legacy[-1].get('snapshot_before') or git_snapshot(self.workspace)[0])
+                return
             ids = {item['id'] for item in self.state.get('gate_fail_items') or []}
             rows = [row for row in self.state['finding_ledger'] if row['id'] in ids and row['status'] == 'open']
             if not rows:
                 self.start_polish_or_done()
                 return
-            self._route_gate_fail(rows, verdict['sequence'], None)
+            self._route_gate_fail(rows, legacy[-1]['sequence'], None)
             return
         if self.state.get('gate_ran') or (verdict and verdict['sequence'] < reviewed):
             self.state['gate_ran'] = True   # WI-GATE1: a re-gate an earlier version queued; the reviewer approved this tree
@@ -9157,16 +9205,20 @@ class Coordinator:
             self.state['exec_comparisons'][-1]['gate'] = {
                 'verdict': answer['verdict'], 'findings': self.comparison_findings({'findings': recorded})}
         if self.state['config'].get('review_report'):
-            self.state.setdefault('report_progress', {})['gate'] = True
-            self.state['next'] = 'polish-q'
-            if worktree_lifecycle.is_worktree(self.state):
-                self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
-            self.save()
+            self._gate_report_transition(snapshot)
             return
         if not recorded:
             self.start_polish_or_done()
             return
         self._route_gate_fail(recorded, result['sequence'], self._structural_block_hold('gate', result['sequence'], recorded))
+
+    def _gate_report_transition(self, snapshot: str) -> None:
+        """Report mode: the gate verdict is reported, never delivered; POLISH-Q runs next."""
+        self.state.setdefault('report_progress', {})['gate'] = True
+        self.state['next'] = 'polish-q'
+        if worktree_lifecycle.is_worktree(self.state):
+            self.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=snapshot)
+        self.save()
 
     def _route_gate_fail(self, recorded: list[dict], sequence: int, structural: Optional[dict]) -> None:
         """The post-gate repair: the FAIL items go to the author; at the EXEC round cap, Q3's one extra round."""

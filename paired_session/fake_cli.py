@@ -77,7 +77,7 @@ def emit_codex(answer, session, command_events=None):
     if os.environ.get('FAKE_MALFORMED_MODEL_STREAM') == 'codex':
         print('{malformed model metadata')
     print(json.dumps({'type': 'item.completed', 'item': {'id': 'fake', 'type': 'agent_message',
-                                                         'text': json.dumps(answer)}}))
+                                                         'text': answer if isinstance(answer, str) else json.dumps(answer)}}))
     print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 100,
                                                           'cached_input_tokens': 60,
                                                           'output_tokens': 20}}))
@@ -674,6 +674,13 @@ def main():
             revise = True
             prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'docs entry still wrong'}
                      for finding_id in open_ids]
+        again = os.environ.get('FAKE_EXEC_REJECTION_DOCS_REVISE_ONCE')   # R2 F5: the reviewer asks for one more docs correction
+        if (again and role == 'reviewer' and phase == 'EXEC' and '## Operator rejection notes' in prompt
+                and not Path(again).exists()):
+            Path(again).write_text('asked\n')
+            revise = True
+            findings = [{'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs entry still wrong',
+                         'failure_scenario': 'the changelog entry does not name the rejected input'}]
         withdraw = os.environ.get('FAKE_EXEC_WITHDRAW_GATE_ONCE')   # WI-GATE1: the reviewer tries to withdraw a gate FAIL item
         if withdraw and role == 'reviewer' and phase == 'EXEC' and '(gate FAIL item)' in prompt and not Path(withdraw).exists():
             Path(withdraw).write_text('withdrawn\n')
@@ -780,8 +787,26 @@ def main():
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_REVIEWER_CORRUPT_INDEX'):   # eff-e: git ls-files fails afterwards
             (Path.cwd() / '.git' / 'index').write_bytes(b'not an index\n')
 
+    if (replies := os.environ.get('FAKE_GATE_REPLIES')) and locals().get('role') == 'gate' and isinstance(answer, dict):
+        # WI-GATE1 R2 F9: one reply kind per gate call, in order (then 'ok'): text (not JSON), null (verdict null),
+        # noclaims (no verified_claims), empty (FAIL without items), ok. FAKE_GATE_REPLIES_COUNT names the counter file.
+        counter = Path(os.environ['FAKE_GATE_REPLIES_COUNT'])
+        index = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(index + 1))
+        kinds = replies.split(',')
+        kind = kinds[index] if index < len(kinds) else 'ok'
+        if kind == 'text':
+            answer = 'I reviewed the change and it looks fine.'
+        elif kind == 'null':
+            answer['verdict'] = None
+        elif kind == 'noclaims':
+            answer.pop('verified_claims', None)
+        elif kind == 'empty':
+            answer.update(verdict='FAIL', fail_items=[])
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
-    if snapshot_mode == 'wrong':
+    if isinstance(answer, str):
+        pass
+    elif snapshot_mode == 'wrong':
         answer['reviewed_snapshot'] = '0' * 40
     elif snapshot_mode != 'missing' and 'reviewed_snapshot' in answer:
         answer['reviewed_snapshot'] = answer['reviewed_snapshot']
