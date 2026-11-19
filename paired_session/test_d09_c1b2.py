@@ -67,14 +67,14 @@ class D09C1b2Tests(unittest.TestCase):
         self.assertEqual(exec_review['snapshot_before'], written)   # the reviewer reviews the writer's tree
         self.assertNotIn('writer_replay', state['lifecycle'])
 
-    def test_a_writer_replay_runs_the_shadow_even_with_shadow_off(self):   # §2: reviewer, shadow and gate on the replay
+    def test_a_writer_replay_honors_shadow_off(self):   # WI-GATE1 R1 F8: the replay is the reviewer's alone with --shadow off
         self.change()
         co, status = self.drive(extra=('--shadow', 'off'), FAKE_WRITER_WRITE='simplifier', FAKE_WRITER_FILE='writer_note.py')
         self.assertEqual(status, 'DONE', co.state.get('hold_reason'))
         state = self.state()
         writer = state['lifecycle']['quality_writers']['simplifier']
-        shadows = [t['sequence'] > writer['sequence'] for t in state['turns'] if t['role'] == 'shadow']
-        self.assertEqual(shadows, [True])   # none before the writers (shadow off), one on the replay
+        self.assertFalse([t for t in state['turns'] if t['role'] == 'shadow'])   # no paid shadow call, not on the replay either
+        self.assertIn(('reviewer', 'EXEC'), [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > writer['sequence']])
         self.assertEqual(writer['state'], 'wrote')
 
     def test_a_failing_local_check_rolls_the_write_back_without_a_replay(self):

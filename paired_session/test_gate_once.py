@@ -14,6 +14,7 @@ import unittest
 
 from paired_session import test_worktree_lifecycle as twl
 from paired_session import test_d09_c1b2 as d09
+from paired_session import test_v319hold as v319
 
 rc, DONE = twl.rc, twl.DONE
 ON = ('--lifecycle-mode', 'on', '--max-invocations', '80')
@@ -55,6 +56,29 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(rc.gate_answer_error(self.answer('PASS')), 'PASS with fail_items')
         self.assertIn('verdict', rc.gate_answer_error({**self.answer(), 'verdict': 'needs-attention'}))
 
+    def test_a_missing_or_mistyped_key_is_malformed_not_a_crash(self):
+        # R1 F3: every required key is present with its type before anything is recorded
+        for key in ('basis', 'criterion', 'blocking_class', 'evidence', 'smallest_change', 'proof'):
+            with self.subTest(missing=key):
+                item = dict(ITEM)
+                item.pop(key)
+                self.assertIn(key, rc.gate_answer_error(self.answer(items=[item])))
+            with self.subTest(mistyped=key):
+                self.assertIn(key, rc.gate_answer_error(self.answer(items=[{**ITEM, key: 7}])))
+        for key in ('verified_claims', 'self_run_evidence'):
+            with self.subTest(answer_key=key):
+                answer = self.answer()
+                answer.pop(key)
+                self.assertIn(key, rc.gate_answer_error(answer))
+
+    def test_every_unmet_criterion_needs_its_own_fail_item(self):
+        # R1 F4: a FAIL that marks a criterion unmet without an item for it would leave no repair obligation
+        unmet = self.answer(met=False)
+        self.assertIn('unmet criterion without a fail item: rejects bool', rc.gate_answer_error(unmet))
+        matched = self.answer(items=[{**ITEM, 'basis': 'criterion', 'criterion': '  rejects\n bool ', 'blocking_class': ''}],
+                              met=False)
+        self.assertEqual(rc.gate_answer_error(matched), '')   # equal after whitespace normalization
+
     def test_the_schema_requires_every_field(self):
         schema = rc.gate_schema()
         self.assertEqual(schema['properties']['verdict']['enum'], ['PASS', 'FAIL'])
@@ -85,6 +109,20 @@ class GateOnceTests(unittest.TestCase):
         rc.subprocess.run(['git', 'clean', '-qfd'], cwd=self.workspace, check=True)
 
     # --- the main path ----------------------------------------------------------------------------------------------------
+    def test_stop_after_gate_done_is_bound_to_the_reviewers_tree(self):
+        # R1 F7: an edit after the reviewer approved (here while held at the cap) is reviewed before DONE; no second gate
+        held = self.run_coordinator(*OFF, '--max-invocations', '4')
+        self.assertIn('HOLD: invocation limit reached', held.stdout, held.stdout + held.stderr)
+        self.assertEqual(self.state()['next'], 'gate')
+        (self.workspace / 'sum_ints.py').write_text(
+            (self.workspace / 'sum_ints.py').read_text() + '# operator edit after the approval\n')
+        resumed = self.run_operator_action('resume', *OFF, '--max-invocations', '80')
+        state = self.assert_one_gate_then_done(resumed)
+        reviewer = [t for t in state['turns'] if t['role'] == 'reviewer' and t['phase'] == 'EXEC'][-1]
+        self.assertGreater(reviewer['sequence'], gates(state)[0]['sequence'])   # queued after the settled gate verdict
+        self.assertEqual(reviewer['snapshot_before'], state['approved_snapshot'])
+        self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
+
     def test_a_gate_fail_goes_to_the_author_and_every_later_review_carries_its_items_then_done(self):
         for mode in (OFF, ON):
             with self.subTest(mode=mode[1]):
@@ -219,6 +257,21 @@ class GateOnceTests(unittest.TestCase):
                 self.assertFalse([r for r in state['finding_ledger'] if r['source'] == 'adversarial-gate'])
                 self.clean()
 
+    def test_resume_after_a_malformed_hold_starts_a_new_bounded_gate_attempt(self):
+        # R1 F2: the pending gate is re-dispatched on resume (one try + one re-dispatch); both earlier receipts are kept
+        held = self.run_coordinator(*OFF, env={'FAKE_GATE_MALFORMED': 'evidence'})
+        self.assertIn('HOLD: malformed gate verdict', held.stdout, held.stdout + held.stderr)
+        again = self.run_operator_action('resume', *OFF, env={'FAKE_GATE_MALFORMED': 'proof'})   # still malformed: bounded
+        self.assertIn('HOLD: malformed gate verdict', again.stdout, again.stdout + again.stderr)
+        self.assertEqual([bool(turn.get('gate_malformed')) for turn in gates(self.state())], [True] * 4)
+        resumed = self.run_operator_action('resume', *OFF)
+        self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+        state = self.state()
+        self.assertEqual([bool(turn.get('gate_malformed')) for turn in gates(state)], [True] * 4 + [False])
+        for turn in gates(state):
+            self.assertTrue((self.run_dir / 'evidence' / f"{turn['sequence']:03d}-exec-gate.receipt.json").exists())
+        self.assertTrue(state['gate_ran'])
+
     def test_one_malformed_answer_then_a_verdict_is_the_single_gate(self):
         result = self.run_coordinator(*OFF, env={**FAIL, 'FAKE_GATE_MALFORMED_ONCE': str(self.root / 'malformed-once')})
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
@@ -228,6 +281,48 @@ class GateOnceTests(unittest.TestCase):
         self.assertEqual(len(state['gate_fail_items']), 1)
 
     # --- lifecycle stages after the gate -------------------------------------------------------------------------------------
+    def test_a_docs_only_rejection_fix_is_reviewed_by_the_exec_reviewer_with_the_note(self):
+        # R1 F5: no docs-only shortcut for a rejection fix; the persistent EXEC reviewer sees the operator's note
+        log = self.root / 'docs-reject-prompts.jsonl'
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1', 'FAKE_REVIEW_PROMPT_LOG': str(log)}
+        self.assertIn(DONE, self.run_coordinator(*ON, env=env).stdout)
+        first = self.state()
+        note = 'The changelog entry must name the rejected input.'
+        rejected = self.run_operator_action('reject', *ON, '--text', note, env=env)
+        state = self.assert_one_gate_then_done(rejected)
+        after = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > first['sequence']]
+        self.assertEqual(after[:2], [('author', 'EXEC'), ('reviewer', 'EXEC')])
+        self.assertIn(note, self.prompts(log)[-1])
+        self.assertIn('# rejection applied', (self.workspace / 'CHANGELOG.md').read_text())
+
+    def test_a_docs_finding_on_a_path_the_docs_writer_cannot_edit_goes_to_the_run_backlog(self):
+        # R1 F6: a stale code comment the DOCS writer may not fix is non-blocking: run backlog, no DOCS repair loop
+        result = self.run_coordinator(*ON, env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_CODE_COMMENT': '1'})
+        state = self.assert_one_gate_then_done(result)
+        docs = [r for r in state['lifecycle']['receipts'] if r['stage'] == 'DOCS']
+        self.assertEqual([(r['route'], r['review']['status']) for r in docs], [('SECURITY', 'APPROVE')])
+        self.assertFalse([r for r in state['finding_ledger'] if r['source'] == 'docs-reviewer' and r['file'] == 'sum_ints.py'])
+        [entry] = state['backlog']
+        self.assertEqual((entry['source'], entry['file'], entry['summary']), ('docs-reviewer', 'sum_ints.py', 'stale code comment'))
+        self.assertIn('stale code comment', (self.run_dir / 'backlog.md').read_text())
+
+    def test_a_docs_only_review_revise_goes_to_the_docs_writer(self):
+        # R1 F5: a pending docs-only REVISE is the DOCS writer's to fix, not the EXEC author's
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'on'))
+        (self.workspace / 'CHANGELOG.md').write_text('# entry\n')
+        tree = rc.git_snapshot(self.workspace)[0]
+        [row] = co.record_findings('docs-reviewer', 'DOCS', 1, [
+            {'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs describe the wrong behavior'}])
+        life = co.state['lifecycle']
+        life.update(stage='EXEC', docs_only={'paths': ['CHANGELOG.md'], 'tree': tree})
+        epoch, rounds = life['epoch'], co.state['exec_rounds']
+        review = {'status': 'REVISE', 'sequence': co.state['sequence'] + 1, 'finding_ids': [row['id']]}
+        with mock.patch.object(co, '_docs_review_turn', return_value=review):
+            co.worktree_docs_review_only_turn()
+        life = co.state['lifecycle']
+        self.assertEqual((co.state['next'], life['stage'], life['epoch'], co.state['exec_rounds']), ('docs', 'DOCS', epoch, rounds))
+        self.assertEqual(life['docs_feedback'], [row['id']])
+
     def test_a_polish_q_fix_is_reviewed_without_a_gate(self):
         env = {**FAIL, 'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
         state = self.assert_one_gate_then_done(self.run_coordinator(*ON, env=env))
@@ -263,6 +358,87 @@ class GateOnceTests(unittest.TestCase):
         co.worktree_security_turn()
         self.assertEqual((co.state['next'], co.state['gate_ran'], co.state['lifecycle']['stage']), ('reviewer', True, 'EXEC'))
         self.assertNotEqual(tree, '0' * 64)
+
+
+class LegacyGateResumeTests(unittest.TestCase):
+    """R1 F1: states v3.8.6 saved around a gate FAIL resume into the gate-once contract without losing a blocker."""
+    locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in twl._HELPERS})
+    RELEASE = 'aa9eca6'   # v3.8.6, the release before WI-GATE1
+    released = None
+    command = v319.HoldExitTests.command
+    released_launcher = v319.HoldExitTests.released_launcher
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.released_source = rc.subprocess.check_output(
+                ['git', 'show', cls.RELEASE + ':paired_session/coordinator.py'], cwd=twl.trc.MODULE_PATH.parent,
+                text=True, stderr=rc.subprocess.PIPE)
+        except rc.subprocess.CalledProcessError:
+            cls.released_source = None
+
+    def state(self):
+        return json.loads((self.run_dir / 'state.json').read_text())
+
+    def write_state(self, state):
+        (self.run_dir / 'state.json').write_text(json.dumps(state))
+
+    def clean(self):
+        GateOnceTests.clean(self)
+
+    def assert_repaired_without_a_gate(self, held_at, rows_before):
+        state = self.state()
+        after = [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > held_at]
+        self.assertEqual(after[0], ('author', 'EXEC'), after)
+        self.assertNotIn(('gate', 'EXEC'), after)
+        rows = [r for r in state['finding_ledger'] if r['source'] == 'adversarial-gate' and r['severity'].lower() == 'high']
+        self.assertEqual(len(rows), 1)
+        if rows_before:
+            self.assertEqual(rows[0]['id'], rows_before[0]['id'])   # the existing ledger id is reused
+        [item] = state['gate_fail_items']
+        self.assertEqual((item['id'], item['basis']), (rows[0]['id'], 'legacy'))
+        self.assertEqual(rows[0]['status'], 'fixed')
+        author = next(t for t in state['turns'] if t['sequence'] > held_at)
+        prompt = (self.run_dir / 'evidence' / f"{author['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn(rows[0]['id'], prompt)
+        return state
+
+    def test_a_v386_gate_round_limit_hold_resumes_into_the_repair(self):
+        launcher = self.released_launcher()
+        for mode in (OFF, ON):
+            for add in (False, True):
+                with self.subTest(mode=mode[1], add_rounds=add):
+                    self.run_dir, self.released = self.root / f'v386-limit-{mode[1]}-{add}', launcher
+                    env = {'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'}
+                    held = self.run_coordinator(*mode, '--max-exec-rounds', '1', env=env)
+                    self.assertIn('HOLD: EXEC round limit reached after adversarial gate', held.stdout, held.stdout + held.stderr)
+                    saved, self.released = self.state(), None
+                    rows = [r for r in saved['finding_ledger'] if r['source'] == 'adversarial-gate']
+                    extra = ('--add-rounds', '1') if add else ()
+                    resumed = self.run_operator_action('resume', *mode, '--max-exec-rounds', '1', *extra, env=env)
+                    self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+                    state = self.assert_repaired_without_a_gate(saved['sequence'], rows)
+                    self.assertIs(bool(state.get('gate_extra_round')), not add)   # Q3: the plain resume gets the extra round
+                    self.clean()
+
+    def test_a_v386_gate_receipt_saved_before_its_findings_were_recorded_is_not_lost(self):
+        launcher = self.released_launcher()
+        for mode, cap in ((OFF, '5'), (ON, '6')):   # held at the cap right after the gate turn
+            with self.subTest(mode=mode[1]):
+                self.run_dir, self.released = self.root / ('v386-receipt-' + mode[1]), launcher
+                env = {'FAKE_GATE_BLOCK_ONCE': str(self.run_dir) + '.blocked'}
+                held = self.run_coordinator(*mode, '--max-invocations', cap, env=env)
+                self.assertIn('HOLD: invocation limit reached', held.stdout, held.stdout + held.stderr)
+                state, self.released = self.state(), None
+                self.assertEqual(state['turns'][-1]['answer']['verdict'], 'needs-attention')
+                # as if v3.8.6 stopped after saving the gate receipt, before recording its findings
+                state['finding_ledger'] = [r for r in state['finding_ledger'] if r['source'] != 'adversarial-gate']
+                state.update(next='gate', delivered_review='', gate_ran=False)
+                self.write_state(state)
+                resumed = self.run_operator_action('resume', *mode, '--max-invocations', '80', env=env)
+                self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+                self.assert_repaired_without_a_gate(state['sequence'], [])
+                self.clean()
 
 
 class WriterReplayGateOnceTests(unittest.TestCase):

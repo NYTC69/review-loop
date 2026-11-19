@@ -869,7 +869,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertFalse(state.get('round_extensions'))
         self.assertNotIn('round_limit_hold', state)
 
-    def test_a_docs_only_reject_after_done_runs_only_the_author_the_docs_review_and_security(self):
+    def test_a_docs_only_reject_after_done_is_reviewed_by_the_exec_reviewer(self):
+        # WI-GATE1 R1 F5: a rejection fix goes to the persistent EXEC reviewer even when it touches only docs
         env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_AUTHOR_REJECTION_DOCS': '1'}   # acts on the rejection only
         self.assertIn(DONE, self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env).stdout)
         first = json.loads((self.run_dir / 'state.json').read_text())
@@ -879,11 +880,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                                             env={**env, 'FAKE_AUTHOR_REJECTION_DOCS': '1'})
         self.assertIn(DONE, rejected.stdout, rejected.stdout + rejected.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
-        self.assertEqual(self.after(state, first['sequence']),
-                         [('author', 'EXEC'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+        after = self.after(state, first['sequence'])
+        self.assertEqual(after[:2], [('author', 'EXEC'), ('reviewer', 'EXEC')])
+        self.assertNotIn(('gate', 'EXEC'), after)
         later = state['lifecycle']['receipts'][len(first['lifecycle']['receipts']):]
-        self.assertEqual([row['stage'] for row in later], ['DOCS', 'SECURITY'])
-        self.assertEqual((later[0]['docs_only'], later[0]['docs_paths'], state['status']), (True, ['CHANGELOG.md'], 'DONE'))
+        self.assertEqual(([row['stage'] for row in later][-2:], state['status']), (['DOCS', 'SECURITY'], 'DONE'))
+        self.assertFalse(any(row.get('docs_only') for row in later))
         self.assertEqual((self.workspace / 'sum_ints.py').read_text(), module)
         self.assertIn('# rejection applied', (self.workspace / 'CHANGELOG.md').read_text())
 
@@ -905,8 +907,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn("carried over to the author's docs-only change (CHANGELOG.md)", rejected.stdout)
         state, tree = json.loads((self.run_dir / 'state.json').read_text()), rc.git_snapshot(self.workspace)[0]
         docs = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS'][-1]
-        self.assertEqual((docs['docs_only'], docs['review']['observed_test'], docs['review']['operator_test_evidence']),
-                         (True, None, 'V001'))
+        self.assertEqual((docs['review']['observed_test'], docs['review']['operator_test_evidence']), (None, 'V001'))
         [row] = state['operator_verifications']
         self.assertEqual((row['status'], row['tree_sha256'], row['carried'][-1]['by'], row['carried'][-1]['from_tree']),
                          ('current', tree, 'author', old))
