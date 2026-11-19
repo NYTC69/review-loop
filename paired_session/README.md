@@ -51,32 +51,29 @@ and `resume` retries the turn.
 
 ## MINOR-only review revisions
 
-Each phase allows one repair attempt for an advisory-only persistent reviewer
-REVISE. The first goes to the author if a round remains. A later eligible
-advisory-only REVISE becomes `APPROVE_WITH_ADVISORY`, even with rounds left.
-In a quality-writer replay an eligible advisory-only REVISE takes this exit at
-any round, without consuming or resetting an attempt, and the writer change is kept.
-The final PLAN/EXEC round keeps the same advisory exit without requiring an
-attempt. Advisory-only means MINOR/LOW findings (a security flag no longer raises them, v3.8.1),
-and/or only earlier non-blocking rows reported `still_open`, with no blocking
-row open. Those rows remain open and labeled advisory in the ledger and report
+An advisory-only persistent reviewer REVISE becomes `APPROVE_WITH_ADVISORY` in
+any PLAN or EXEC round, including a quality-writer replay (the writer change is
+kept); there is no advisory repair round (WI-GATE1). Advisory-only means findings
+below the blocking threshold, and/or only earlier non-blocking rows reported
+`still_open`, with no blocking row open. Those rows remain open and labeled advisory in the ledger and report
 until a later reviewer confirms they are fixed or withdraws them with evidence.
 The raw REVISE and effective verdict are recorded separately. The next phase
-receives the rows as non-blocking context.
-
-The attempt is recorded when the REVISE is sent to the author. It survives
-resume; replaying that reviewer result takes the same path. A later blocking
-round does not reset it or grant another advisory attempt.
-An operator send-back (`reject`) grants one new EXEC advisory attempt;
-`resume --add-rounds`, a gate FAIL repair, the POLISH-Q fix leg and FINISH
-re-reviews do not.
+receives the rows as non-blocking context. Every non-blocking row still open at
+DONE is listed in the run's `backlog.md`; `accept` appends them to the workspace
+`BACKLOG.md` (created with a `## P2` heading when missing), inside the accepted
+commit when `auto_commit` makes one, otherwise in the working tree.
 EXEC still requires a successful configured test, no observed test failure, the reviewer's own run
 evidence, and the same snapshot. Blocking findings retain the normal repair
-loop or round-limit HOLD. The opt-in advisory fix round keeps its own single
-attempt; its eligible advisory re-review exits immediately.
-Blocking means CRITICAL, MAJOR, SECURITY, or a gate's CRITICAL/HIGH (a MINOR or LOW
-security-flagged finding is listed but advisory); such a row still open at the cap is the `PLAN round limit reached`
-/ `EXEC round limit reached` HOLD.
+loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
+round; its eligible advisory re-review exits immediately.
+Blocking means a CRITICAL, MAJOR or SECURITY finding (a gate's CRITICAL/HIGH) whose category is correctness,
+data-loss, security or money and which states how normal use reaches it; category `other` (wording, style, docs
+polish, extra robustness) never blocks. Program rows (test failure, secret scan, independence scan, sensitive paths)
+set their own blocking category. A MINOR or LOW security-flagged finding is listed but advisory. A blocking row
+still open at the cap is the `PLAN round limit reached` / `EXEC round limit reached` HOLD; the EXEC round rules
+(R1-R5: cap 3 before the gate, two fix rounds after a gate FAIL, hard cap 5, a finding still open in two consecutive
+reviews, new blockers in two consecutive reviews after an approval; lifecycle writes use no round) each name
+themselves in a NOTE line at the HOLD.
 Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
@@ -363,10 +360,9 @@ default `both` for `--review-only`, `off` otherwise) runs a fresh author session
 that simplifies the changed code, then one that consolidates the changed tests.
 The explicit test command runs first on the reviewed tree (a red baseline skips
 both) and again after each change. A kept change (`wrote`) replays EXEC review,
-shadow, FINISH and the specialists before DOCS, on its own budget of one
-replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`).
-An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`
-at any round, without consuming or resetting the phase's repair attempt;
+shadow, FINISH and the specialists before DOCS without using an EXEC round
+(round rule R5).
+An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`;
 other non-approvals roll it back (`rolled-back:review`), only the named writer
 when files are disjoint (the other is reviewed again). After a whole-group
 rollback, new open blockers outside every writer's files stay open and go to
@@ -604,8 +600,11 @@ next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
 The gate runs once per work item (WI-GATE1). After a gate FAIL the repair is reviewed by the EXEC reviewer, which
 checks each open FAIL item in full every round and may close it only as fixed; no route gates again, also when an
-earlier version saved `gate_ran` reset after a FAIL. A FAIL that arrives at the EXEC round limit gets one fix and
-review round beyond it; a REVISE in that round HOLDs (`EXEC round limit reached after adversarial gate`).
+earlier version saved `gate_ran` reset after a FAIL. A FAIL gets one automatic fix round and at most one more,
+wherever the EXEC cap stood (round rule R2); a FAIL item still open after them HOLDs and recommends splitting the open
+gate items into a new work item. In a review of a FAIL fix (a FAIL item open when it started) only the open FAIL items
+and blocking regressions introduced by the fix (the reviewer starts their reachability with `regression:`) keep it from
+passing; other new findings go to the BACKLOG. Later FINISH and writer re-reviews use the ordinary threshold.
 A gate answer that is not a verdict (a reply that is not JSON, a FAIL item without its basis, evidence, smallest change
 or proof, an unmet criterion without its own item, or missing evidence claims) is dispatched once more, one retry for
 all of these, then HOLDs (`malformed gate verdict`); resume starts a new attempt of the same bound and keeps the earlier

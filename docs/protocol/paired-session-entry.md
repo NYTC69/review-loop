@@ -111,8 +111,8 @@ explicit `--test-command` or profile `test_command`), `small` (under 20 changed
 code lines), `no-test-file`, `budget` (no invocation room for one replay) or
 `no-green-baseline` (the test command fails before any writer). A kept change
 (`wrote`) passed the test command and is reviewed again (EXEC reviewer, shadow,
-FINISH, specialists; the gate runs once per work item) before DOCS, on its own round budget (one replay round
-and one fix round, outside `--max-exec-rounds`); otherwise the change is rolled
+FINISH, specialists; the gate runs once per work item) before DOCS, without using an EXEC round (round rule R5);
+otherwise the change is rolled
 back: `rolled-back:tests` (the command failed, or the test writer lowered the
 number of test cases), `rolled-back:boundary` (a reserved docs path or
 `.review-loop/` config), `rolled-back:review` (a non-approval other than an eligible advisory-only replay REVISE,

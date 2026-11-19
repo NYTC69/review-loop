@@ -114,7 +114,7 @@ Create `.review-loop/config.md` in your project to customize:
 |-----|---------|-------------|
 | `entry` | absent (paired-session) | `paired-session` (`legacy` is refused since v2.13.0); routes every `/review-loop` (Claude) or review-loop skill (Codex) request, review-pr and code-quality-loop (see Entry above) |
 | `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (a hard cap that HOLDs blocking reviews) |
-| `soft_limit_exec` | unset → 4 | Becomes `--max-exec-rounds` (a hard cap that HOLDs blocking reviews) |
+| `soft_limit_exec` | unset → 3 | Becomes `--max-exec-rounds` (a hard cap that HOLDs blocking reviews) |
 | `docs_file` | `CHANGELOG.md` | Becomes `--docs-file`; `""` to skip |
 | `skip_quality_polish` | false | Becomes `--skip-quality-polish` |
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |

@@ -29,7 +29,7 @@
 # soft_limit_plan: 3            # --max-plan-rounds; a blocking review at the cap HOLDs and `resume --add-rounds N`
                                 # continues it; an eligible advisory-only review at the cap is approved with its rows
                                 # left open as advisory
-# soft_limit_exec: 4            # --max-exec-rounds
+# soft_limit_exec: 3            # --max-exec-rounds
 # auto_commit: false            # review-only runs (/review-loop on existing code, code-quality-loop): false keeps the
                                 # accepted change uncommitted (with lifecycle on: normally one local commit at accept, never a push);
                                 # lifecycle off stops after the gate; acceptance returns the uncommitted tree;

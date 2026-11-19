@@ -217,7 +217,7 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 
 In PLAN a blocking finding goes back to the author for the next plan round. From EXEC on, a blocking finding of the
 reviewer, the shadow or the gate goes back to the author; FINISH fixes what blocks delivery in its own session; a
-FINISH or POLISH-Q fix opens a new EXEC round for the reviewer only. The gate runs once per work item: it answers PASS
+FINISH or POLISH-Q fix is reviewed again by the reviewer only, without using an EXEC round. The gate runs once per work item: it answers PASS
 or FAIL, each FAIL item names an unmet acceptance criterion or a blocking-class defect (correctness, data loss, security,
 money) with evidence, the smallest change and its proof, and every later EXEC review checks the open items until they are
 fixed. A DOCS write outside the docs is rolled back, and a DOCS-review REVISE goes back to the docs writer. SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
@@ -385,7 +385,7 @@ uses the author's vendor, and the test command is the one the skill confirms wit
 |-----|---------|-------------|
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
 | `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; blocking reviews at the cap HOLD and `resume --add-rounds N` continues them |
-| `soft_limit_exec` | `4` | `--max-exec-rounds`: the same for EXEC |
+| `soft_limit_exec` | `3` | `--max-exec-rounds`: the same for EXEC (the review rounds before the gate) |
 | `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept` with lifecycle on, never a push; lifecycle off returns the uncommitted tree; both honour an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` / `withdraw-findings` are never run |
@@ -482,12 +482,17 @@ key-named-literal rules apply only to lines the run adds and to a review-pr post
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory under `<repo>/.review-loop/runs/<UUID>/` (gitignored); legacy `.review-loop/sessions/` files are left on disk and never read.
 
-**Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 4 unless set) end in a HOLD;
-`resume --add-rounds N` continues the same run (L100). An eligible advisory-only PLAN/EXEC REVISE
-gets one repair attempt per phase, then exits with open rows recorded as advisory; at the cap it
-exits without requiring an attempt. In a quality-writer replay it exits at any round and the writer
-change is kept. EXEC requires
-a successful configured test, own run evidence and the same reviewed tree. See
+**Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 3 unless set) end in a HOLD;
+`resume --add-rounds N` continues the same run (L100). EXEC rounds count author turns the reviewer
+reviews: FINISH, POLISH-Q, DOCS and SECURITY writes, writer replays and failed turns use none. After a
+gate FAIL the author gets one fix round and at most one more, then the run HOLDs and recommends
+splitting the open gate items into a new work item; 5 rounds in total is a hard cap. The run also
+HOLDs when the same blocking finding stays open in two consecutive reviews, or when two reviews in a
+row after an approval each bring new blocking findings. Each such HOLD prints the round rule that
+stopped it. Only correctness, data-loss, security and money findings with a reachability statement
+block; a REVISE that leaves only non-blocking rows open is `APPROVE_WITH_ADVISORY` in any round (EXEC
+still requires a successful configured test, own run evidence and the same reviewed tree), and the
+rows go to the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md`. See
 [the advisory rules](paired_session/README.md#minor-only-review-revisions).
 
 **Quality Polish (POLISH-Q)** — With lifecycle on, after the gate and FINISH, read-only specialists review the change: the language
