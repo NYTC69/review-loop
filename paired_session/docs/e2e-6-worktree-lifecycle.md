@@ -28,7 +28,7 @@ Stage receipts reuse the `lifecycle_spine.begin/complete` bookkeeping, with `can
 transitions are owned by the W router, not by `lifecycle_spine.advance()`: `advance()` restarts EXEC on
 any digest change and maps DOCS/SECURITY to the fake `STOP_BEFORE_*` stages, which fits neither the
 allowlisted DOCS write nor the W stage order. A code-invalidating write starts a new EXEC convergence
-(normal reviewer, `gate_ran=False`, gate again); an allowlisted DOCS write that is disjoint from the
+(normal reviewer; WI-GATE1: the gate runs once per work item and is not run again); an allowlisted DOCS write that is disjoint from the
 EXEC-reviewed change set advances to SECURITY on its new digest after the docs review and retest. Any
 change to `lifecycle_spine.py` itself needs separate authorization, because the fake candidate-tree route
 depends on it.
@@ -50,14 +50,14 @@ depends on it.
   `start_polish_or_done` advisory round. Legacy `--polish-round on|off` is deprecated (removed in 3.0.0; ignored); open advisory
   findings feed POLISH-Q. Implemented deviation (W2a-2): the fix leg reuses the persistent EXEC author turn
   with the open specialist blockers as its delivered review; the owning specialists then re-review on the
-  new tree (only an owner closes its finding), and the write replays EXEC review and gate, then FINISH and
+  new tree (only an owner closes its finding), and the write replays EXEC review, then FINISH and
   POLISH-Q in the next epoch. A blocker left after the re-review HOLDs; resume runs another fix round, and
   a fix that leaves the tree unchanged since the last review HOLDs. Specialist counts are per epoch
   (legacy 3.5.2 caps one Step 3.5 run): 4 per specialist with room for two dispatches, so an owner gets
   its review plus up to two re-reviews per epoch, checked before the author writes. POLISH-Q stays capped
   at 32 calls per run, and every fix is an EXEC author round under the EXEC round limit.
 - Adopted (W2a-2): blocking findings still open at EXEC convergence start an EXEC repair round (author,
-  reviewer, a new gate) up to the EXEC round limit, which HOLDs with the RLO-capable round-limit reason.
+  reviewer; no second gate) up to the EXEC round limit, which HOLDs with the RLO-capable round-limit reason.
 - Replaced: candidate materialization and OS separation (docs 2a–4) by the live worktree; the same-vendor
   rejection by ADR-11 D-8; Compass CLOSE by no close (ADR-11 D-3).
 
@@ -79,15 +79,15 @@ with a `docs_policy.PROTECTED_PARTS` name at any depth (case-insensitive; this a
 `.netrc`, `.pypirc`, `.gitmodules`, `.mailmap`, `.compass`, `Makefile` and `Dockerfile`),
 `.claude-plugin`/`.codex-plugin`, `plugin.json`, `marketplace.json`, `docs/protocol/**`, and every symlink
 write. Other config and build files (`package.json`, `pyproject.toml`, lockfiles, `.github/**`) are not in
-the set: like code, a DOCS write to them replays EXEC review and gate.
+the set: like code, a DOCS write to them is rolled back to the pre-DOCS tree (WI-GATE1; HOLD only when the rollback fails).
 
 **DOCS review (W2b-2).** When the writer changed only allowlisted paths, or DOCS owns entries from an
 earlier replay (`docs_owned`), a fresh docs reviewer (reviewer role, EXEC reviewer protocol) reviews the
 full diff and must run the configured test command. A missing observed test, a HOLD or a REVISE without
 findings HOLDs before the DOCS receipt, so resume reuses the recorded writer and reviews again. A blocking
-finding (the ledger rule: CRITICAL/MAJOR/SECURITY; since v3.8.1 a security flag does not raise MINOR/LOW) routes to an EXEC replay: the findings (source
-`docs-reviewer`, no owner) go to the persistent EXEC reviewer, whose author may fix them in DOCS-owned
-entries, then a new gate, FINISH, POLISH-Q and DOCS. A REVISE with only MINOR findings is advisory, and
+finding (the ledger rule: CRITICAL/MAJOR/SECURITY; since v3.8.1 a security flag does not raise MINOR/LOW) goes back
+to a new docs writer attempt with the findings (source `docs-reviewer`, no owner) in its prompt, then a fresh docs
+review; EXEC is not reopened (WI-GATE1). A REVISE with only MINOR findings is advisory, and
 APPROVE advances to SECURITY, unless any blocking finding is still open. `BUDGET_CAPS['DOCS']` (7) bounds
 the DOCS writer and review dispatches per run (a protocol retry may add one). A
 no-op DOCS writer without owned entries advances without a docs review (legacy 3.6 reviews only writes).
@@ -128,7 +128,7 @@ is known at start: creating a W state runs `security_preflight.py --ignore-cover
 `ignore_coverage` rules), records `lifecycle.ignore_coverage_at_start` and prints a WARNING naming the
 missing categories; the run proceeds (a warning, not a gate, in both modes). Operator recovery from the HOLD
 (verified on the fake): add the patterns to the tracked `.gitignore` in the worktree, **neither committed
-nor staged**, and resume. The tree change replays EXEC review and gate (one EXEC round), then FINISH,
+nor staged**, and resume. The tree change replays EXEC review (one EXEC round), then FINISH,
 POLISH-Q, DOCS, SECURITY, within the EXEC round limit and the invocation budget, and the edit ships with the
 delivery. A committed fix moves HEAD and HOLDs: restore HEAD to the run's lifecycle parent keeping the edit
 (`git reset -q <parent>`, i.e. `HEAD~1` when that commit is the only one added). A staged fix passes

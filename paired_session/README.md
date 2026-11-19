@@ -68,7 +68,7 @@ The attempt is recorded when the REVISE is sent to the author. It survives
 resume; replaying that reviewer result takes the same path. A later blocking
 round does not reset it or grant another advisory attempt.
 An operator send-back (`reject`) grants one new EXEC advisory attempt;
-`resume --add-rounds`, gate repair, the POLISH-Q fix leg and DOCS/FINISH
+`resume --add-rounds`, a gate FAIL repair, the POLISH-Q fix leg and FINISH
 re-reviews do not.
 EXEC still requires a successful configured test, no observed test failure, the reviewer's own run
 evidence, and the same snapshot. Blocking findings retain the normal repair
@@ -294,12 +294,13 @@ outside-workspace or wildcard doc paths are refused. The real lifecycle is the
 worktree lifecycle of `docs/e2e-6-worktree-lifecycle.md` (D12, ADR-11):
 `lifecycle_mode=on` from the command line or an
 operator `--config` starts a worktree-lifecycle run that runs PLAN and EXEC and
-then runs FINISH (a fresh author turn; a change reopens EXEC review and gate)
+then runs FINISH (a fresh author turn; a change reopens EXEC review)
 and POLISH-Q (fresh report-only specialists, legacy Step 3.5; their blockers
 go to an author fix that the owning specialist re-reviews before EXEC review
-and gate run again) and DOCS (a fresh docs writer; a protected path HOLDs, a
-write outside the docs allowlist reopens EXEC review and gate, an allowlisted
-write gets a fresh docs review that must run the test) and the SECURITY scans
+runs again) and DOCS (a fresh docs writer; a protected path HOLDs, a
+write outside the docs allowlist is rolled back to the pre-DOCS tree, an allowlisted
+write gets a fresh docs review that must run the test, and its REVISE goes back to
+the docs writer) and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
 security reviewer, then reaches DONE (acceptance pending).
 SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
@@ -361,11 +362,11 @@ default `both` for `--review-only`, `off` otherwise) runs a fresh author session
 that simplifies the changed code, then one that consolidates the changed tests.
 The explicit test command runs first on the reviewed tree (a red baseline skips
 both) and again after each change. A kept change (`wrote`) replays EXEC review,
-shadow, gate, FINISH and the specialists before DOCS, on its own budget of one
+shadow, FINISH and the specialists before DOCS, on its own budget of one
 replay round and one fix round (outside `--max-exec-rounds`; `writer_replay_rounds`).
 An eligible advisory-only replay REVISE keeps the change as `APPROVE_WITH_ADVISORY`
 at any round, without consuming or resetting the phase's repair attempt;
-other non-approvals or a failing gate roll it back (`rolled-back:review`), only the named writer
+other non-approvals roll it back (`rolled-back:review`), only the named writer
 when files are disjoint (the other is reviewed again). After a whole-group
 rollback, new open blockers outside every writer's files stay open and go to
 EXEC repair with the usual round-limit HOLD, before the normal chain runs again;
@@ -381,7 +382,7 @@ outcome in the delivery report.
 Advisory fix round (ADVFIX, owner 2026-10-06): `--advisory-fix-round true` (default false, frozen; refused
 with `--review-report`) gives the author one fix round, at the first clean POLISH-Q exit, for the non-blocking
 findings still open (MINOR, LOW, a gate's MEDIUM/LOW), before the quality writers: fix what is reasonable,
-dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again. Once per
+dismiss the rest with a reason; then EXEC review, shadow, FINISH and the specialists run again. Once per
 run, on its own round outside `--max-exec-rounds`; without invocation headroom it is skipped with the reason.
 Findings still open afterwards stay advisory. The delivery report says ran (N of M addressed), skipped or off.
 
@@ -600,8 +601,10 @@ continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
 next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
 that change's pending review. This also covers writer rollback HOLDs.
-A tree the gate blocked is gated again after its repair, on every route, before DONE, also when an earlier version
-saved the gate's round-limit HOLD or held the repair for another reason (a rate limit, the invocation cap).
+The gate runs once per work item (WI-GATE1). After a gate FAIL the repair is reviewed by the EXEC reviewer, which
+checks each open FAIL item in full every round and may close it only as fixed; no route gates again, also when an
+earlier version saved `gate_ran` reset after a FAIL. A FAIL that arrives at the EXEC round limit gets one fix and
+review round beyond it; a REVISE in that round HOLDs (`EXEC round limit reached after adversarial gate`).
 At a round-limit HOLD produced by a write (FINISH, DOCS, a SECURITY-stage change,
 or a writer rollback), the round is already used; a plain `resume` keeps the HOLD
 and `resume --add-rounds N` continues with the pending review.
@@ -614,8 +617,8 @@ prints `REPORT: <path>`. A local commit prints `COMMIT: ...; not pushed`; a
 review-only acceptance leaving changes uncommitted prints `UNCOMMITTED: ...`. Use `accept` to
 record acceptance and move it to terminal `ACCEPTED`; repeating `accept` is a
 no-op. Use `reject --text` or `reject --file` on a `DONE` run to send in-scope
-feedback to one more EXEC author turn. That turn goes through the configured
-review again and forces a gate review. Rejections are saved and limited to two
+feedback to one more EXEC author turn. That turn goes through the EXEC review
+again (no second gate); every later EXEC review round receives every rejection note. Rejections are saved and limited to two
 by default; exhausting the limit puts the run on `HOLD`. At a rejected-tree
 rejection-limit HOLD, use `note` and `resume` for a new author ingest,
 `reject --scope-change` for a successor, or `abort`; plain resume cannot accept
@@ -635,8 +638,8 @@ the fix", "POLISH-Q fix left the tree unchanged" or "POLISH-Q specialist budget
 exhausted". Unknown or closed ids, an empty reason, CRITICAL/MAJOR/SECURITY
 security-tagged or security-reviewer rows, specialist-owned rows (except at a POLISH-Q
 fix HOLD), gate CRITICAL/HIGH rows and `secret-scan` rows are refused. At a POLISH-Q
-fix HOLD, withdrawing the last blocking rows sets the run to replay the EXEC review and
-gate, then FINISH and POLISH-Q (only the paths changed since the last completed
+fix HOLD, withdrawing the last blocking rows sets the run to replay the EXEC review,
+then FINISH and POLISH-Q (only the paths changed since the last completed
 specialist pass; none when the tree is the one that pass reviewed); the run stays HOLD
 until `resume`. A pass the budget stopped mid-way is dropped. Specialists do not see
 operator rulings, so a withdrawn point can come back once from a later pass over changed
@@ -668,7 +671,7 @@ Before accepting or rejecting, request an operator intent for the exact action.
 It prints the digest and bound run/item, worktree, DONE-approved snapshot, HEAD,
 index, state and rejection text hashes; accept refuses a changed approved tree,
 and the mutation rechecks the intent under both leases. `resume --polish` was
-removed in 3.0.0; the option remains parsed only to refuse it. Lifecycle gate replay
+removed in 3.0.0; the option remains parsed only to refuse it. Lifecycle EXEC review replay
 after writes remains in place.
 
 ```sh
@@ -698,8 +701,7 @@ records that tree's digest. An unchanged author answer enters `HOLD rejected-tre
 before review. Status includes the author's rationale, truncated to 2,000 characters,
 and a pointer to that author receipt. The operator may add `note` guidance, change
 the workspace and resume a new author ingest, or start a scope-change successor.
-After the rejection limit, such an author ingest is reviewed and gated again before DONE, on every route, also for a
-rejection-limit HOLD that an earlier version saved.
+After the rejection limit, such an author ingest is reviewed again before DONE, on every route (the gate ran once).
 Ordinary accept/reject require `--expect`; acceptance requires DONE.
 Retry-uncertain with no receipt follows plain resume; a fresh author ingest is required for rejected trees.
 

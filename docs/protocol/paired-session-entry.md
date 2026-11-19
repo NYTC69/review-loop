@@ -111,12 +111,12 @@ explicit `--test-command` or profile `test_command`), `small` (under 20 changed
 code lines), `no-test-file`, `budget` (no invocation room for one replay) or
 `no-green-baseline` (the test command fails before any writer). A kept change
 (`wrote`) passed the test command and is reviewed again (EXEC reviewer, shadow,
-gate, FINISH, specialists) before DOCS, on its own round budget (one replay round
+FINISH, specialists; the gate runs once per work item) before DOCS, on its own round budget (one replay round
 and one fix round, outside `--max-exec-rounds`); otherwise the change is rolled
 back: `rolled-back:tests` (the command failed, or the test writer lowered the
 number of test cases), `rolled-back:boundary` (a reserved docs path or
 `.review-loop/` config), `rolled-back:review` (a non-approval other than an eligible advisory-only replay REVISE,
-or a failing gate; only the named writer is rolled back when files are disjoint, and the other is reviewed again),
+only the named writer is rolled back when files are disjoint, and the other is reviewed again),
 `rolled-back:hold`, or `exhausted` (a failed attempt). Report each writer's
 outcome with the stage receipts. After a whole-group review rollback, new blockers outside every writer's changed
 files stay open for EXEC repair with the usual round-limit HOLD; writer-file blockers and advisory rows are
@@ -210,7 +210,7 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   `review_style` reach the review roles through the run flags of Profile and settings, not the work item.
 - Non-blocking fix round: pass `--advisory-fix-round true` in both blocks (owner decision "加一轮修非阻塞"). After the first clean
   POLISH-Q the author gets one round for the open non-blocking findings (MINOR, LOW, a gate's MEDIUM/LOW): fix what is
-  reasonable, dismiss the rest with a reason; then EXEC review, shadow, gate, FINISH and the specialists run again, before
+  reasonable, dismiss the rest with a reason; then EXEC review, shadow, FINISH and the specialists run again, before
   the quality writers. It runs once, on its own round outside `--max-exec-rounds`, and is skipped with the reason when the
   invocation budget has no room; findings still open stay advisory.
 - Result: DONE (or HOLD) as for any review-only run; report each quality writer's outcome and the fix
@@ -343,7 +343,7 @@ A run start that prints `WARNING: the tracked .gitignore does not cover ...`
 will HOLD at SECURITY (`security preflight review-required`). Tell the user
 then: committing a covering `.gitignore` before the run avoids it. At that
 HOLD, the user adds the patterns to `.gitignore` in the worktree, neither
-committed nor staged, and resumes (EXEC review and gate replay; the edit ships
+committed nor staged, and resumes (EXEC review replay; the edit ships
 with the delivery). A commit moves HEAD and HOLDs: restore HEAD to the run's
 parent keeping the edit. A `.gitignore` already modified at the start does not
 count as the run's own coverage: restore it to HEAD if HEAD's version covers

@@ -1,5 +1,20 @@
 # Changelog
 
+### Unreleased（WI-GATE1 草稿）：门审每个 work item 只跑一次，并有固定的答案格式
+
+Yuan 的定义：门审是没有历史的严格对抗性检查，对照工作目标和改动给出符合或不符合；不符合时写明理由和修法，交给执行方修改，再由 reviewer 复审，确认门审意见都修了，这一轮 approve 就通过。之后不再门审，但 reviewer 每一轮都带上门审要求修改的意见。
+
+**改动**
+- 门审每个 work item 只跑一次：去掉所有 `gate_ran=False` 重置，`force_gate_after_reject` 退役。门审之后的生命周期改动（FINISH、POLISH-Q、SECURITY、writer 重放、ADVFIX）只交 reviewer（开了 shadow 时加 shadow）复审。post-DONE 的 reject 走作者 → reviewer，不再门审；reject 说明在之后每一轮 review 里都带上。report 模式同样只门审一次。
+- 门审的 FAIL 项持久保存在 `gate_fail_items`；之后每一轮 EXEC reviewer 提示都列出未关闭的项（"Mandatory gate checks"），只能以 `fixed` 关闭，`withdrawn` 会被拒绝、项保持打开。RF-5 照旧。
+- 门审 FAIL 正好落在 EXEC 轮数上限时，固定多给一轮修复 + 复审；这一轮 reviewer 仍不能 approve 就 HOLD「EXEC round limit reached after adversarial gate」，不会再自动加轮。
+- 过期检查只绑定 reviewer 审过的树。FIELD-31、FIELD-11 的 fresh 条件改为：开了 shadow，或门审还没跑过。
+- DOCS 不再重开 EXEC：写到 docs 白名单之外的改动直接回滚并记录（回滚失败才 HOLD）；docs 审查 REVISE 交回 DOCS writer 修改。
+- 门审答案新格式 `gate_schema`：verdict PASS/FAIL、`criteria`（逐条验收标准，met + 证据）、`fail_items`（basis、criterion、blocking_class、evidence、smallest_change、proof）。FAIL 没有项、项缺字段、PASS 但有未满足的标准、PASS 却带项，都算格式错误：重新派一次全新的门审，仍错误就 HOLD「malformed gate verdict」。门审提示重写；lint needle `gate_fallback_prompt_blocking_rubric`、`gate_fallback_prompt_inline_labels` 换成 `gate_fallback_prompt_fail_basis`、`gate_fallback_prompt_fail_item_fields`。
+- 旧 run resume：已经有门审回合、`gate_ran` 仍为 False 的旧状态不会再门审；旧格式的门审阻塞行转成 `gate_fail_items`（basis `legacy`）。
+
+**按意图更新的测试断言**（原来钉的是重新门审或旧的门审答案格式）：`test_block_class`（单次门审阻塞只计一次）；`test_advfix`（ADVFIX 复审不再门审）；`test_d09_c1b2`（保留写入的重放不门审，原"重放门审回滚"测试改为 `test_a_replay_is_never_gated_so_a_gate_cannot_roll_it_back`）；`test_gemini_vendor`、`test_v325_cfg`、`test_v317ct`（门审 verdict 改为 PASS）；`test_review_report_transitions`（FAIL）；`test_l100`（W 门审 HOLD 改为额外一轮 REVISE → HOLD，之后不再门审；polish 修复后无门审）；`test_operator_verification`（docs 发现由 DOCS writer 修，白名单外写入回滚并记录）；`test_v316`、`test_v317_once`、`test_v317b`（非阻塞行改由 reviewer MINOR 产生，门审不再报非阻塞项；send-back 后无门审）；`test_v317fa`（报告显示门审 FAIL 项）；`test_v317p`（新门审提示句子）；`test_v317`（保留写入后无门审）；`test_v317fc`（stage 上限后无门审；DOCS 上限测试改为白名单外写入回滚、不占 EXEC 轮）；`test_v318cap`（基线去掉旧版门审的 `CLASS_LABEL_GUIDANCE`）；`test_v317wr`（writer 重放不门审：门审来源的回滚测试改为"重放不门审"，轮数上限和 resume 测试改用 reviewer 来源）；`test_real_coordinator`（reject 后作者 → reviewer 不再门审；operator note 不再强制门审；门审不再产生非阻塞行；生命周期门审阻塞修复后不再门审；格式错误的门审答案重派一次后 HOLD）；`test_worktree_lifecycle`（FINISH 写入、specialist 修复、reject、旧状态重放之后都不再门审；过期检查之后 `gate_ran` 保持 True；docs 审查 REVISE 交回 DOCS writer、不占 EXEC 轮，在 EXEC 轮数上限也不用加轮；DOCS writer 写到白名单外的代码、受保护路径或删除文件时回滚并记录，不再重开 EXEC 或 HOLD）；`test_v319hold`（拒绝上限后操作员改动、上一版本保存的门审轮数上限 / 调用上限 HOLD、门审拒绝后的修复，都只由 reviewer 复审、不再门审；门审 FAIL 落在轮数上限时多给一轮，不再 HOLD）。fake 的 `FAKE_DOCS_FIX_FAILS_ONCE` 改为作用在 DOCS writer 上。
+
 ### v3.8.6：plan 里由 work item 用词组成的斜杠列表不再被当成路径
 
 现场问题（gg-pipeline WI-413，v3.8.5）：EXEC r5 APPROVE 后，gate 因「gate independence check rejected history in context/plan.md: Opus」HOLD。plan 第 98 行是 "`…/firstread_1113` (terra/Opus/sol roles)"，terra 和 sol 是这个项目的 reader 名字。FIELD-34 只放行两个普通词之间一个斜杠（`Claude/Codex`），以及全是模型名的长链（`Claude/Codex/Opus`），所以三段链 `terra/Opus/sol` 被当成路径，裸名 Opus 不算正文。已经批准的 plan 改不了，run 只能停在 gate 前。

@@ -206,7 +206,7 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 │
 ├── PLAN       the author drafts a plan → an independent reviewer reviews it → revise until approved
 ├── EXEC       the author implements → the reviewer and a fresh shadow reviewer review → fix until approved
-├── GATE       a fresh adversarial gate checks the approved change
+├── GATE       a fresh adversarial gate checks the approved change once against the acceptance criteria
 ├── FINISH     a fresh finisher runs the tests and fixes only what blocks delivery inside the plan
 ├── POLISH-Q   read-only specialists: language reviewers by file type, code-reviewer, silent-failure-hunter,
 │              pr-test-analyzer (plus the simplifier and test consolidation when the quality writers are on)
@@ -217,14 +217,16 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 
 In PLAN a blocking finding goes back to the author for the next plan round. From EXEC on, a blocking finding of the
 reviewer, the shadow or the gate goes back to the author; FINISH fixes what blocks delivery in its own session; a
-FINISH or POLISH-Q fix, a DOCS write outside the docs or a DOCS-review REVISE opens a new EXEC round (the reviewer
-first, then the gate). SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
+FINISH or POLISH-Q fix opens a new EXEC round for the reviewer only. The gate runs once per work item: it answers PASS
+or FAIL, each FAIL item names an unmet acceptance criterion or a blocking-class defect (correctness, data loss, security,
+money) with evidence, the smallest change and its proof, and every later EXEC review checks the open items until they are
+fixed. A DOCS write outside the docs is rolled back, and a DOCS-review REVISE goes back to the docs writer. SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
 additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
 256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
 committed and left unchanged are printed once as a NOTE and recorded in the SECURITY receipt; a path the run removed
 and that is still in the index is also named in a NOTE. Such a file over 8 MiB is not content-scanned and is named in the NOTE.
 A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
-A SECURITY HOLD is never repaired by the run: fix it outside the run and resume (the EXEC review and the gate run again).
+A SECURITY HOLD is never repaired by the run: fix it outside the run and resume (the EXEC review runs again).
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
 shadow, the gate and the stage reviewers start fresh each time. Default roles: Codex is the author
@@ -495,7 +497,7 @@ writers (a fresh simplifier, then test consolidation) are on by default for revi
 code-quality-loop, and off on the main pipeline (turn them on with the operator setting `quality_writers` or
 `--quality-writers both`, about +10 invocations); a writer's change is kept only when the tests pass and the reviews
 approve it again, including an eligible advisory-only replay REVISE accepted as `APPROVE_WITH_ADVISORY`.
-Other replay non-approvals or a failing gate roll it back with the reason. After a whole-group rollback,
+Other replay non-approvals roll it back with the reason. After a whole-group rollback,
 new blockers outside every writer's changed files stay open for EXEC repair with the usual round-limit HOLD;
 writer-file blockers and advisory rows are withdrawn, and operator-withdrawn rows stay withdrawn. The advisory fix round (`advisory_fix_round`,
 `--advisory-fix-round true`; code-quality-loop turns it on) gives the author one round for the open non-blocking
