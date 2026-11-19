@@ -1,5 +1,14 @@
 # Changelog
 
+### v3.8.6：plan 里由 work item 用词组成的斜杠列表不再被当成路径
+
+现场问题（gg-pipeline WI-413，v3.8.5）：EXEC r5 APPROVE 后，gate 因「gate independence check rejected history in context/plan.md: Opus」HOLD。plan 第 98 行是 "`…/firstread_1113` (terra/Opus/sol roles)"，terra 和 sol 是这个项目的 reader 名字。FIELD-34 只放行两个普通词之间一个斜杠（`Claude/Codex`），以及全是模型名的长链（`Claude/Codex/Opus`），所以三段链 `terra/Opus/sol` 被当成路径，裸名 Opus 不算正文。已经批准的 plan 改不了，run 只能停在 gate 前。
+
+**改动**
+- plan 里三段及以上的斜杠链，如果每一段要么是模型名，要么是冻结 work item 里单独出现过的词（至少三个字母），按正文处理。
+- 照旧拦：`readers/opus/cache`、`a/codex/b`（"a"、"b" 太短，不算 work item 用词）、链后面接署名动词（`terra/Opus/sol approved`）、链后面还有路径段（`terra/opus/sol/cache`，其中 cache 不是 work item 用词）、`.codex/`。
+- 没有新增配置键，没有改 `agents/*.md`，冻结的角色清单不变，正在跑的 run 直接 resume，gate 会重新检查输入。
+
 ### v3.8.5：独立性扫描不再把"关于工具本身"的改动当成审查历史
 
 现场问题（gg-pipeline WI-413，把 sol reader 切到固定版本的 codex-cli 0.166.0）：每一轮 EXEC 都被独立性扫描加一条 MAJOR「the change writes review history into the code」，reviewer 原本 APPROVE 也变成 REVISE；到最后一轮会变成 gate 输入检查 HOLD，withdraw 也撤不掉。列出的 189 处几乎都是 `"provider":"codex"` 这类无辜的行。

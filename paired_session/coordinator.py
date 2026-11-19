@@ -5460,6 +5460,18 @@ class Coordinator:
         model = r'(?i:claude|codex|opus|astra|gpt[\w.-]*|sonnet|haiku)'
         pairs = [match.span() for pattern in (r'[A-Za-z][\w-]*/[A-Za-z][\w-]*', model + r'(?:/' + model + r')+')
                  for match in re.finditer(r'(?<![\w/.-])' + pattern + r'(?![\w/-]|\.\w)', text)]
+        # V386-CHAIN (gg-pipeline WI-413): a longer chain is prose too when every part is a model name or a word the frozen
+        # work item uses on its own ("terra/Opus/sol roles" for a work item about the terra and sol readers);
+        # readers/opus/cache stays a path because the work item does not use "readers" and "cache" as words, and a part shorter
+        # than three letters ("a/codex/b") never counts as a work-item word
+        try:
+            workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
+        except OSError:
+            workitem_text = ''
+        def named(part):
+            return bool(re.fullmatch(model, part) or len(part) >= 3 and re.search(r'(?<![\w-])' + re.escape(part) + r'(?![\w-])', workitem_text, re.I))
+        pairs += [match.span() for match in re.finditer(r'(?<![\w/.-])[A-Za-z][\w-]*(?:/[A-Za-z][\w-]*){2,}(?![\w/-]|\.\w)', text)
+                  if all(named(part) for part in match.group(0).split('/'))]
         return all((prose.match(text, use.start()) or any(a <= use.start() < b for a, b in pairs))
                    and not attribution.match(text, use.start()) for use in re.finditer(r'\b' + word + r'\b', text, re.I))
 

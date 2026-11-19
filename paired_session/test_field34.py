@@ -33,6 +33,22 @@ class SlashPairTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, f'gate independence check rejected history in context/plan.md: {marker}'):
                     co.assert_fresh_prompt('gate', 'Review the delta.')
 
+    def test_a_chain_of_work_item_reader_names_is_prose(self):   # V386-CHAIN (gg-pipeline WI-413, v3.8.5)
+        use_lifecycle_on(self, self.h)
+        line = 'Runs: `~/x/firstread_1113` (terra/Opus/sol roles) and the cache.'
+        co = self.plan(f'# Plan\n1. {line}\n')
+        with self.assertRaisesRegex(RuntimeError, 'gate independence check rejected history in context/plan.md: Opus'):
+            co.assert_fresh_prompt('gate', 'Review the delta.')   # terra and sol are not words of this work item
+        (co.context / 'workitem.md').write_text('# Readers\nMove the sol reader; terra stays a voter. Read a file.\n')
+        for role in ('shadow', 'gate'):
+            co.assert_fresh_prompt(role, 'Review the delta.')
+        for text in ('Read a/codex/b first.', 'Read readers/opus/cache first.', 'terra/Opus/sol approved the split.',
+                     'Read terra/opus/sol/cache first.'):
+            with self.subTest(text=text):
+                (co.context / 'plan.md').write_text(f'# Plan\n1. {text}\n')
+                with self.assertRaisesRegex(RuntimeError, 'gate independence check rejected history in context/plan.md'):
+                    co.assert_fresh_prompt('gate', 'Review the delta.')
+
 
 if __name__ == '__main__':
     unittest.main()
