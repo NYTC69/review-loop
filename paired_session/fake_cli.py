@@ -735,13 +735,17 @@ def main():
             gate_ids = {line[2:].split(' ', 1)[0] for line in prompt.splitlines() if line.endswith('(gate FAIL item):')}
             prior = [{**row, 'disposition': 'withdrawn', 'evidence': 'fake: not a real defect'} if row['id'] in gate_ids else row
                      for row in prior]
-        shadow_if = os.environ.get('FAKE_SHADOW_BLOCKER_IF_FILE')   # S3 R2 F2: one shadow blocker once the file exists
-        if (shadow_if and role == 'shadow' and phase == 'EXEC' and Path(shadow_if).exists()
-                and not Path(shadow_if + '.shadow').exists()):
-            Path(shadow_if + '.shadow').write_text('raised\n')
-            revise = True
-            findings = [{'severity': 'MAJOR', 'file': 'sum_ints.py', 'category': 'correctness', 'reachability': 'every caller',
-                         'summary': 'shadow regression', 'failure_scenario': 'a caller gets the wrong result'}]
+        shadow_if = os.environ.get('FAKE_SHADOW_BLOCKER_IF_FILE')
+        if shadow_if and role == 'shadow' and phase == 'EXEC' and Path(shadow_if).exists():
+            marker = Path(shadow_if + '.shadow')
+            raised = int(marker.read_text()) if marker.exists() else 0
+            repeats = int(os.environ.get('FAKE_SHADOW_BLOCKER_REPEATS', '1'))
+            if raised < repeats:
+                marker.write_text(str(raised + 1))
+                revise = True
+                findings = [{'severity': 'MAJOR', 'file': 'sum_ints.py', 'category': 'correctness', 'reachability': 'every caller',
+                             'summary': 'shadow regression' + (f' {raised + 1}' if repeats > 1 else ''),
+                             'failure_scenario': 'a caller gets the wrong result'}]
         confirm = os.environ.get('FAKE_CONFIRM_SHADOW')   # S3 R2 F2: how the reviewer disposes a shadow row it is asked to confirm
         if confirm and role == 'reviewer' and phase == 'EXEC':
             asked = {line[2:].split(':', 1)[0] for line in prompt.splitlines()

@@ -2256,7 +2256,7 @@ def verified_claims_error(answer: dict) -> str:
     return ''
 
 
-def review_schema(statuses=('REVISE', 'APPROVE', 'HOLD'), verified=True) -> dict:
+def review_schema(statuses=('REVISE', 'APPROVE', 'HOLD'), verified=True, confirm_shadow=False) -> dict:
     finding = {'type': 'object', 'properties': {
         'severity': {'type': 'string', 'enum': sorted(ADVISORY_REVIEW_SEVERITIES | BLOCKING_REVIEW_SEVERITIES)},
         'file': {'type': 'string'}, 'summary': {'type': 'string'},
@@ -2270,6 +2270,8 @@ def review_schema(statuses=('REVISE', 'APPROVE', 'HOLD'), verified=True) -> dict
         'disposition': {'type': 'string', 'enum': ['fixed', 'still_open', 'withdrawn']},
         'evidence': {'type': 'string'},
     }, 'required': ['id', 'disposition', 'evidence'], 'additionalProperties': False}
+    if confirm_shadow:
+        prior['properties']['disposition']['enum'].append('non_blocking')
     evidence = {'type': 'object', 'properties': {
         'command': {'type': 'string'},
     }, 'required': ['command'], 'additionalProperties': False}
@@ -3798,11 +3800,15 @@ class Coordinator:
             if ('owner_role' in finding and finding['owner_role'] != owner_role and
                     row['disposition'] in ('fixed', 'withdrawn')):
                 raise RuntimeError('finding disposition requires its owning specialist')
-            if finding['id'] not in open_by_id and not any(
+            replayed = any(
                     item.get('round') == origin_round and item.get('status') == row['disposition']
                     and item.get('evidence') == row['evidence']
-                    for item in finding.get('status_history', [])):
+                    for item in finding.get('status_history', []))
+            if finding['id'] not in open_by_id and not replayed:
                 raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
+            if (row['disposition'] == 'non_blocking' and
+                    (owner_role != 'persistent-reviewer' or not (finding.get('needs_confirmation') or replayed))):
+                raise RuntimeError('non_blocking disposition requires a shadow finding to confirm')
         changed = False
         for row in dispositions:
             finding = all_by_id[row['id']]
@@ -3813,8 +3819,11 @@ class Coordinator:
                 continue
             finding['status_history'].append({'round': origin_round, 'status': disposition,
                                               'evidence': row['evidence']})
-            if disposition == 'still_open' and owner_role == 'persistent-reviewer' and finding.pop('needs_confirmation', None):
-                finding['confirmed_regression'] = origin_round   # S3 R2 F2: the reviewer confirmed a shadow row; it blocks now
+            if owner_role == 'persistent-reviewer' and finding.pop('needs_confirmation', None):
+                if disposition == 'still_open':
+                    finding['confirmed_regression'] = origin_round
+                elif disposition == 'non_blocking':
+                    finding['post_gate_nonblocking'] = True
             if disposition in ('fixed', 'withdrawn'):
                 finding['status'] = disposition
                 self._progress_finding(finding)
@@ -4526,9 +4535,10 @@ class Coordinator:
                 if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                     raise ValueError('the tree changed during the accept; restore the approved tree or abort')
                 backlog = self._repo_backlog_plan()   # WI-GATE1 S3 (owner Q1): the rows ride in the accepted commit;
+                backlog_path = Path(backlog['path']).relative_to(self.workspace).as_posix() if backlog else None
                 tree = self._manifest_tree(intent['tree_snapshot'],   # S3 R2 F3: as a blob, the worktree is written after the journal
-                                           {'BACKLOG.md': backlog['text']} if backlog else None)
-                if backlog and self._git(['show', f'{tree}:BACKLOG.md']) != backlog['text']:   # S3 R2 F4: verify before reporting
+                                           {backlog_path: backlog['text']} if backlog else None)
+                if backlog and self._git(['show', f'{tree}:{backlog_path}']) != backlog['text']:
                     raise RuntimeError('auto_commit: the commit tree does not hold the BACKLOG.md rows')
             except ValueError as exc:   # FIELD-25 gate: a defaulted auto_commit delivers uncommitted; an explicit one refuses
                 if self.state['config'].get('auto_commit_source') != 'review-only-default' or 'tree changed' in str(exc):
@@ -5216,12 +5226,16 @@ class Coordinator:
         rows = '\n'.join(f"- {finding['id']}: [source={finding['source']}; severity={finding['severity']}"
                          + ('; security-tagged' if finding.get('security') else '')
                          + (f"; category={finding['category']}" if finding.get('category') else '')   # WI-GATE1 S3
-                         + ('; shadow finding to confirm: still_open if the change since the gate caused it, otherwise withdrawn'
+                         + ('; shadow finding to confirm: still_open for a regression caused by the fix, non_blocking for '
+                            'a valid finding outside the fix, withdrawn if the finding is wrong'
                             if finding.get('needs_confirmation') else
                             '; non-blocking' if not blocks_by_severity(finding) and finding.get('category') else '')
                          + f"] {finding['summary']}" for finding in findings)
+        dispositions = 'fixed, still_open, or withdrawn'
+        if any(finding.get('needs_confirmation') for finding in findings):
+            dispositions = 'fixed, still_open, withdrawn, or non_blocking for a shadow finding to confirm'
         return (notice + 'Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
-                'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n'
+                + dispositions + ', with evidence):\n' + rows + '\n'
                 'Never report a listed finding again as a new one; its disposition above is its report.\n'
                 + LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
 
@@ -7652,10 +7666,12 @@ class Coordinator:
         entries = self.state.get('backlog') or []
         if not entries:
             return None
-        path = self.workspace / 'BACKLOG.md'
+        tracked = self._git_names(['ls-files', '-z', '--', ':(icase,literal)BACKLOG.md'])
+        name = 'BACKLOG.md' if 'BACKLOG.md' in tracked else next(iter(tracked), 'BACKLOG.md')
+        path = self.workspace / name
         problem = ('it is a symbolic link' if path.is_symlink() else
                    'it is not a regular file' if path.exists() and not path.is_file() else
-                   'git ignores it' if self._git(['check-ignore', '--', 'BACKLOG.md'], ok=(0, 1)).strip() else None)
+                   'git ignores it' if self._git(['check-ignore', '--', name], ok=(0, 1)).strip() else None)
         if problem:
             self.state['repo_backlog'] = {'path': str(path), 'rows': 0, 'skipped': problem,
                                           'run_backlog': str(self.run_dir / 'backlog.md')}
@@ -7700,10 +7716,14 @@ class Coordinator:
         """S3 R2 F3: a replayed accept also takes the tree whose only difference from the accepted one is the journaled
         BACKLOG.md text (written after the journal, before the ref moved)."""
         backlog = journal.get('backlog')
-        if not backlog or Path(backlog['path']).is_symlink() or not Path(backlog['path']).is_file():
+        if not backlog:
             return False
-        rest = lambda snapshot: [list(entry) for entry in snapshot if entry[0] != 'BACKLOG.md']
-        return (Path(backlog['path']).read_text(encoding='utf-8') == backlog['text']
+        path = Path(backlog['path'])
+        if path.is_symlink() or not path.is_file():
+            return False
+        name = path.relative_to(self.workspace).as_posix()
+        rest = lambda snapshot: [list(entry) for entry in snapshot if entry[0] != name]
+        return (path.read_text(encoding='utf-8') == backlog['text']
                 and rest(git_snapshot(self.workspace)[1]) == rest(intent['tree_snapshot']))
 
     def _redispatch_budget(self, phase: str, voided: Exception) -> None:
@@ -8936,13 +8956,15 @@ class Coordinator:
         failed = (self.state.get('plan_history_rewrite') or {}) if phase == 'PLAN' else {}
         if failed.get('status') == 'failed':   # FIELD-11b: a resume does not draw a new reviewer to get past a failed rewrite
             return self.hold(failed['hold_reason'])
+        schema = review_schema(confirm_shadow=phase == 'EXEC' and any(
+            row.get('needs_confirmation') for row in self._reviewer_open_findings()))
         result = self._recorded_reviewer_result(phase)
         if result is None:
             if issue := self._review_only_start_issue():   # D-LG1: the first review sees exactly the frozen change
                 return self.hold(issue)
             self.materialize_review_context()
             snapshot, _ = git_snapshot(self.workspace)
-            result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), review_schema())
+            result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), schema)
         result['answer'] = copy.deepcopy(result['answer'])
         self.state['pending_reviewer_result_sequence'] = result['sequence']
         self.save()
@@ -8961,7 +8983,7 @@ class Coordinator:
             retry_prompt = (self._review_prompt('reviewer', snapshot) +
                             '\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
                             '. This is the one allowed protocol retry; include every open id.')
-            result = self.invoke('reviewer', phase, retry_prompt, review_schema())
+            result = self.invoke('reviewer', phase, retry_prompt, schema)
             result['answer'] = copy.deepcopy(result['answer'])
             answer = result['answer']
             self._ignore_operator_dispositions(result)
@@ -9060,20 +9082,30 @@ class Coordinator:
         matrix_findings = (self._plan_matrix_findings(result['sequence'], answer['status'] == 'APPROVE' or advisory_only)
                            if phase == 'PLAN' and answer['status'] != 'HOLD' else [])
         answer['full_review'].extend(matrix_findings)
-        tested = (phase == 'PLAN' or   # after the tree check: the record lookup voids records of other trees
-                  (((self.configured_test_succeeded(result['answer']) and not self.configured_test_failed(result['answer']))
-                    or self._operator_test_record(answer.get('reviewed_snapshot')) is not None)
-                   and bool(answer.get('self_run_evidence'))))
+        observed_pass = self.configured_test_succeeded(answer) and not self.configured_test_failed(answer)
+        operator_record = (self._operator_test_record(answer.get('reviewed_snapshot'))
+                           if phase == 'EXEC' and advisory_only and not observed_pass else None)
+        tested = phase == 'PLAN' or ((observed_pass or operator_record is not None) and bool(answer.get('self_run_evidence')))
         advisory_exit = advisory_only and tested and not self.blocking_open_findings()
         if (phase == 'EXEC' and advisory_only and not tested and not self.blocking_open_findings()
-                and not self.configured_test_failed(result['answer']) and not self.state['config'].get('review_report')
-                and not (self.state.get('lifecycle') or {}).get('writer_replay')):   # D09: a writer replay rolls back instead
-            # S3 R2 F8: only the test evidence is missing; an author round cannot supply it, so no EXEC round is used
+                and not self.state['config'].get('review_report')):
+            # R5: the test evidence is the only obstacle; the operator can rerun the command or address a real failure.
             self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
             self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
-            self.hold(TEST_EVIDENCE_HOLD)
+            reason = TEST_EVIDENCE_HOLD
+            if failure := completed_test_failure(answer.get('observed_commands', []), self.args.test_command):
+                reason += f". The configured test command failed (exit status {failure['exit_code']})."
+                output = ' '.join(str(failure.get('output') or '')[-2000:].split())
+                if output:
+                    reason += f' Test output — {output}'
+            self.hold(reason)
             return
         if advisory_exit:
+            if operator_record:
+                receipt = next((turn for turn in self.state.get('turns', []) if turn['sequence'] == result['sequence']), None)
+                if receipt is not None:
+                    receipt['operator_test_evidence'] = operator_record['id']
+                    atomic_json(self.evidence / f"{result['sequence']:03d}-exec-reviewer.receipt.json", receipt)
             self.mark_advisory_findings(answer['full_review'] + still_open)
             answer['status'] = 'APPROVE'
         new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
@@ -9098,8 +9130,10 @@ class Coordinator:
         effective_verdict = 'REVISE' if plan_history else 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal) and not plan_history)
         new_blocking = [row for row in new_rows if blocks_by_severity(row)]   # WI-GATE1 S3
+        awaiting_confirmation = (phase == 'EXEC' and answer['status'] == 'APPROVE'
+                                 and any(row.get('needs_confirmation') for row in self.open_findings()))
         stop_rule = (self._update_stop_rules(result['sequence'], answer, effective_verdict)
-                     if phase == 'EXEC' and not self.state['config'].get('review_report') else None)
+                     if phase == 'EXEC' and not awaiting_confirmation and not self.state['config'].get('review_report') else None)
         structural = (self._structural_block_hold('reviewer', result['sequence'], new_blocking)   # FIELD-5: only NEW blockers form a BLOCK
                       if phase == 'EXEC' and answer['status'] == 'REVISE' and new_blocking else None)
         if phase == 'EXEC':
@@ -9237,7 +9271,7 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('stale EXEC approval')
             return
-        elif [row for row in self.open_findings() if row.get('needs_confirmation')]:
+        elif awaiting_confirmation:
             # S3 R2 F2: the shadow's blockers in the gate repair wait for the persistent reviewer's confirmation, on the same
             # tree and without an author round
             self.state.update(delivered_review='', next='reviewer', confirm_shadow_rows=result['sequence'])
@@ -9331,22 +9365,27 @@ class Coordinator:
 
     def _settle_saved_rounds(self) -> None:
         """S3 R2 F5: a state an earlier version saved charged EXEC rounds for FINISH, DOCS and SECURITY writes, writer replays
-        and POLISH-Q fixes, and has no gate FAIL baseline. Recount: an EXEC author turn counts when the next turn of another
-        role is the EXEC review (a POLISH-Q fix is followed by its specialists), plus a review-only run's existing change.
+        and POLISH-Q fixes, and has no gate FAIL baseline. Recount completed EXEC author turns that reach EXEC review
+        (a POLISH-Q fix is followed by its specialists), plus a review-only run's existing change.
         A saved gate FAIL takes the round count before the gate as its baseline, and the grants made so far add no
         post-gate round (at most the 1 + 1 fix rounds). The count is never raised."""
         if self.state.get('round_rules'):
             return
         self.state['round_rules'] = ROUND_RULES_VERSION
         turns = sorted(self.state.get('turns', []), key=lambda turn: turn.get('sequence', 0))
+        uncharged = {self.state.get('pending_author_result_sequence'),
+                     ((self.state.get('rejected_tree_hold') or {}).get('rationale_evidence') or {}).get('turn_sequence')}
 
         def counted(before: Optional[int] = None) -> int:
             total = REVIEW_ONLY_EXISTING_CHANGE_ROUNDS if self.state.get('review_only') else 0
             for index, turn in enumerate(turns):
                 if (turn.get('role') != 'author' or turn.get('phase') != 'EXEC' or turn.get('error')
+                        or turn.get('answer', {}).get('status') == 'HOLD' or turn['sequence'] in uncharged
                         or (before is not None and turn['sequence'] >= before)):
                     continue
-                after = next((later for later in turns[index + 1:] if later.get('role') != 'author'), None)
+                # Another EXEC author before the review means this attempt was retried without charging a round.
+                after = next((later for later in turns[index + 1:]
+                              if later.get('role') != 'author' or later.get('phase') == 'EXEC'), None)
                 total += after is None or (after.get('role') in ('reviewer', 'shadow') and after.get('phase') == 'EXEC')
             return total
 
@@ -9436,8 +9475,9 @@ class Coordinator:
                 'gate FAIL items above and blocking regressions introduced by the changes made since the gate can keep this '
                 'review from passing: start the reachability of such a regression with "regression:". Report every other '
                 'new finding as usual; the coordinator keeps it for the BACKLOG and it does not block. A row marked "shadow '
-                'finding to confirm" came from an independent reviewer: dispose it still_open only if the change since the '
-                'gate caused it (compare with the tree the gate reviewed), otherwise withdrawn.\n')
+                'finding to confirm" came from an independent reviewer. Compare with the tree the gate reviewed. Use still_open '
+                'for a regression caused by the fix, non_blocking for a valid finding outside the fix, and withdrawn only if '
+                'the finding is wrong.\n')
 
     def _update_stop_rules(self, sequence: int, answer: dict, verdict: str) -> Optional[str]:
         """R4 (decided by the coordinator from the ledger), for one EXEC reviewer verdict: (b) the same blocking row marked
@@ -9460,8 +9500,9 @@ class Coordinator:
                        and row['id'] in ledger and row['id'] not in gate_ids and blocks_by_severity(ledger[row['id']]))
         repeated = sorted(set(still) & set(rules['still_open']))
         rules['still_open'] = still
-        new = sorted(row['id'] for row in ledger.values() if (row.get('origin_round') or 0) > previous   # S3 R2 F7: reviewer
-                     and row.get('source') in ('persistent-reviewer', 'fresh-shadow')   # and shadow rows of this review
+        new = sorted(row['id'] for row in ledger.values()
+                     if ((row.get('origin_round') or 0) > previous or row.get('confirmed_regression') == sequence)
+                     and row.get('source') in ('persistent-reviewer', 'fresh-shadow')
                      and row['status'] == 'open' and blocks_by_severity(row))
         if rules['approved']:
             rules['new_blocking_streak'] = rules['new_blocking_streak'] + 1 if new else 0
