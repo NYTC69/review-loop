@@ -248,7 +248,8 @@ class FailedTestApprovalTests(unittest.TestCase):
                                      ('REVISE', 'APPROVE_WITH_ADVISORY'))
                     self.assertNotIn('round_limit_hold', co.state)
                 else:
-                    self.assertEqual(co.state['hold_reason'], 'EXEC round limit reached')
+                    # WI-GATE1 S3 R3 F8: test evidence is the only obstacle, so the HOLD asks for verification (no round used)
+                    self.assertTrue(co.state['hold_reason'].startswith(rc.TEST_EVIDENCE_HOLD))
 
     def test_docs_review_with_failed_own_run_passes_with_current_record(self):
         co = self.coordinator()
