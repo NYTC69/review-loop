@@ -83,6 +83,15 @@ Fresh shadow/gate blockers retain their existing blocking behavior. Review
 comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
 
+Delivery PLAN drafts include a [scenario matrix](../docs/protocol/scenario-matrix.md).
+The coordinator rejects a missing or malformed matrix at approval, and the PLAN reviewer
+checks that it covers blocking-class scenarios. The per-round EXEC reviewer and fresh shadow
+own robustness and corner-case depth, including checking that each row's named test exists
+and passes. The gate makes a single verdict and audits coverage and gaps. An unmet acceptance
+criterion or a blocking-class defect can cause FAIL, including a defect outside the written
+criteria. Non-blocking corner cases go to BACKLOG. Review-only, code-quality-loop, and review-pr
+skip the matrix requirement and audit.
+
 Operator rulings are persistent review input on both lifecycle routes. The
 persistent reviewer sees the withdrawn ids and reasons, owes no disposition for
 them, and must not raise the same objection as a new finding. If the reviewer

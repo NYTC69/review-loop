@@ -228,6 +228,12 @@ and that is still in the index is also named in a NOTE. Such a file over 8 MiB i
 A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
 A SECURITY HOLD is never repaired by the run: fix it outside the run and resume (the EXEC review runs again).
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
+
+Delivery plans include a [scenario matrix](docs/protocol/scenario-matrix.md) for blocking-class scenarios.
+The per-round EXEC reviewer and fresh shadow check the rows and own corner-case depth. The gate
+makes one verdict and audits coverage and gaps, including blocking defects outside written criteria.
+Non-blocking corner cases go to BACKLOG. Review-only, code-quality-loop, and review-pr skip the matrix.
+
 None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
 shadow, the gate and the stage reviewers start fresh each time. Default roles: Codex is the author
 and the gate (`gpt-6.1-sol`), Claude the reviewer and the shadow (`claude-opus-5-5`); the operator profile changes
