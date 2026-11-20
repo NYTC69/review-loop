@@ -12,10 +12,11 @@ from unittest.mock import patch
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 
-PLAN_WITH_IDS = '# Plan\n## Steps\n1. Validate input (F001).\n2. Handle the empty list per F003.\n## Verification\nnpm test\n'
-PLAN_WITH_NARRATIVE = '# Plan\n## Changes since previous review\n1. Validate input.\n## Verification\nnpm test\n'
-PLAN_CLEAN = '# Plan\n## Steps\n1. Validate input.\n2. Handle the empty list.\n## Verification\nnpm test\n'
+PLAN_WITH_IDS = '# Plan\n## Steps\n1. Validate input (F001).\n2. Handle the empty list per F003.\n## Verification\nnpm test\n' + FAKE_SCENARIO_MATRIX
+PLAN_WITH_NARRATIVE = '# Plan\n## Changes since previous review\n1. Validate input.\n## Verification\nnpm test\n' + FAKE_SCENARIO_MATRIX
+PLAN_CLEAN = '# Plan\n## Steps\n1. Validate input.\n2. Handle the empty list.\n## Verification\nnpm test\n' + FAKE_SCENARIO_MATRIX
 
 
 class PlanLedgerIdTests(unittest.TestCase):
@@ -91,7 +92,7 @@ class PlanLedgerIdTests(unittest.TestCase):
 
     def test_a_verdict_word_in_the_plan_is_caught_as_the_gate_would(self):
         use_lifecycle_on(self, self.h)
-        co = self.approve(self.coordinator(plan='# Plan\n## Addressing REVISE notes\n1. Validate input.\n'))
+        co = self.approve(self.coordinator(plan='# Plan\n## Addressing REVISE notes\n1. Validate input.\n' + FAKE_SCENARIO_MATRIX))
         self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
         self.assertIn("review-history wording 'REVISE'", co.state['delivered_review'])
 

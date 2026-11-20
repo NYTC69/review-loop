@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from paired_session import test_worktree_lifecycle as twl
 from paired_session import test_v316 as v316
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 
 rc, OFF, ON = twl.rc, v316.OFF, v316.ON
 
@@ -47,7 +48,7 @@ class AdvisoryOnceTests(unittest.TestCase):
 
     def coordinator_at(self, phase):
         co = self.coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '4')
-        (co.context / 'plan.md').write_text('Implement the helper.\n')
+        (co.context / 'plan.md').write_text('Implement the helper.\n' + FAKE_SCENARIO_MATRIX)
         co.state[phase.lower() + '_rounds'] = 1
         return co
 

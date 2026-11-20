@@ -5,6 +5,7 @@ from unittest import mock
 from paired_session import test_review_report_b1 as b1
 from paired_session import test_real_coordinator as trc
 from paired_session import worktree_lifecycle as wl
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 
 rc = trc.rc
@@ -89,7 +90,7 @@ class PromptTests(unittest.TestCase):
             with self.subTest(phase=phase, gate_high=high):
                 self.run_dir = self.root / (phase.lower() + ('-high' if high else '-advisory'))
                 co = self.coordinator('--lifecycle-mode', 'off', '--shadow', 'off')
-                (co.context / 'plan.md').write_text('# Plan\nReview supported behavior.\n')
+                (co.context / 'plan.md').write_text('# Plan\nReview supported behavior.\n' + FAKE_SCENARIO_MATRIX)
                 co.record_findings('persistent-reviewer', phase, 1, [
                     {'severity': 'MINOR', 'file': 'tracked.txt', 'summary': 'advisory', 'failure_scenario': 'material waste'}])
                 if phase == 'EXEC':

@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from paired_session import test_worktree_lifecycle as twl
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 
 rc, DONE = twl.rc, twl.DONE
 LIMIT = 'EXEC round limit reached'
@@ -139,6 +140,8 @@ class RoundLimitStillOpenTests(unittest.TestCase):
                               '--max-exec-rounds', str(limit), '--max-plan-rounds', str(limit), *flags)
         if prepare:
             prepare(co)
+        if phase == 'PLAN':
+            (co.context / 'plan.md').write_text('Implement the helper.\n' + FAKE_SCENARIO_MATRIX)
         ids = [co.record_findings(source, phase, index + 1, [{'severity': severity, 'file': 'tracked.txt', 'summary': 'left open',
                                                               'body': 'b', 'failure_scenario': 'x'}])[0]['id']
                for index, (source, severity) in enumerate(rows)]

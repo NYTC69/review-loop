@@ -20,6 +20,7 @@ from paired_session import candidate_tree as ct
 from paired_session import timeout_scale as tsc
 from paired_session import scratch_test_helpers
 from paired_session.docs_policy import validate_candidate_docs_change
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 
 
 MODULE_PATH = Path(__file__).with_name('coordinator.py')
@@ -4193,7 +4194,8 @@ sys.exit(result.returncode)
         self.assertEqual(len(list((self.run_dir / 'rounds').glob('*.md'))), 11)
         prompts = list((self.run_dir / 'evidence').glob('*.prompt.txt'))
         self.assertTrue(prompts)
-        self.assertLessEqual(max(len(path.read_text().splitlines()) for path in prompts), 60)
+        # WI-GATE1 S7: the plan's own scenario matrix rows are quoted data, not prompt growth
+        self.assertLessEqual(max(len(path.read_text().partition('Scenario matrix from plan.md:')[0].splitlines()) for path in prompts), 60)
         self.assertTrue(all('Reviewed snapshot must be exactly' not in path.read_text() for path in prompts))
         fresh_prompts = [path.read_text() for path in prompts
                          if '-shadow.prompt.' in path.name or '-gate.prompt.' in path.name]
@@ -4402,6 +4404,7 @@ sys.exit(result.returncode)
 
     def test_resume_reuses_recorded_reviewer_verdict_before_state_advances(self):
         co = self.coordinator('--stop-after-plan')
+        (co.context / 'plan.md').write_text(FAKE_SCENARIO_MATRIX)
         co.state.update(phase='PLAN', next='reviewer')
         co.save()
         co.materialize_review_context()
@@ -4424,6 +4427,7 @@ sys.exit(result.returncode)
 
     def test_resume_replaying_partly_applied_reviewer_result_is_idempotent(self):
         co = self.coordinator('--stop-after-plan')
+        (co.context / 'plan.md').write_text(FAKE_SCENARIO_MATRIX)
         co.state.update(phase='PLAN', next='reviewer')
         co.save()
         co.materialize_review_context()
@@ -4489,6 +4493,7 @@ sys.exit(result.returncode)
 
     def test_resume_after_reviewer_hold_dispatches_a_fresh_turn(self):
         co = self.coordinator('--stop-after-plan')
+        (co.context / 'plan.md').write_text(FAKE_SCENARIO_MATRIX)
         co.state.update(phase='PLAN', next='reviewer')
         co.save()
         co.materialize_review_context()

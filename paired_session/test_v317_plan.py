@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from paired_session import test_worktree_lifecycle as twl
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 from paired_session.test_field11_plan_ledger_ids import PLAN_CLEAN, PLAN_WITH_IDS
 
 rc = twl.rc
@@ -15,7 +16,7 @@ class PlanStillOpenTests(unittest.TestCase):
     def review(self, severity='MINOR', rounds=3, rewrite=False, rows=True):
         co = self.coordinator('--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'off')
         self.assertEqual(co.args.max_plan_rounds, 3)
-        (co.context / 'plan.md').write_text('Implement the helper and run unittest.\n')
+        (co.context / 'plan.md').write_text('Implement the helper and run unittest.\n' + FAKE_SCENARIO_MATRIX)
         findings = co.record_findings('persistent-reviewer', 'PLAN', 1, [
             {'severity': severity, 'file': 'plan.md', 'summary': 'plan advisory', 'failure_scenario': 'detail missing'}]) if rows else []
         sequence = co.state['sequence'] + 1

@@ -95,7 +95,7 @@ class DispatchBudgetTests(unittest.TestCase):
         self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '20000000')
         self.assertIn('gets 13800000 for a long command.', actual)
 
-    def test_default_review_dispatch_bytes_match_release_and_exec_author_grows(self):
+    def test_default_review_dispatch_bytes_match_release_except_for_review_rules_and_exec_author_grows(self):
         released = self.released_coordinator()
         co = self.prepare()
         # Same state/paths: compare the complete prompt builder output against 59ce540.
@@ -108,7 +108,12 @@ class DispatchBudgetTests(unittest.TestCase):
                 baseline = baseline.replace(getattr(released, name), getattr(rc, name))                          # security rule text only
             if role == 'gate':   # WI-GATE1: the gate reports FAIL items, not class-labelled findings
                 baseline = baseline.replace('\n' + released.CLASS_LABEL_GUIDANCE.format(field='body'), '')
-            self.assertEqual(actual, baseline)
+            # S7 adds a matrix-specific suffix to each EXEC review role's existing prompt.
+            heading = '\nScenario matrix audit applies.' if role == 'gate' else '\n\nScenario matrix review:'
+            existing, separator, matrix_instructions = actual.partition(heading)
+            self.assertEqual(existing, baseline)
+            self.assertEqual(separator, heading)
+            self.assertIn('scenario-matrix.md' if role == 'gate' else 'passing', matrix_instructions)
             with patch.dict(os.environ, {'BASH_MAX_TIMEOUT_MS': '1'}):
                 baseline_env = released.cli_env()
             if co._role_vendor(role) == 'codex':
