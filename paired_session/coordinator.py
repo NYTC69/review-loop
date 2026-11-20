@@ -46,6 +46,7 @@ try:
     from paired_session import sensitive_policy
     from paired_session import worktree_lifecycle
     from paired_session import review_report
+    from paired_session import scenario_matrix
     from paired_session import timeout_scale
     from paired_session import winplat
     from paired_session.program_binding import snapshot as program_snapshot, safe_path, program_argv
@@ -63,6 +64,7 @@ except ModuleNotFoundError:
     import sensitive_policy
     import worktree_lifecycle
     import review_report
+    import scenario_matrix
     import timeout_scale
     import winplat
     from program_binding import snapshot as program_snapshot, safe_path, program_argv
@@ -5076,6 +5078,8 @@ class Coordinator:
                 f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
                 contract, self._docs_reserved_note('plan'),
                 'PLAN only: return a plan; do not implement, edit the workspace, or run implementation checks.',
+                'Include the "## Scenario matrix" section in the plan body for plan.md. Follow this checklist:',
+                scenario_matrix.prompt_checklist(),
                 'The body must be the current plan only. Integrate corrections into its sections; do not include reviewer ids, verdict history, or response-to-reviewer narratives.',
                 ('Delivered plan review:\n' + prior) if prior else 'No delivered plan review on this turn.',
                 'Do not commit or push. Do not load review-loop skills.',
@@ -5107,6 +5111,9 @@ class Coordinator:
             *([rulings] if (rulings := self.operator_rulings_prompt('author').strip()) else []),   # V317-B3
             *([note] if worktree_lifecycle.is_worktree(self.state) and (note := self._docs_reserved_note()) else []),
             *([evidence] if (evidence := self._exec_author_operator_evidence()) else []),
+            *(['If a mandatory gate check asks for a new scenario matrix row, add it alongside its test '
+               'in the workspace (for example, in a test description or adjacent test documentation).']
+              if not review_only and self.gate_fail_open_items() else []),
             GEMINI_AUTHOR_HISTORY_RULE if 'gemini' in vendor_by_role(self.args).values() else AUTHOR_HISTORY_RULE,
             'Do not commit or push. Do not load review-loop skills. Do not edit outside the workspace.',
             'For long commands, use the longest single wait your tool permits. Do not wait for another model.',
@@ -5194,8 +5201,8 @@ class Coordinator:
         return 'Use Read/Grep/Glob on context and workspace; Git through Bash is intentionally unavailable.'
 
     def _reviewer_open_findings(self) -> list[dict]:
-        """In a W run the persistent reviewer sees only findings it may dispose; owners close their own."""
-        rows = self.open_findings()
+        """The coordinator and lifecycle owners close their own findings."""
+        rows = [row for row in self.open_findings() if row.get('source') != 'scenario-matrix']
         return [row for row in rows if not row.get('owner_role')] if worktree_lifecycle.is_worktree(self.state) else rows
 
     def open_findings_prompt(self) -> str:
@@ -5249,6 +5256,50 @@ class Coordinator:
             return default
         return f'the change in this worktree against the review base {self.state["config"]["review_base"][:12]} (commits since it included)'
 
+    def _plan_matrix(self) -> str:
+        try:
+            return scenario_matrix.section((self.context / 'plan.md').read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return ''
+
+    def _plan_matrix_findings(self, sequence: int, approving: bool) -> list[dict]:
+        """The coordinator checks structure and closes its own finding once the draft is valid."""
+        opened = next((row for row in self.open_findings() if row['source'] == 'scenario-matrix'), None)
+        if self.state.get('review_only') or not (approving or opened):
+            return []
+        if error := scenario_matrix.validation_error(self._plan_matrix()):
+            finding = {
+                'source': 'scenario-matrix', 'severity': 'MAJOR', 'category': 'correctness', 'file': 'plan.md',
+                'reachability': 'a delivery plan is submitted for PLAN approval',
+                'summary': f'Scenario matrix: {error}.',
+                'failure_scenario': 'Fix the matrix in plan.md using docs/protocol/scenario-matrix.md.',
+            }
+            if not opened:
+                return self.record_findings('scenario-matrix', 'PLAN', sequence, [finding])
+            if opened['summary'] != finding['summary']:
+                opened.update(finding)
+                self.write_ledger()
+            return [opened]
+        if opened:
+            opened['status'] = 'fixed'
+            opened['status_history'].append({'round': sequence, 'status': 'fixed',
+                                             'evidence': 'coordinator validated the scenario matrix in plan.md'})
+            self._progress_finding(opened)
+            self.write_ledger()
+        return []
+
+    def _matrix_plan_excerpt(self) -> str:
+        matrix = '' if self.state.get('review_only') else self._plan_matrix()
+        return '\n\nScenario matrix from plan.md:\n' + matrix + '\n' if matrix else ''
+
+    def _matrix_review_prompt(self) -> str:
+        if self.state.get('review_only'):
+            return ''
+        return ('\n\nScenario matrix review: Verify that the current implementation handles every scenario matrix row '
+                'and that its named test exists and passes. Check passing evidence for the named tests on this tree. '
+                f'Use the checklist {scenario_matrix.CHECKLIST} to guide robustness and corner-case review.' +
+                self._matrix_plan_excerpt())
+
     def _review_prompt(self, role: str, snapshot: str) -> str:
         base_phase = self.state['phase']
         phase = base_phase
@@ -5268,7 +5319,7 @@ class Coordinator:
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
-            ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json)
+            ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json) + self._matrix_review_prompt()
         fresh_note = 'Use your persistent thread history across PLAN and EXEC.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -5302,6 +5353,10 @@ class Coordinator:
                 REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE,
                 'No implementation exists yet and none is expected in PLAN. Program delta files are empty by design.',
                 'Read existing workspace source to check the plan against current behaviour. Findings about missing source files, implementation, or tests are out of scope.',
+                'Check the proposed scenario matrix against the checklist below. A missing blocking-class scenario '
+                'or a silently skipped dimension is a blocking PLAN finding on plan.md. Check that any Trivial claim '
+                'matches the work item and that every required row names a test.',
+                scenario_matrix.prompt_checklist(),
                 self.inspection_prompt(role), self.allowed_command_prompt(), self.verified_claims_prompt(),
                 self.open_findings_prompt(), exercise,
                 'Never edit files, commit, push, or load skills.',
@@ -5323,7 +5378,7 @@ class Coordinator:
             'Do not report exit codes; the coordinator reads tool results directly.', exercise,
             'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
             'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
-        ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role)
+        ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role) + self._matrix_review_prompt()
 
     def _gate_prompt(self, snapshot: str) -> str:
         template = Path(self.args.gate_prompt).read_text(encoding='utf-8')
@@ -5331,6 +5386,11 @@ class Coordinator:
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
             '\nAudit the complete current git delta in ' + str(self.workspace))
+        if self.state.get('review_only'):
+            matrix_audit = '\n\nReview-only scope: The scenario matrix requirement and audit are skipped.'
+        else:
+            matrix_audit = ('\nScenario matrix audit applies. Audit the "## Scenario matrix" section of the plan '
+                            f'as the template says (checklist: {scenario_matrix.CHECKLIST}).' + self._matrix_plan_excerpt())
         return (filled + '\n' + self._docs_reserved_note('review') + '\n' + self._test_instruction() +
                 '\n' + self.allowed_command_prompt() +
                 '\nRead program-materialized delta.patch, delta.stat, status.txt, and optional delta-since-last-review.patch in: ' + str(self.context) +
@@ -5341,7 +5401,7 @@ class Coordinator:
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\n' + REVIEW_HISTORY_GUIDANCE +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
-                self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json))
+                self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json) + matrix_audit)
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -6122,7 +6182,10 @@ class Coordinator:
                                     '(no finding ids) and run the printed Start: command for a successor '
                                     'with a fresh PLAN, or abort and start a new run')
                     raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}: {shown}; ' + recovery)
-        checked = self._mask_docs_reserved_paths(self._mask_guidance(prompt))   # operator guidance and DOCS paths
+        # The exact excerpt is checked below as part of context/plan.md, with the same rules as at PLAN approval.
+        excerpt = self._matrix_plan_excerpt()
+        prompt_for_scan = prompt.removesuffix(excerpt) if excerpt else prompt
+        checked = self._mask_docs_reserved_paths(self._mask_guidance(prompt_for_scan))   # operator guidance and DOCS paths
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', checked)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
                      if row.get('summary') and row['summary'] in checked]
@@ -6141,7 +6204,7 @@ class Coordinator:
             sources['gate-template'] = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         checked = {}
         for name, content in sources.items():
-            matches = self._introduced_history(name, content)   # FIELD-23: repository text is not review history
+            matches = self._introduced_history(name, prompt_for_scan if name == 'prompt' else content)
             if matches:
                 where = ''
                 if name == 'context/delta.patch' and (hits := self._delta_history_hits(content)):
@@ -8994,6 +9057,9 @@ class Coordinator:
                               or only_still_open)
                          and (phase != 'EXEC' or   # an EXEC approval still needs this tree and a passing test it observed
                               answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0]))
+        matrix_findings = (self._plan_matrix_findings(result['sequence'], answer['status'] == 'APPROVE' or advisory_only)
+                           if phase == 'PLAN' and answer['status'] != 'HOLD' else [])
+        answer['full_review'].extend(matrix_findings)
         tested = (phase == 'PLAN' or   # after the tree check: the record lookup voids records of other trees
                   (((self.configured_test_succeeded(result['answer']) and not self.configured_test_failed(result['answer']))
                     or self._operator_test_record(answer.get('reviewed_snapshot')) is not None)
@@ -9014,7 +9080,8 @@ class Coordinator:
         refusal = None
         if answer['status'] == 'APPROVE' and (blocking := self.blocking_open_findings()):
             # RF-5: an APPROVE that leaves blocking findings open is a REVISE routed to the author (round limit and its HOLD apply), never DONE
-            refusal = 'APPROVE rejected with open blocking findings: ' + ', '.join(finding['id'] for finding in blocking)
+            refusal = ('PLAN APPROVE rejected: ' + matrix_findings[0]['summary'] if matrix_findings else
+                       'APPROVE rejected with open blocking findings: ' + ', '.join(finding['id'] for finding in blocking))
             answer['status'] = 'REVISE'
             answer['full_review'] = list(answer['full_review']) + [row for row in blocking if row['id'] not in {item.get('id') for item in answer['full_review']}]
             self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
@@ -9071,6 +9138,8 @@ class Coordinator:
             # V319-HOLD: a REVISE with no finding of its own that only leaves non-blocking rows open takes the advisory exit
             reason = ('the rewrite-only PLAN turn was not approved by the PLAN reviewer (the plan changed in substance or has '
                       'findings); abort and start a new run')
+            if matrix_findings:
+                reason += '. ' + matrix_findings[0]['summary']
             rewrite.update(status='failed', failed_sequence=result['sequence'], failed_history='PLAN reviewer REVISE', hold_reason=reason)
             self.state['pending_reviewer_result_sequence'] = None
             self.hold(reason)

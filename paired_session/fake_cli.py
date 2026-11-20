@@ -11,6 +11,26 @@ from datetime import datetime, timezone
 import uuid
 
 
+FAKE_SCENARIO_MATRIX = """
+## Scenario matrix
+### Input boundaries
+- Boolean input | Raise TypeError | test_rejects_bool
+### Dependency failure
+N/A: The helper has no dependencies.
+### Repetition and concurrency
+N/A: Each call is independent.
+### Ordering and state transitions
+N/A: The helper has no persistent state.
+### Partial failure and recovery
+N/A: The helper has no side effects.
+### Permissions and identity
+N/A: The helper does not use permissions.
+### Compatibility
+N/A: The helper has no existing callers.
+"""
+SUPPLEMENTAL_SCENARIO = 'Empty input | Return zero | test_empty_sum'
+
+
 def long_command(events, command):
     """FIELD-20: FAKE_CODEX_LONG=yield|started-only|killed makes `command` outlive exec_command's first yield; it then completes
     with exit 0 (the model polled), never completes (killed at the turn end), or completes with -1 (killed)."""
@@ -362,6 +382,9 @@ def main():
                 (Path.cwd() / 'plan-leak.txt').write_text('forbidden during plan\n')
             body = ('Plan\n\n1. Add sum_ints.\n2. Handle invalid input.' if 'No delivered review' in prompt
                     else 'Plan\n\n1. Add sum_ints.\n2. Reject bool and nested input.\n3. Verification: run unittest.')
+            matrix = (os.environ.get('FAKE_FIRST_PLAN_MATRIX', FAKE_SCENARIO_MATRIX)
+                      if 'No delivered plan review' in prompt else FAKE_SCENARIO_MATRIX)
+            body += '\n' + matrix
         elif 'Phase: DOCS' in prompt:
             target = Path.cwd() / os.environ['FAKE_LIFECYCLE_DOCS_FILE']
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -369,6 +392,13 @@ def main():
             body = 'Updated the configured documentation file.'
         else:
             module = Path.cwd() / 'sum_ints.py'
+            if os.environ.get('FAKE_GATE_MATRIX_FINDING') == 'gap' and 'add row + handling + test' in prompt:
+                (Path.cwd() / 'test_matrix.py').write_text(
+                    'import unittest\nfrom sum_ints import sum_ints\n\n'
+                    f'# {SUPPLEMENTAL_SCENARIO}\n'
+                    'class MatrixTests(unittest.TestCase):\n'
+                    '    def test_empty_sum(self):\n'
+                    '        self.assertEqual(sum_ints([]), 0)\n')
             rejection = '## Operator rejection for current EXEC scope' in prompt
             docs_rejection = rejection and os.environ.get('FAKE_AUTHOR_REJECTION_DOCS')   # v3.8.1: a docs-only rejection fix
             docs_fix = '"source": "docs-review"' in prompt   # v3.8.1: a docs review REVISE delivered to the author: docs only
@@ -525,6 +555,17 @@ def main():
                 if field in item:
                     item[field] = ''
             fail_items = [] if malformed == 'none' else [item]
+        if 'Scenario matrix audit applies.' in prompt and (matrix_issue := os.environ.get('FAKE_GATE_MATRIX_FINDING')):
+            plan = prompt.partition('Scenario matrix from plan.md:\n')[2]
+            evidence = {
+                'missing': 'plan.md:1 has no scenario matrix' if not plan else '',
+                'trivial': 'plan.md claims Trivial for a behavior change' if 'Trivial:' in plan else '',
+                'gap': 'sum_ints.py:1 empty input lacks a scenario row and test' if SUPPLEMENTAL_SCENARIO not in plan else '',
+            }[matrix_issue]
+            if evidence:
+                fail_items.append({'basis': 'blocking-class', 'criterion': '', 'blocking_class': 'correctness',
+                                   'evidence': evidence, 'smallest_change': 'add row + handling + test',
+                                   'proof': 'document the scenario with its passing test'})
         answer = {'verdict': 'FAIL' if fail_items or malformed == 'none' else 'PASS',
                   'criteria': [{'criterion': criterion, 'met': malformed != 'unmet' and not any(   # R1 F4: an unmet criterion has its item
                       item['basis'] == 'criterion' for item in fail_items),
@@ -591,6 +632,13 @@ def main():
             revise = True
             findings = [{'severity': 'MINOR', 'file': 'sum_ints.py',
                          'summary': 'advisory exec polish', 'failure_scenario': 'style remains untidy'}]
+        if (role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MATRIX_TEST_MISSING')
+                and 'Scenario matrix from plan.md:' in prompt and 'test_rejects_bool' in prompt):
+            revise = True
+            findings = [{'severity': 'MAJOR', 'category': 'correctness', 'file': 'sum_ints.py',
+                         'reachability': 'call the helper with a boolean',
+                         'summary': 'No passing evidence for test_rejects_bool',
+                         'failure_scenario': 'boolean input can be treated as an integer'}]
         if role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_EXEC_MIXED_REVISE'):
             revise = True
             findings = [

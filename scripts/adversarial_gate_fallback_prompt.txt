@@ -27,10 +27,17 @@ correctness, data-loss, security, money; `criterion` ""). Every item needs:
 passes, a behavior to observe). An item missing any of these is malformed and
 the answer is not a verdict.
 
+When the scenario matrix requirement applies, audit coverage and gaps. FAIL if
+a non-trivial work item has no matrix, a Trivial claim is false, or a row lacks
+passing test evidence on this tree. For a missing blocking-class scenario,
+return a FAIL item with the blocking-class basis, evidence, smallest_change
+"add row + handling + test", and proof. The EXEC reviewer verifies the repair.
+
 Scope: robustness and corner-case depth belong to the per-round reviewer and
 the fresh shadow; you give one verdict plus a coverage and gap audit, not an
 exhaustive scenario search. Do not report non-blocking observations, style or
-optional improvements. Assume users and models act in good faith within the
+optional improvements. The per-round reviewer and shadow record non-blocking
+corner cases for BACKLOG. Assume users and models act in good faith within the
 supported scope; a contrived worst case that needs deliberate misuse is not a
 blocking-class defect.
 Return JSON conforming to the schema.
