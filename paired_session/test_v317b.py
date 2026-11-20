@@ -327,36 +327,34 @@ class WithdrawalTests(unittest.TestCase):
                 self.assertTrue(any(row['source'] == 'persistent-reviewer' and row['severity'] == 'MINOR'
                                     for row in self.state()['finding_ledger']))
                 # V316 now exits a pure still_open re-review with successful test evidence. Missing observed
-                # test evidence retains the historical round-limit HOLD, without undoing that completed batch.
+                # test evidence HOLDs for attach-verification (WI-GATE1 S3 R2 F8: no round), without undoing that batch.
                 # The second send-back also makes an incidental write, so the rejected-tree exit stays distinct.
                 held = self.run_operator_action('reject', *flags, '--text', 'Expanded scope is approved and stays. Update export help.',
                                                 env={**env, 'FAKE_PERSISTENT_REVIEW_NO_TEST_EVENT': '1',
                                                      'FAKE_AUTHOR_WRITE_NEW_TREE': '1'})
-                self.assertIn('HOLD: EXEC round limit reached', held.stdout, held.stdout + held.stderr)
+                self.assertIn('HOLD: ' + rc.TEST_EVIDENCE_HOLD, held.stdout, held.stdout + held.stderr)
                 before = self.state()
                 reviewer = next(t for t in reversed(before['turns']) if t['role'] == 'reviewer' and t['phase'] == 'EXEC')
                 self.assertEqual(reviewer['answer']['full_review'], [])
                 self.assertTrue(any(d['disposition'] == 'still_open' for d in reviewer['answer']['prior_findings']))
-                ids = [row['id'] for row in before['finding_ledger'] if row['status'] == 'open']
-                self.cli_withdraw(ids, *flags)
-                withdrawn = self.state()
-                self.assertEqual(withdrawn['turns'], before['turns'])
+                log = self.root / (route + '-host.log')   # the operator runs the test on the host and attaches the record
+                log.write_text('OK\n')
+                attached = self.run_operator_action('attach-verification', *flags, '--command', 'python3 -m unittest',
+                                                    '--exit-code', '0', '--log', str(log), '--log-sha256',
+                                                    rc.hashlib.sha256(log.read_bytes()).hexdigest(), '--note', 'host run')
+                self.assertIn('VERIFICATION: V', attached.stdout, attached.stdout + attached.stderr)
                 resumed = self.run_operator_action('resume', *flags, env={'FAKE_EXEC_STILL_OPEN': 'advisory naming'})   # no new MINOR
                 self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                 after = self.state()
                 later = [t for t in after['turns'] if t['sequence'] > before['sequence']]
-                self.assertEqual(later[0]['role'], 'reviewer')
-                self.assertEqual(later[0]['answer']['prior_findings'], [])
+                self.assertEqual(later[0]['role'], 'reviewer')   # the same tree reviewed again, no author round
                 self.assertFalse(any(t['role'] == 'author' and t['phase'] == 'EXEC' for t in later))
                 self.assertEqual((after['exec_rounds'], len(after['rejections'])), (before['exec_rounds'], 2))
-                self.assertEqual(after['operator_rulings'], withdrawn['operator_rulings'])
-                self.assertFalse(any(row['status'] == 'open' for row in after['finding_ledger']))
                 self.assertFalse([t for t in later if t['role'] == 'gate'])   # WI-GATE1: the gate ran once
-                for role in ('shadow',):
-                    turns = [t for t in later if t['role'] == role]
-                    self.assertTrue(turns)
-                    text = (self.run_dir / 'evidence' / f"{turns[0]['sequence']:03d}-exec-{role}.prompt.txt").read_text()
-                    self.assertIn('operator decision: ' + REASON, text)
+                ids = [row['id'] for row in after['finding_ledger'] if row['status'] == 'open']
+                self.assertTrue(ids)   # the advisory rows stay open at DONE, where the operator may still withdraw them
+                self.cli_withdraw(ids, *flags)
+                self.assertFalse(any(row['status'] == 'open' for row in self.state()['finding_ledger']))
 
     def test_fake_cli_writer_replay_withdrawal_during_hold_survives_tree_rollback(self):
         base = writers.D09C1b2Tests.change(self)

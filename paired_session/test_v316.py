@@ -261,8 +261,8 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         self.assertEqual((self.workspace / 'test_writer.py').read_text(), '# kept writer edit\n')
         self.assertEqual(co.state['exec_rounds'], 2)   # as the recorded review set it: the replay review adds none
 
-    def assert_held(self, state):
-        self.assertEqual((state['status'], state['hold_reason']), ('HOLD', LIMIT))
+    def assert_held(self, state, reason=LIMIT):
+        self.assertEqual((state['status'], state['hold_reason']), ('HOLD', reason))
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
         self.assertFalse(any(row.get('advisory') for row in state['finding_ledger']))
 
@@ -287,10 +287,12 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         rows = [('adversarial-gate', 'low')]
         state = self.review('control', rows)
         self.assertEqual((state['status'], state['review_verdicts'][-1]['effective_verdict']), ('DONE', 'APPROVE_WITH_ADVISORY'))
-        for name, change in (('test-failed', {'test': (1, 'FAILED (failures=1)')}), ('test-not-run', {'test': None}),
-                             ('no-evidence', {'self_run_evidence': []}), ('another-tree', {'reviewed_snapshot': '0' * 40})):
+        for name, change, reason in (('test-failed', {'test': (1, 'FAILED (failures=1)')}, LIMIT),
+                                     ('test-not-run', {'test': None}, rc.TEST_EVIDENCE_HOLD),   # WI-GATE1 S3 R2 F8: only
+                                     ('no-evidence', {'self_run_evidence': []}, rc.TEST_EVIDENCE_HOLD),   # the evidence is missing
+                                     ('another-tree', {'reviewed_snapshot': '0' * 40}, LIMIT)):
             with self.subTest(change=name):
-                self.assert_held(self.review(name, rows, **change))
+                self.assert_held(self.review(name, rows, **change), reason)
 
     def test_a_round_left_also_exits_and_no_row_still_open_changes_nothing(self):
         state = self.review('round-left', [('adversarial-gate', 'low')], rounds=1)   # WI-GATE1 S3: exits in any round

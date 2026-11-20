@@ -110,7 +110,8 @@ class ApprovalEvidenceTests(unittest.TestCase):
         prompt = co._gate_prompt(snapshot) if role == 'gate' else co._review_prompt(role, snapshot)
         schema = rc.gate_schema() if role == 'gate' else rc.review_schema()
         prefix = f'{role} EXEC approval lacks an observed successful configured test command'
-        expected = prefix + (" (the command timed out after 10m 0s in the role's command tool)" if timed_out else '')
+        expected = prefix + (" (the command timed out after 10m 0s in the role's command tool)" if timed_out else '') \
+            + rc.TEST_EVIDENCE_GUIDANCE   # WI-GATE1 S3 R2 F8: the attach-verification recovery
         with patch.dict(os.environ, {'FAKE_REVIEW_TEST_FAILURE': '1'}):
             with self.assertRaises(RuntimeError) as caught:
                 co.invoke(role, 'EXEC', prompt, schema, fresh=role == 'gate')

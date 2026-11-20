@@ -54,7 +54,7 @@ class PromptTests(unittest.TestCase):
                             'A still_open disposition records that a finding is unresolved and does not by itself require REVISE.',
                             # WI-GATE1 S3: the blocking threshold adds the category and reachability
                             'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, and source=adversarial-gate with CRITICAL or HIGH, '
-                            'with a blocking category (correctness, data-loss, security, money) and a reachability statement; a row listed without a category keeps its severity.',
+                            'with a blocking category (correctness, data-loss, security, money); a row listed without a category keeps its severity.',
                             'Every other row (MINOR or LOW, security-tagged or not; category other; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open.',
                             "Do not raise another role's advisory row to a blocker only because it is still open.",
                             'Keep giving every listed row its disposition.',

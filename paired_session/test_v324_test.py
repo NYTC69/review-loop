@@ -98,7 +98,7 @@ class FailedTestApprovalTests(unittest.TestCase):
                 co = self.coordinator()
                 with patch.dict(os.environ, env):
                     self.assertEqual(co._drive_loop(), 'HOLD')
-                self.assertEqual(co.state['hold_reason'], PREFIX + suffix)
+                self.assertEqual(co.state['hold_reason'], PREFIX + suffix + rc.TEST_EVIDENCE_GUIDANCE)   # S3 R2 F8
                 self.assertFalse(co.open_findings())
                 self.assertEqual(co.state['next'], 'reviewer')
 
@@ -134,7 +134,8 @@ class FailedTestApprovalTests(unittest.TestCase):
                     else:
                         self.assertEqual(co._drive_loop(), 'HOLD')
                 self.assertEqual(co.state['hold_reason'],
-                                 f'{role} EXEC approval lacks an observed successful configured test command')
+                                 f'{role} EXEC approval lacks an observed successful configured test command'
+                                 + rc.TEST_EVIDENCE_GUIDANCE)   # S3 R2 F8
                 self.assertFalse(co.open_findings())
 
     def attach(self, co, tree=None, **over):

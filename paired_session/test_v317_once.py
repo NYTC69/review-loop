@@ -84,18 +84,25 @@ class AdvisoryOnceTests(unittest.TestCase):
                     self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
 
     def test_exec_early_exit_keeps_evidence_and_snapshot_requirements(self):
-        for name, changes in (('not-run', {'observed_commands': []}),
-                              ('failed', {'observed_commands': [{'command': 'python3 -m unittest', 'exit_code': 1,
-                                                                 'error': True, 'output': 'FAILED (failures=1)'}]}),
-                              ('no-evidence', {'self_run_evidence': []}),
-                              ('stale', {'reviewed_snapshot': '0' * 40})):
+        # WI-GATE1 S3 R2 F8: missing test evidence alone HOLDs for attach-verification (no author round); a stale tree
+        # still goes to the author
+        for name, changes, route in (('not-run', {'observed_commands': []}, 'hold'),
+                                     ('other-command', {'observed_commands': [{'command': 'python3 -m unittest', 'exit_code': 1,
+                                                        'error': True, 'output': 'FAILED (failures=1)'}]}, 'hold'),
+                                     ('no-evidence', {'self_run_evidence': []}, 'hold'),
+                                     ('stale', {'reviewed_snapshot': '0' * 40}, 'author')):
             with self.subTest(name=name):
                 self.run_dir = self.root / name
                 co = self.coordinator_at('EXEC')
                 self.record_review(co, 'EXEC', 'MINOR', **changes)
                 co.reviewer_turn()
-                self.assertEqual(co.state['next'], 'author')
                 self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
+                self.assertEqual(co.state['exec_rounds'], 1)
+                if route == 'hold':
+                    self.assertEqual((co.state['status'], co.state['hold_reason'], co.state['next']),
+                                     ('HOLD', rc.TEST_EVIDENCE_HOLD, 'reviewer'))
+                else:
+                    self.assertEqual(co.state['next'], 'author')
 
     def test_resume_replays_the_exit_without_dispatch(self):
         for phase in ('PLAN', 'EXEC'):

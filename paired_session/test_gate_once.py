@@ -487,7 +487,7 @@ class LegacyGateResumeTests(unittest.TestCase):
                     resumed = self.run_operator_action('resume', *mode, '--max-exec-rounds', '1', *extra, env=env)
                     self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
                     state = self.assert_repaired_without_a_gate(saved['sequence'], rows)
-                    self.assertIs('gate_fail_round' in state, not add)   # R2: the plain resume routes the saved FAIL
+                    self.assertIn('gate_fail_round', state)   # S3 R2 F5: resume rebuilds the saved FAIL's baseline either way
                     self.clean()
 
     def test_a_v386_gate_receipt_saved_before_its_findings_were_recorded_is_not_lost(self):

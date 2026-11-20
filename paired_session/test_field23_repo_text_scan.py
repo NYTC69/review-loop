@@ -296,13 +296,14 @@ class NoteWhileAwaitingReviewerTests(unittest.TestCase):
 
         class Captured(Exception):
             pass
-        # gate R5: a real REVISE through the reviewer-result path (only the provider call is mocked) hands EXEC back
+        # gate R5: a real REVISE through the reviewer-result path (only the provider call is mocked) hands EXEC back;
+        # WI-GATE1 S3 R2 F8: the finding blocks, since an advisory-only REVISE without test evidence HOLDs instead
         co.state.update(status='ACTIVE', hold_reason='')   # as resume reopens the HOLD
         snap = rc.git_snapshot(self.h.workspace)[0]
         answer = {'status': 'REVISE', 'reviewed_snapshot': snap, 'prior_findings': [], 'self_run_evidence': [],
-                  'full_review': [{'id': 'F001', 'severity': 'MINOR', 'file': 'tracked.txt', 'line': 1,
+                  'full_review': [{'id': 'F001', 'severity': 'MAJOR', 'file': 'tracked.txt', 'line': 1,
                                    'summary': 'routing comment is stale', 'failure_scenario': 'x', 'evidence': 'x',
-                                   'security': False}]}
+                                   'security': False, 'category': 'correctness', 'reachability': 'every caller'}]}
         with patch.object(co, 'invoke', return_value={'answer': answer, 'snapshot': snap, 'sequence': 2,
                                                        'role': 'reviewer'}), patch.object(co, 'render'):
             co.reviewer_turn()
