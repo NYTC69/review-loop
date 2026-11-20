@@ -294,7 +294,7 @@ def specialist_prompt(name, body, test_command, owned, protocol, change='the unc
             f'{change}, with the instructions above. Do not modify any file. Report '
             'every finding in full_review using only the schema severities: report HIGH and MEDIUM as MAJOR and LOW '
             'as MINOR; a CRITICAL or MAJOR finding blocks delivery only with a blocking category (correctness, '
-            'data-loss, security, money) and a reachability statement; everything else is category other and goes to '
+            'data-loss, security, money; say how normal use reaches it); everything else is category other and goes to '
             'the BACKLOG.\n'
             'Read a long file in line ranges (a few hundred lines per read), the changed hunks of delta.patch first and '
             'then the code they depend on; when a tool output is truncated, read the remaining range instead of '

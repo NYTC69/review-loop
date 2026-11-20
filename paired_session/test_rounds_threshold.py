@@ -1,7 +1,8 @@
 """WI-GATE1 S3 + S4 (owner 2026-11-19/20): one blocking threshold and the EXEC round rules.
 
 S3: every finding carries a category (correctness, data-loss, security, money, other) and a reachability statement. A row
-blocks only with a blocking severity, a blocking category and a reachability; program rows set their own category. A
+blocks only with a blocking severity and a blocking category (an empty reachability never demotes it); program rows set
+their own category. A
 REVISE whose open rows are all non-blocking is an approval with advisory rows (no fix round); the rows reach the run
 backlog at DONE and the workspace BACKLOG.md at accept (in the accepted commit when one is made).
 S4 (research-rc R1-R6): R1 three EXEC review rounds before the gate; R2 one gate, then one automatic fix round and at most
@@ -36,10 +37,10 @@ class ThresholdUnitTests(unittest.TestCase):
             self.assertEqual(finding['properties']['category']['enum'],
                              ['correctness', 'data-loss', 'security', 'money', 'other'])
 
-    def test_a_row_blocks_only_with_severity_category_and_reachability(self):
+    def test_a_row_blocks_with_a_blocking_severity_and_category(self):
         major = {'severity': 'MAJOR', 'source': 'persistent-reviewer'}
         cases = (({**major, **CORRECT}, True), ({**major, **OTHER}, False),
-                 ({**major, 'category': 'money', 'reachability': ' '}, False),   # a blocking category needs its reachability
+                 ({**major, 'category': 'money', 'reachability': ' '}, True),   # R2 F1: an empty reachability never demotes it
                  ({**major, 'category': 'data-loss', 'reachability': 'a crash mid-write'}, True),
                  ({'severity': 'MINOR', **CORRECT}, False),
                  ({**major, **CORRECT, 'post_gate_nonblocking': True}, False),
@@ -91,6 +92,26 @@ class ThresholdRunTests(unittest.TestCase):
         result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '1', env=env)
         self.assertIn('HOLD: EXEC round limit reached', result.stdout, result.stdout + result.stderr)
         self.assertIn('NOTE: round rule R1 stopped the run', result.stdout)
+
+    def test_r2f1_a_blocking_category_with_an_empty_reachability_still_blocks(self):
+        env = {'FAKE_EXEC_MIXED_REVISE': '1', **fields(**{'major behavior issue': {'category': 'correctness', 'reachability': ''}})}
+        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '1', env=env)
+        self.assertIn('HOLD: EXEC round limit reached', result.stdout, result.stdout + result.stderr)
+        row = next(r for r in self.state()['finding_ledger'] if r['summary'] == 'major behavior issue')
+        self.assertEqual((row['category'], row['status']), ('correctness', 'open'))
+        self.assertNotIn('major behavior issue', self.backlog())
+
+    def test_r2f8_an_advisory_only_review_without_test_evidence_holds_instead_of_an_author_round(self):
+        env = {'FAKE_EXEC_MIXED_REVISE': '1', 'FAKE_MISSING_OBSERVED': '1', **fields(**{'major behavior issue': OTHER})}
+        held = self.run_coordinator(*OFF, '--adversarial-gate', 'off', env=env)
+        self.assertIn('HOLD: ' + rc.TEST_EVIDENCE_HOLD, held.stdout, held.stdout + held.stderr)
+        state = self.state()
+        self.assertEqual((state['exec_rounds'], len(self.authors(state)), state['next']), (1, 1, 'reviewer'))
+
+    def test_r2f9_the_advisory_fix_round_is_refused_on_a_delivery_run(self):
+        result = self.run_coordinator(*ON, '--advisory-fix-round', 'true')
+        self.assertIn('REFUSED: ' + rc.ADVISORY_FIX_ROUND_REFUSAL, result.stdout + result.stderr)
+        self.assertFalse((self.run_dir / 'state.json').exists())
 
     def test_field_case_a_changelog_wording_finding_never_blocks_and_a_false_behavior_doc_does(self):
         # poker-tools runs 1b959a22, 3812c747: the only open MAJOR was a changelog wording note after review and gate approved
@@ -147,6 +168,47 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertEqual(again.stdout.strip().splitlines()[-1], 'ACCEPTED')
         self.assertEqual(self.git('show', 'HEAD:BACKLOG.md'), committed)   # no second copy
 
+    def test_r2f3_a_failed_commit_leaves_no_backlog_drift_and_the_next_accept_commits_the_rows(self):
+        env = {'FAKE_EXEC_MIXED_REVISE': '1', **fields(**{'major behavior issue': OTHER})}
+        flags = ('--lifecycle-mode', 'on', '--auto-commit', 'true')
+        self.assertIn(DONE, self.run_coordinator(*flags, env=env).stdout)
+        before = self.git('status', '--porcelain')
+        failed = self.run_operator_action('accept', *flags, env={'GIT_COMMITTER_NAME': '', 'GIT_AUTHOR_NAME': ''})
+        self.assertIn('commit-tree', failed.stdout + failed.stderr)   # the identity error, after the backlog was planned
+        self.assertFalse((self.workspace / 'BACKLOG.md').exists())   # nothing written before the commit exists
+        self.assertEqual(self.git('status', '--porcelain'), before)
+        accepted = self.run_operator_action('accept', *flags)
+        self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+        self.assertIn('- major behavior issue (review-loop run', self.git('show', 'HEAD:BACKLOG.md'))
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_r2f4_a_symlinked_or_ignored_backlog_is_never_written(self):
+        env = {'FAKE_EXEC_MIXED_REVISE': '1', **fields(**{'major behavior issue': OTHER})}
+        flags = ('--lifecycle-mode', 'on', '--auto-commit', 'true')
+        shared = self.root / 'shared-backlog.md'
+        for case in ('symlink', 'ignored'):
+            with self.subTest(case=case):
+                self.run_dir = self.root / case
+                if case == 'symlink':
+                    shared.write_text('# Shared\n')
+                    (self.workspace / 'BACKLOG.md').symlink_to(shared)
+                else:
+                    (self.workspace / 'BACKLOG.md').unlink()
+                    (self.workspace / '.git' / 'info' / 'exclude').write_text('BACKLOG.md\n')
+                rc.subprocess.run(['git', 'add', '-A'], cwd=self.workspace, check=True)
+                rc.subprocess.run(['git', 'commit', '-qm', 'setup ' + case], cwd=self.workspace, check=True)
+                self.assertIn(DONE, self.run_coordinator(*flags, env=env).stdout)
+                accepted = self.run_operator_action('accept', *flags)
+                self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
+                self.assertIn('NOTE: the non-blocking findings were not written to', accepted.stdout)
+                self.assertIn('major behavior issue', (self.run_dir / 'backlog.md').read_text())
+                if case == 'symlink':
+                    self.assertTrue((self.workspace / 'BACKLOG.md').is_symlink())
+                    self.assertEqual(shared.read_text(), '# Shared\n')
+                else:
+                    self.assertFalse((self.workspace / 'BACKLOG.md').exists())
+                    self.assertNotIn('BACKLOG.md', self.git('ls-tree', '--name-only', 'HEAD'))
+
     def git(self, *args):
         return rc.subprocess.run(['git', *args], cwd=self.workspace, check=True, text=True,
                                  stdout=rc.subprocess.PIPE).stdout.strip()
@@ -186,23 +248,48 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertEqual(len(gates(self.state())), 1)
 
     def test_r2_a_post_gate_finding_blocks_only_as_a_regression_of_the_fix(self):
-        for name, reach, done in (('other', 'every caller', True), ('regression', 'regression: the fix drops a case', False)):
+        for name, reach in (('other', 'every caller'), ('regression', 'regression: the fix drops a case'),
+                            ('then-other', 'regression: the fix drops a case|every caller')):
             with self.subTest(case=name):
                 self.run_dir = self.root / ('post-' + name)
                 result = self.run_coordinator(*OFF, env={**FAIL, 'FAKE_POST_GATE_FINDING': reach})
                 state = self.state()
                 post = [r for r in state['finding_ledger'] if r['summary'].startswith('post-gate finding')]
-                self.assertTrue(post)
                 self.assertEqual(len(gates(state)), 1)
-                if done:   # the gate item is fixed; the new correctness finding goes to the BACKLOG
+                if name == 'other':   # the gate item is fixed; the new correctness finding goes to the BACKLOG
                     self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
                     self.assertEqual(state['exec_rounds'], 2)
-                    self.assertTrue(all(r.get('post_gate_nonblocking') for r in post))
+                    self.assertTrue(post and all(r.get('post_gate_nonblocking') for r in post))
                     self.assertIn('post-gate finding', self.backlog())
-                else:   # the regression of the fix blocks; the next review (no gate item open) has the ordinary threshold
+                elif name == 'regression':   # R4c: after the approval, two reviews in a row each bring a new regression
+                    self.assertIn('HOLD: ' + rc.NEW_BLOCKERS_REASON, result.stdout, result.stdout + result.stderr)
+                    self.assertIn('NOTE: round rule R4c stopped the run', result.stdout)
+                    self.assertEqual((state['exec_rounds'], state['next']), (3, 'author'))
+                else:   # S3 R2 F2: the repair scope lasts until a repair review passes, past the last gate item
                     self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
                     self.assertEqual(state['exec_rounds'], 3)
-                    self.assertEqual([(r['status'], r.get('post_gate_nonblocking')) for r in post], [('fixed', None)])
+                    self.assertEqual([(r['status'], bool(r.get('post_gate_nonblocking'))) for r in post],
+                                     [('fixed', False), ('open', True)])
+                    self.assertIsNotNone(state['gate_fail_round']['closed_at'])
+                self.clean()
+
+    def test_r2f2_a_shadow_blocker_in_the_gate_repair_is_confirmed_by_the_reviewer_first(self):
+        for confirm, rounds in (('withdrawn', 2), ('still_open', 3)):
+            with self.subTest(confirm=confirm):
+                self.run_dir = self.root / confirm
+                marker = str(self.root / (confirm + '.gate'))
+                env = {'FAKE_GATE_BLOCK_ONCE': marker, 'FAKE_SHADOW_BLOCKER_IF_FILE': marker, 'FAKE_CONFIRM_SHADOW': confirm}
+                result = self.run_coordinator('--lifecycle-mode', 'off', env=env)
+                self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+                state = self.state()
+                [row] = [r for r in state['finding_ledger'] if r['summary'] == 'shadow regression']
+                self.assertEqual(row['status'], 'withdrawn' if confirm == 'withdrawn' else 'fixed')
+                self.assertEqual(bool(row.get('confirmed_regression')), confirm == 'still_open')
+                self.assertEqual((state['exec_rounds'], len(gates(state))), (rounds, 1))
+                reviews = [t for t in state['turns'] if t['role'] == 'reviewer' and t['phase'] == 'EXEC'
+                           and t['sequence'] > row['origin_round']]
+                self.assertEqual(reviews[0]['answer']['prior_findings'][0]['disposition'], confirm)   # no author before it
+                self.assertNotIn('shadow regression', self.backlog())
                 self.clean()
 
     def test_r4c_two_reviews_after_an_approval_each_with_new_blockers_hold_for_a_split(self):
@@ -218,6 +305,38 @@ class ThresholdRunTests(unittest.TestCase):
                            'failure_scenario': 'x', **OTHER}])
         self.assertIsNone(co._update_stop_rules(4, {'prior_findings': []}, 'REVISE'))   # a non-blocking row resets it
 
+    def test_r2f7_r4c_counts_the_shadow_s_new_blockers_too(self):
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
+        self.assertIsNone(co._update_stop_rules(1, {}, 'APPROVE'))
+        reasons = []
+        for reviewer in (2, 4):   # each review: no reviewer row, one new shadow blocker (the shadow turn follows the reviewer's)
+            [row] = co.record_findings('fresh-shadow', 'EXEC', reviewer + 1, [{'severity': 'MAJOR', 'file': 'a.py',
+                                       'summary': f'shadow {reviewer}', 'failure_scenario': 'x', **CORRECT}])
+            next(r for r in co.state['finding_ledger'] if r['id'] == row['id'])['source'] = 'fresh-shadow'
+            reasons.append(co._update_stop_rules(reviewer, {'prior_findings': []}, 'REVISE'))
+        self.assertIsNone(reasons[0])
+        self.assertTrue(reasons[1].startswith(rc.NEW_BLOCKERS_REASON), reasons)
+        self.assertEqual(co.state['stop_rules']['new_blocking_streak'], 2)
+
+    def test_r2f5_a_saved_v386_state_is_recounted_with_its_gate_fail_baseline(self):
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
+        turn = lambda sequence, role, phase, **more: {'sequence': sequence, 'role': role, 'phase': phase, 'answer': {}, **more}
+        turns = [turn(1, 'author', 'PLAN'), turn(2, 'reviewer', 'PLAN'), turn(3, 'author', 'EXEC'), turn(4, 'reviewer', 'EXEC'),
+                 turn(5, 'gate', 'EXEC', answer={'findings': []}), turn(6, 'author', 'EXEC'), turn(7, 'reviewer', 'EXEC'),
+                 turn(8, 'author', 'FINISH'), turn(9, 'reviewer', 'EXEC'),   # v3.8.6 charged the FINISH write a round
+                 turn(10, 'author', 'EXEC'), turn(11, 'reviewer', 'POLISH-Q')]   # and the POLISH-Q fix another
+        [gate_row] = co.record_findings('adversarial-gate', 'EXEC', 5, [{'severity': 'HIGH', 'file': 'a.py',
+                                        'summary': 'gate blocker', 'failure_scenario': 'x'}])
+        co.state.update(turns=turns, exec_rounds=4, gate_fail_items=[{'id': gate_row['id'], 'sequence': 5}], sequence=11)
+        co.state.pop('round_rules')   # what v3.8.6 saved
+        co._settle_saved_rounds()
+        self.assertEqual(co.state['exec_rounds'], 2)   # rounds 3 and 6: the FINISH write and the POLISH-Q fix are not counted
+        self.assertEqual((co.state['gate_fail_round']['round'], co._exec_limits()), (1, (3, 'R2')))   # at most 1 + 1 after it
+        self.assertIsNone(co.state['gate_fail_round'].get('closed_at'))   # its gate item is still open
+        co.state['exec_rounds'] = 9
+        co._settle_saved_rounds()   # a state of this release is never recounted
+        self.assertEqual(co.state['exec_rounds'], 9)
+
     def test_r3_the_hard_cap_guards_a_state_whose_round_count_ran_past_it(self):
         co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
         co.state.update(exec_rounds=5, gate_fail_round={'round': 5, 'extra': 0, 'sequence': 9})   # e.g. v3.8.x stage writes
@@ -225,6 +344,17 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertEqual(co._exec_limit_reason(), rc.HARD_CAP_REASON)
         co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2, 'hold_reason': rc.HARD_CAP_REASON}]
         self.assertEqual(co._exec_limits(), (7, 'R3'))   # an extension lands on top of the hard cap too
+
+    def test_r2f6_the_hard_cap_is_five_whatever_the_pre_gate_cap_says(self):
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'off', '--max-exec-rounds', '4'))
+        co.state.update(exec_rounds=4, gate_fail_round={'round': 4, 'extra': 0, 'sequence': 9})   # a gate FAIL in round 4
+        self.assertEqual(co._exec_limits(), (5, 'R3'))
+        self.run_dir = self.root / 'cap7'
+        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '7',
+                                      env={'FAKE_EXEC_MIXED_REVISE': '1'})
+        self.assertIn('HOLD: ' + rc.HARD_CAP_REASON, result.stdout, result.stdout + result.stderr)
+        self.assertIn('NOTE: round rule R3 stopped the run', result.stdout)
+        self.assertEqual(self.state()['exec_rounds'], 5)
 
     def test_r4b_the_same_finding_still_open_in_two_consecutive_reviews_holds_and_asks(self):
         env = {'FAKE_EXEC_STILL_OPEN': 'required exercise'}
@@ -268,6 +398,31 @@ class ThresholdRunTests(unittest.TestCase):
         state = self.state()
         self.assertEqual((state['exec_rounds'], len(self.authors(state))), (1, 1))   # no fix round was used
 
+
+    def attach(self, argv, name):
+        log = self.root / (name + '.log')
+        log.write_text('OK\n')
+        return self.run_operator_action('attach-verification', *argv, '--command', 'python3 -m unittest', '--exit-code', '0',
+                                        '--log', str(log), '--log-sha256', rc.hashlib.sha256(log.read_bytes()).hexdigest(),
+                                        '--note', 'host run')
+
+    def test_r2f10_a_gate_needing_a_host_record_for_the_current_tree_holds_before_dispatch(self):
+        argv = ('--lifecycle-mode', 'off', '--reviewer-vendor', 'codex', '--gate-vendor', 'codex', '--shadow', 'off')
+        held = self.run_coordinator(*argv, '--max-invocations', '5', env={'FAKE_REVIEW_TEST_FAILURE': '1'})
+        self.assertIn('HOLD: ' + rc.TEST_EVIDENCE_HOLD, held.stdout, held.stdout + held.stderr)
+        self.assertEqual(self.state()['invocations_used'], 4)
+        self.assertIn('VERIFICATION: V001', self.attach(argv, 'v1').stdout)
+        stopped = self.run_operator_action('resume', *argv)   # the reviewer approves on V001, then the budget stops it
+        self.assertIn('HOLD: invocation limit reached', stopped.stdout, stopped.stdout + stopped.stderr)
+        self.assertEqual((self.state()['next'], gates(self.state())), ('gate', []))
+        (self.workspace / 'notes.txt').write_text('edited after the approval\n')   # V001 is not bound to this tree
+        again = self.run_operator_action('resume', *argv, '--max-invocations', '25')
+        self.assertIn('HOLD: ' + rc.TEST_EVIDENCE_HOLD, again.stdout, again.stdout + again.stderr)
+        self.assertEqual(gates(self.state()), [])   # the gate was not dispatched
+        self.assertIn('VERIFICATION: V002', self.attach(argv, 'v2').stdout)
+        done = self.run_operator_action('resume', *argv, '--max-invocations', '25')
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        self.assertEqual(len(gates(self.state())), 1)
 
 if __name__ == '__main__':
     unittest.main()

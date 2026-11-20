@@ -687,14 +687,30 @@ def main():
             gate_ids = {line[2:].split(' ', 1)[0] for line in prompt.splitlines() if line.endswith('(gate FAIL item):')}
             prior = [{**row, 'disposition': 'withdrawn', 'evidence': 'fake: not a real defect'} if row['id'] in gate_ids else row
                      for row in prior]
+        shadow_if = os.environ.get('FAKE_SHADOW_BLOCKER_IF_FILE')   # S3 R2 F2: one shadow blocker once the file exists
+        if (shadow_if and role == 'shadow' and phase == 'EXEC' and Path(shadow_if).exists()
+                and not Path(shadow_if + '.shadow').exists()):
+            Path(shadow_if + '.shadow').write_text('raised\n')
+            revise = True
+            findings = [{'severity': 'MAJOR', 'file': 'sum_ints.py', 'category': 'correctness', 'reachability': 'every caller',
+                         'summary': 'shadow regression', 'failure_scenario': 'a caller gets the wrong result'}]
+        confirm = os.environ.get('FAKE_CONFIRM_SHADOW')   # S3 R2 F2: how the reviewer disposes a shadow row it is asked to confirm
+        if confirm and role == 'reviewer' and phase == 'EXEC':
+            asked = {line[2:].split(':', 1)[0] for line in prompt.splitlines()
+                     if line.startswith('- F') and 'shadow finding to confirm' in line}
+            prior = [{**row, 'disposition': confirm, 'evidence': 'fake confirmation'} if row['id'] in asked else row
+                     for row in prior]
+            revise = revise or (confirm == 'still_open' and bool(asked))
         if (log := os.environ.get('FAKE_REVIEW_PROMPT_LOG')) and role == 'reviewer' and phase == 'EXEC':
             with open(log, 'a') as out:   # WI-GATE1: what each EXEC reviewer round was asked to check
                 out.write(json.dumps(prompt) + '\n')
         post_gate = os.environ.get('FAKE_POST_GATE_FINDING')   # WI-GATE1 S4: a new correctness finding in every post-gate review
         if post_gate is not None and role == 'reviewer' and phase == 'EXEC' and '## Post-gate review' in prompt:
-            revise = True
+            revise = True   # 'a|b': the reachability of the first, second, ... post-gate finding (the last one repeats)
+            reaches = post_gate.split('|')
+            reach = reaches[min(prompt.count('post-gate finding '), len(reaches) - 1)]
             findings = [*findings, {'severity': 'MAJOR', 'file': 'sum_ints.py', 'category': 'correctness',
-                                    'reachability': post_gate, 'summary': 'post-gate finding ' + str(len(open_ids)),
+                                    'reachability': reach, 'summary': 'post-gate finding ' + str(len(open_ids)),
                                     'failure_scenario': 'a caller gets the wrong result'}]
         keep, keep_if = os.environ.get('FAKE_EXEC_STILL_OPEN'), os.environ.get('FAKE_EXEC_STILL_OPEN_IF_FILE')
         if keep and role == 'reviewer' and phase == 'EXEC' and (not keep_if or Path(keep_if).exists()):

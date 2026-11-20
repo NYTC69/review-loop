@@ -196,6 +196,8 @@ ROUND_LIMIT_REASONS = ('PLAN round limit reached', 'EXEC round limit reached', '
                        'EXEC round limit reached after a SECURITY-stage change',   # saved by v3.8.x: stage writes no longer count
                        GATE_SPLIT_REASON, HARD_CAP_REASON)
 REVIEW_LIMIT_REASONS = ROUND_LIMIT_REASONS[:3] + (GATE_SPLIT_REASON, HARD_CAP_REASON)   # held at a review: an extension goes to the author
+TEST_EVIDENCE_GUIDANCE = ('. If the sandbox cannot run it, run the configured test command on the host, record it with '
+                          'attach-verification, then resume')   # S3 R2 F8: the same recovery as TEST_EVIDENCE_HOLD
 TEST_EVIDENCE_HOLD = ('EXEC APPROVE needs test evidence the role sandbox could not produce (round rule R5: no round is used): '
                       'run the configured test command on the host, record it with attach-verification, then resume (the '
                       'reviewer reviews the same tree again); if the failure is real, fix it in the workspace and resume')
@@ -237,22 +239,26 @@ BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
 # severity blocks AND its category is one of these four AND it says how normal use reaches it; everything else is reported
 # and goes to the BACKLOG.
 BLOCKING_CATEGORIES = ('correctness', 'data-loss', 'security', 'money')
+ROUND_RULES_VERSION = 'WI-GATE1'   # S3 R2 F5: a state without it was saved by v3.8.x and is recounted on resume
+ADVISORY_FIX_ROUND_REFUSAL = ('--advisory-fix-round is a code-quality-loop option and needs --review-only; a delivery run '
+                              'records non-blocking findings in the BACKLOG instead (WI-GATE1 S3)')
 FINDING_CATEGORIES = (*BLOCKING_CATEGORIES, 'other')
 
 
 def category_blocks(row: dict) -> bool:
     """WI-GATE1 S3: the category half of the threshold. A row without a `category` key (a program row that sets none, or a
-    row saved before WI-GATE1) keeps its severity-only behavior; a post-gate row that is not a regression never blocks."""
-    if row.get('post_gate_nonblocking'):
+    row saved before WI-GATE1) keeps its severity-only behavior; a post-gate row that is not a regression never blocks. A row in
+    a blocking category whose reachability is empty still blocks (S3 R2 F1: an incomplete answer never demotes a finding)."""
+    if row.get('post_gate_nonblocking') or row.get('needs_confirmation'):   # S3 R2 F2: a shadow row the reviewer confirms first
         return False
     if 'category' not in row:
         return True
-    return row['category'] in BLOCKING_CATEGORIES and bool(str(row.get('reachability') or '').strip())
+    return row['category'] in BLOCKING_CATEGORIES
 
 
 def blocks_by_severity(row: dict) -> bool:
     """v3.8.1 (owner 2026-11-10): the security tag no longer escalates a MINOR or LOW row. WI-GATE1 S3: a blocking severity
-    blocks only with a blocking category and a reachability statement (category_blocks)."""
+    blocks only with a blocking category (category_blocks)."""
     severity = str(row.get('severity', '')).upper()
     return (severity in BLOCKING_REVIEW_SEVERITIES or (row.get('source') == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))) \
         and category_blocks(row)
@@ -324,7 +330,7 @@ THREAT_MODEL_SENTENCE = ('Users and models are assumed to act in good faith: pro
 REVIEW_SEVERITY_GUIDANCE = ('Only correctness, data loss, security and money issues block. Give every finding a category '
     '(correctness, data-loss, security, money, or other) and a reachability statement: how normal use reaches the problem '
     '(required for a blocking finding; may be empty for category other). A finding blocks only when its severity is CRITICAL, '
-    'MAJOR or SECURITY, its category is one of the four blocking categories and its reachability is filled. Everything else '
+    'MAJOR or SECURITY and its category is one of the four blocking categories. Everything else '
     'is category other (wording, style, naming, docs polish, extra robustness, missing tests without a reachable failure): '
     'report it; it does not block and goes to the BACKLOG. A document or comment that states false behavior a user would act '
     'on is correctness. ' + THREAT_MODEL_SENTENCE + ' '
@@ -335,7 +341,7 @@ REVIEW_INCLUSION_GUIDANCE = ('Report a new finding only when you would ask the a
     'Rare but realistically reachable credential exposure, authorization bypass, irreversible data loss, destructive action, or comparable harm is still reported.')
 LEDGER_DISPOSITION_GUIDANCE = ('A still_open disposition records that a finding is unresolved and does not by itself require REVISE. '
     'Blocking rows: severity CRITICAL, MAJOR or SECURITY from any source, and source=adversarial-gate with CRITICAL or HIGH, '
-    'with a blocking category (correctness, data-loss, security, money) and a reachability statement; a row listed without a category keeps its severity. '
+    'with a blocking category (correctness, data-loss, security, money); a row listed without a category keeps its severity. '
     'Every other row (MINOR or LOW, security-tagged or not; category other; adversarial-gate MEDIUM or LOW) is advisory; you may APPROVE while such rows stay open. '
     'Do not raise another role\'s advisory row to a blocker only because it is still open. '
     'Keep giving every listed row its disposition. '
@@ -2820,7 +2826,7 @@ class Coordinator:
                     'reviewer': str(uuid.uuid4()) if args.reviewer_vendor == 'claude' else None,
                 },
                 'started': {'author': False, 'reviewer': False}, 'plan_rounds': 0,
-                'exec_rounds': 0, 'plan_reviews': 0, 'exec_reviews': 0,
+                'exec_rounds': 0, 'plan_reviews': 0, 'exec_reviews': 0, 'round_rules': ROUND_RULES_VERSION,
                 'review_findings': [], 'gate_ran': False,
                 'sequence': 0, 'invocations_used': 0,
                 'turns': [], 'active': None,
@@ -3746,7 +3752,7 @@ class Coordinator:
                      'security': bool(finding.get('security')),
                      'failure_scenario': finding.get('failure_scenario', ''),
                      'body': finding.get('body', ''),
-                     **{key: finding[key] for key in ('category', 'reachability', 'post_gate_nonblocking') if key in finding},
+                     **{key: finding[key] for key in ('category', 'reachability', 'post_gate_nonblocking', 'needs_confirmation') if key in finding},
                      'status_history': [{'round': origin_round, 'status': 'open',
                                         'evidence': 'program assigned identity'}]}
             if source.startswith('specialist:'):
@@ -3805,6 +3811,8 @@ class Coordinator:
                 continue
             finding['status_history'].append({'round': origin_round, 'status': disposition,
                                               'evidence': row['evidence']})
+            if disposition == 'still_open' and owner_role == 'persistent-reviewer' and finding.pop('needs_confirmation', None):
+                finding['confirmed_regression'] = origin_round   # S3 R2 F2: the reviewer confirmed a shadow row; it blocks now
             if disposition in ('fixed', 'withdrawn'):
                 finding['status'] = disposition
                 self._progress_finding(finding)
@@ -4325,8 +4333,7 @@ class Coordinator:
         record['uncommitted'] = self._uncommitted_files()   # no commit on the lifecycle-off route
         if backlog := self.state.get('repo_backlog'):
             record['repo_backlog'] = backlog
-            print(f"NOTE: {backlog['rows']} non-blocking finding(s) appended to {backlog['path']} in the working tree "
-                  '(lifecycle off never commits)')
+            print(self._repo_backlog_note(False))
         self.state.setdefault('events', []).append(record)
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
@@ -4370,7 +4377,8 @@ class Coordinator:
                 self.state.get('status') in ('DONE', 'HOLD')) and (   # never ABORTED: a superseded run stays superseded
                 journal['intent'].get('receipts_sha256') == receipts) and not self.state.get('scope_change_intent'):
             intent = journal['intent']   # a replay of a journaled commit (HEAD may already be the commit)
-            if git_snapshot(self.workspace)[0] not in (intent['tree_sha256'], journal.get('workspace_tree_sha256')):
+            if (git_snapshot(self.workspace)[0] != intent['tree_sha256']
+                    and not self._tree_is_intent_plus_backlog(intent, journal)):
                 raise ValueError('the tree changed since the journaled accept; restore it or abort')
         else:
             if self.state.get('status') != 'DONE' or life.get('stage') != 'DONE':
@@ -4404,8 +4412,7 @@ class Coordinator:
             record['uncommitted'] = self._uncommitted_files()
         if backlog := self.state.get('repo_backlog'):
             record['repo_backlog'] = backlog
-            print(f"NOTE: {backlog['rows']} non-blocking finding(s) appended to {backlog['path']} "
-                  + ('in the accepted commit' if delivery.get('commit') else 'in the working tree (not committed)'))
+            print(self._repo_backlog_note(bool(delivery.get('commit'))))
         evidence_path = self.evidence / 'acceptance.json'
         record['evidence'] = str(evidence_path)
         atomic_json(evidence_path, record)
@@ -4459,9 +4466,12 @@ class Coordinator:
             raise ValueError('auto_commit refuses content-transforming attributes: ' +
                              ', '.join(transforming[:10] or [proc.stderr.strip()[-200:]]))
 
-    def _manifest_tree(self, snapshot: list) -> str:
-        """Accepted modes via a private index; raw POSIX blobs, ordinary Git text cleaning on Windows."""
-        files = [(path, value) for path, value in snapshot if value != 'missing']
+    def _manifest_tree(self, snapshot: list, extra: Optional[dict] = None) -> str:
+        """Accepted modes via a private index; raw POSIX blobs, ordinary Git text cleaning on Windows. `extra` maps a path to
+        the text its regular file holds in the commit (S3 R2 F3: the BACKLOG.md rows, written to the worktree only after
+        the journal names them)."""
+        extra = extra or {}
+        files = [(path, value) for path, value in snapshot if value != 'missing' and path not in extra]
         if any('\n' in path or path.startswith('"') or path.endswith('\r') for path, _ in files):
             raise ValueError('auto_commit refuses a path that --stdin-paths would rewrite (newline, leading quote, trailing CR)')
         regular = [path for path, value in files if not value.startswith('link:')]
@@ -4489,6 +4499,11 @@ class Coordinator:
                     timeout=600).stdout.strip()
         rows = ''.join(f"{'120000' if value.startswith('link:') else '100755' if value.startswith('exec:') else '100644'}"
                        f' {oids[path]}\t{path}\0' for path, value in files)   # rel210-fixA: the accepted mode, not a live lstat
+        for path, text in extra.items():
+            oid = candidate_tree.run_bounded(
+                candidate_tree.git_command('hash-object', '-w', '--stdin', cwd=self.workspace), cwd=self.workspace,
+                input=text.encode('utf-8'), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=600).stdout.decode().strip()
+            rows += f'100644 {oid}\t{path}\0'
         index = self.internal / f'delivery-index-{uuid.uuid4().hex[:8]}'
         env = {**candidate_tree.git_env(), 'GIT_INDEX_FILE': str(index)}
         try:
@@ -4508,10 +4523,11 @@ class Coordinator:
                 self._commit_refusals([path for path, value in intent['tree_snapshot'] if value != 'missing'])
                 if git_snapshot(self.workspace)[0] != intent['tree_sha256']:
                     raise ValueError('the tree changed during the accept; restore the approved tree or abort')
-                snapshot = intent['tree_snapshot']
-                if self._append_repo_backlog():   # WI-GATE1 S3 (owner Q1): the non-blocking rows ride in the accepted commit
-                    snapshot = git_snapshot(self.workspace)[1]
-                tree = self._manifest_tree(snapshot)
+                backlog = self._repo_backlog_plan()   # WI-GATE1 S3 (owner Q1): the rows ride in the accepted commit;
+                tree = self._manifest_tree(intent['tree_snapshot'],   # S3 R2 F3: as a blob, the worktree is written after the journal
+                                           {'BACKLOG.md': backlog['text']} if backlog else None)
+                if backlog and self._git(['show', f'{tree}:BACKLOG.md']) != backlog['text']:   # S3 R2 F4: verify before reporting
+                    raise RuntimeError('auto_commit: the commit tree does not hold the BACKLOG.md rows')
             except ValueError as exc:   # FIELD-25 gate: a defaulted auto_commit delivers uncommitted; an explicit one refuses
                 if self.state['config'].get('auto_commit_source') != 'review-only-default' or 'tree changed' in str(exc):
                     raise
@@ -4524,7 +4540,7 @@ class Coordinator:
             commit = self._git(['commit-tree', '--no-gpg-sign', tree, '-p', parent, '-m', message]).strip()
             journal = {'intent': intent, 'parent': parent, 'tree': tree, 'commit': commit, 'ref': intent.get('head_ref'),
                        'index_before': self._index_digest(), 'index_target': self._index_digest(commit),
-                       'workspace_tree_sha256': git_snapshot(self.workspace)[0]}   # with the BACKLOG.md rows, for a replay
+                       **({'backlog': backlog} if backlog else {})}
             atomic_json(self.evidence / 'delivery-commit.json', journal)
         if 'index_before' not in journal:
             raise WorktreeDeliveryHold('auto_commit: the journal predates the index and branch binding; abort')
@@ -4546,6 +4562,11 @@ class Coordinator:
             except RuntimeError as exc:
                 raise WorktreeDeliveryHold(f'auto_commit: {target} could not move from {journal["parent"][:12]} ({exc}); '
                                            'restore it, or abort') from exc
+        if backlog := journal.get('backlog'):   # S3 R2 F3: the journaled BACKLOG.md text reaches the worktree with the commit
+            path = Path(backlog['path'])
+            if not path.is_file() or path.is_symlink() or path.read_text(encoding='utf-8') != backlog['text']:
+                atomic_text(path, backlog['text'])
+            self.state['repo_backlog'] = {'path': backlog['path'], 'rows': backlog['rows']}
         self._git(['read-tree', journal['commit']])   # the index follows the new HEAD
         self._git(['update-index', '-q', '--refresh'], ok=(0, 1))
         return {'auto_commit': True, 'commit': journal['commit'], 'head': journal['parent'], 'tree': journal['tree'],
@@ -5188,7 +5209,9 @@ class Coordinator:
         rows = '\n'.join(f"- {finding['id']}: [source={finding['source']}; severity={finding['severity']}"
                          + ('; security-tagged' if finding.get('security') else '')
                          + (f"; category={finding['category']}" if finding.get('category') else '')   # WI-GATE1 S3
-                         + ('; non-blocking' if not blocks_by_severity(finding) and finding.get('category') else '')
+                         + ('; shadow finding to confirm: still_open if the change since the gate caused it, otherwise withdrawn'
+                            if finding.get('needs_confirmation') else
+                            '; non-blocking' if not blocks_by_severity(finding) and finding.get('category') else '')
                          + f"] {finding['summary']}" for finding in findings)
         return (notice + 'Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
                 'fixed, still_open, or withdrawn, with evidence):\n' + rows + '\n'
@@ -5972,6 +5995,8 @@ class Coordinator:
             raise ValueError('--base needs --review-only')
         else:
             args.review_only, args.review_base = False, None
+        if saved is None and getattr(args, 'advisory_fix_round', False) and not args.review_only:
+            raise ValueError(ADVISORY_FIX_ROUND_REFUSAL)
         args.auto_commit_source = (saved or {}).get('auto_commit_source')   # FIELD-25 gate: frozen with the value
         if getattr(args, 'auto_commit', None) is None:   # owner 2026-10-06: a review-only W run commits by default; an
             args.auto_commit = (bool(saved.get('auto_commit')) if saved is not None else   # explicit value (CLI, profile) wins
@@ -7009,7 +7034,7 @@ class Coordinator:
                         and completed_test_failure(observed_commands, self.args.test_command) is not None):
                     raise TestEvidenceShortfall(f'{role} EXEC approval lacks an observed successful configured test command'
                                      + (cause or ('; the configured test was not observed to completion (no exit status when '
-                                                    'the turn ended)' if unfinished else '')))
+                                                    'the turn ended)' if unfinished else '')) + TEST_EVIDENCE_GUIDANCE)
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
@@ -7554,15 +7579,24 @@ class Coordinator:
         self.add_run_backlog('ledger', 'DONE', self.state.get('sequence', 0), self.nonblocking_open_findings(),
                              'non-blocking open finding(s)')
 
-    def _append_repo_backlog(self) -> bool:
-        """WI-GATE1 S3 (owner Q1): at accept, the run backlog is appended to the workspace BACKLOG.md (created with a '## P2'
-        heading when missing; appended at the end otherwise), one line per row; a line already there is not written again
-        (a replayed accept). Returns True when the file changed."""
+    def _repo_backlog_plan(self) -> Optional[dict]:
+        """WI-GATE1 S3 (owner Q1): at accept, the run backlog goes to the workspace BACKLOG.md (created with a '## P2' heading
+        when missing; appended at the end otherwise), one line per row; a line already there is not written again (a
+        replayed accept). Returns {path, text, rows} (the whole new text), or None. S3 R2 F4: a BACKLOG.md that is a symbolic
+        link, not a regular file, or ignored by git is never written; the rows stay in the run backlog (state repo_backlog
+        records why)."""
         self._backlog_open_nonblocking()
         entries = self.state.get('backlog') or []
         if not entries:
-            return False
+            return None
         path = self.workspace / 'BACKLOG.md'
+        problem = ('it is a symbolic link' if path.is_symlink() else
+                   'it is not a regular file' if path.exists() and not path.is_file() else
+                   'git ignores it' if self._git(['check-ignore', '--', 'BACKLOG.md'], ok=(0, 1)).strip() else None)
+        if problem:
+            self.state['repo_backlog'] = {'path': str(path), 'rows': 0, 'skipped': problem,
+                                          'run_backlog': str(self.run_dir / 'backlog.md')}
+            return None
         text = path.read_text(encoding='utf-8') if path.is_file() else ''
         today = datetime.now().astimezone().strftime('%Y-%m-%d')
         lines = []
@@ -7572,15 +7606,42 @@ class Coordinator:
             if head not in text and head not in lines:
                 lines.append(head)
         if not lines:
-            return False
+            return None
         body = ''.join(f'{line} (added {today})\n' for line in lines)
         if not text:
             text = '# Backlog\n\n## P2\n\n'
         elif not text.endswith('\n'):
             text += '\n'
-        atomic_text(path, text + body)
-        self.state['repo_backlog'] = {'path': str(path), 'rows': len(lines)}
+        return {'path': str(path), 'text': text + body, 'rows': len(lines)}
+
+    def _append_repo_backlog(self) -> bool:
+        """An accept without a commit: the planned BACKLOG.md text is written to the working tree. Returns True when it was."""
+        plan = self._repo_backlog_plan()
+        if plan is None:
+            return False
+        atomic_text(Path(plan['path']), plan['text'])
+        self.state['repo_backlog'] = {'path': plan['path'], 'rows': plan['rows']}
         return True
+
+    def _repo_backlog_note(self, committed: bool) -> Optional[str]:
+        backlog = self.state.get('repo_backlog')
+        if not backlog:
+            return None
+        if backlog.get('skipped'):
+            return (f"NOTE: the non-blocking findings were not written to {backlog['path']} ({backlog['skipped']}); they "
+                    f"stay in {backlog['run_backlog']}")
+        return (f"NOTE: {backlog['rows']} non-blocking finding(s) appended to {backlog['path']} "
+                + ('in the accepted commit' if committed else 'in the working tree (not committed)'))
+
+    def _tree_is_intent_plus_backlog(self, intent: dict, journal: dict) -> bool:
+        """S3 R2 F3: a replayed accept also takes the tree whose only difference from the accepted one is the journaled
+        BACKLOG.md text (written after the journal, before the ref moved)."""
+        backlog = journal.get('backlog')
+        if not backlog or Path(backlog['path']).is_symlink() or not Path(backlog['path']).is_file():
+            return False
+        rest = lambda snapshot: [list(entry) for entry in snapshot if entry[0] != 'BACKLOG.md']
+        return (Path(backlog['path']).read_text(encoding='utf-8') == backlog['text']
+                and rest(git_snapshot(self.workspace)[1]) == rest(intent['tree_snapshot']))
 
     def _redispatch_budget(self, phase: str, voided: Exception) -> None:
         """INT-2c: a W read-only re-dispatch counts against its stage cap like any dispatch (the callers check room for their
@@ -7605,6 +7666,13 @@ class Coordinator:
         used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
+
+    def _gate_lacks_host_record(self, reviewed: int) -> bool:
+        """S3 R2 F10 (field: poker-tools S1c): the EXEC approval of this tree rested on an operator verification record
+        (the role sandbox could not run the configured test), and no record is bound to the current tree."""
+        receipt = next((turn for turn in self.state.get('turns', []) if turn.get('sequence') == reviewed), None)
+        return bool(self.args.test_command and receipt and receipt.get('operator_test_evidence')
+                    and self._operator_test_record(git_snapshot(self.workspace)[0]) is None)
 
     def _operator_test_record(self, tree):
         """The operator record that settles the EXEC configured-test check for this exact tree, or None (never in report mode)."""
@@ -7904,8 +7972,7 @@ class Coordinator:
                               'sensitive files that should be ignored. Do not modify any file. Report every finding '
                               'in full_review. CRITICAL, MAJOR and SECURITY findings stop delivery; report a MINOR or LOW '
                               'security concern as MINOR: it is listed in the delivery report but does not stop delivery. '
-                              'A finding without a blocking category and a reachability statement (threshold below) does not '
-                              'stop delivery either.\n' + self._security_scan_note_prompt() +
+                              'A finding without a blocking category (threshold below) does not stop delivery either.\n' + self._security_scan_note_prompt() +
                               worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
@@ -8741,14 +8808,14 @@ class Coordinator:
         writer replays and failed turns do not count, R5).
         R1: before the gate, --max-exec-rounds (default 3).
         R2: after a gate FAIL, one automatic fix round and at most one more (the round of the FAIL plus 2).
-        R3: a hard cap of 5 rounds in total (or --max-exec-rounds + 2 when that is higher), a runaway guard.
+        R3: a hard cap of exactly 5 rounds in total, whatever --max-exec-rounds says; only an operator grant goes past it.
         Every operator grant (--add-rounds, a rejection, ADVFIX) lands on top of each."""
         extra = self._exec_round_extra()
         if fail := self.state.get('gate_fail_round'):
             limit, rule = fail['round'] + POST_GATE_FIX_ROUNDS + extra - fail['extra'], 'R2'   # grants after the FAIL only
         else:
             limit, rule = self.args.max_exec_rounds + extra, 'R1'
-        hard = max(EXEC_HARD_ROUND_CAP, self.args.max_exec_rounds + POST_GATE_FIX_ROUNDS) + extra
+        hard = EXEC_HARD_ROUND_CAP + extra   # S3 R2 F6: not raised by --max-exec-rounds
         return (hard, 'R3') if hard < limit else (limit, rule)
 
     def exec_round_limit(self) -> int:
@@ -8848,7 +8915,7 @@ class Coordinator:
                 self.hold('reviewer omitted open finding dispositions after retry: ' + ', '.join(missing))
                 return
         reviewer_raw_verdict = answer['status']
-        post_gate = self._post_gate_review(phase, result.get('open_finding_ids') or [])
+        post_gate = self._post_gate_review(phase, result['sequence'])
         if post_gate:   # R2 / owner 2026-11-20: after the gate only the gate items and regressions of the fix block
             self._mark_post_gate_findings(answer['full_review'], regression_marker=True)
         reviewer_findings_advisory = self.findings_are_advisory(answer['full_review'])
@@ -8878,7 +8945,10 @@ class Coordinator:
             answer['full_review'].extend(secrets)
             if answer['status'] == 'APPROVE':
                 answer['status'] = 'REVISE'
-        if not leak and not failures and phase == 'EXEC' and self.args.shadow == 'on':   # R1 F8: a replay honors --shadow off
+        confirm_after = self.state.pop('confirm_shadow_rows', None) if phase == 'EXEC' else None
+        confirming = confirm_after is not None and result['sequence'] > confirm_after
+        if (not leak and not failures and phase == 'EXEC' and self.args.shadow == 'on'   # R1 F8: a replay honors --shadow off
+                and not confirming):   # S3 R2 F2: a confirmation review of the same tree runs no new shadow
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
@@ -8886,8 +8956,10 @@ class Coordinator:
                 shadow = self.invoke('shadow', phase, self._review_prompt('shadow', shadow_snapshot),
                                      fresh_review_schema(), fresh=True)
             shadow['answer'] = copy.deepcopy(shadow['answer'])
-            if post_gate:   # the fresh shadow cannot tell a regression of the fix: its post-gate findings go to the BACKLOG
-                self._mark_post_gate_findings(shadow['answer']['full_review'], regression_marker=False)
+            if post_gate:   # S3 R2 F2: the fresh shadow cannot tell a regression of the fix; the persistent reviewer confirms
+                for row in shadow['answer']['full_review']:   # each blocking one against the gate baseline before it blocks
+                    if blocks_by_severity(row):
+                        row['needs_confirmation'] = True
             shadow_rows = self.record_findings('fresh-shadow', phase, shadow['sequence'],
                                                shadow['answer']['full_review'])
             for row in shadow_rows:
@@ -8917,17 +8989,24 @@ class Coordinator:
         # advisory rows (no fix round; the V317 advisory repair round is gone); the rows go to the BACKLOG at DONE
         still_open = [row for row in answer['prior_findings'] if row.get('disposition') == 'still_open']
         only_still_open = not answer['full_review'] and bool(still_open)
-        advisory_exit = (answer['status'] == 'REVISE'
+        advisory_only = (answer['status'] == 'REVISE'
                          and ((reviewer_findings_advisory and self.findings_are_advisory(answer['full_review']))
                               or only_still_open)
                          and (phase != 'EXEC' or   # an EXEC approval still needs this tree and a passing test it observed
-                              answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0])
-                         and (phase == 'PLAN' or   # after the tree check: the record lookup voids records of other trees
-                              (((self.configured_test_succeeded(result['answer'])
-                                 and not self.configured_test_failed(result['answer']))
-                                or self._operator_test_record(answer.get('reviewed_snapshot')) is not None)
-                               and bool(answer.get('self_run_evidence'))))
-                         and not self.blocking_open_findings())
+                              answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0]))
+        tested = (phase == 'PLAN' or   # after the tree check: the record lookup voids records of other trees
+                  (((self.configured_test_succeeded(result['answer']) and not self.configured_test_failed(result['answer']))
+                    or self._operator_test_record(answer.get('reviewed_snapshot')) is not None)
+                   and bool(answer.get('self_run_evidence'))))
+        advisory_exit = advisory_only and tested and not self.blocking_open_findings()
+        if (phase == 'EXEC' and advisory_only and not tested and not self.blocking_open_findings()
+                and not self.configured_test_failed(result['answer']) and not self.state['config'].get('review_report')
+                and not (self.state.get('lifecycle') or {}).get('writer_replay')):   # D09: a writer replay rolls back instead
+            # S3 R2 F8: only the test evidence is missing; an author round cannot supply it, so no EXEC round is used
+            self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
+            self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
+            self.hold(TEST_EVIDENCE_HOLD)
+            return
         if advisory_exit:
             self.mark_advisory_findings(answer['full_review'] + still_open)
             answer['status'] = 'APPROVE'
@@ -9089,12 +9168,18 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('stale EXEC approval')
             return
+        elif [row for row in self.open_findings() if row.get('needs_confirmation')]:
+            # S3 R2 F2: the shadow's blockers in the gate repair wait for the persistent reviewer's confirmation, on the same
+            # tree and without an author round
+            self.state.update(delivered_review='', next='reviewer', confirm_shadow_rows=result['sequence'])
         elif self.args.adversarial_gate == 'on' and not self.state['gate_ran']:   # WI-GATE1: the gate runs once per work item
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')
             self.state['next'] = 'gate'
         else:
+            if post_gate and self.state['gate_fail_round'].get('closed_at') is None:
+                self.state['gate_fail_round']['closed_at'] = result['sequence']   # S3 R2 F2: the gate repair review passed
             self._structural_block_hold('reviewer', result['sequence'], [])   # FIELD-5: an approval that ends the review breaks the run
             self.state['pending_reviewer_result_sequence'] = None
             self.start_polish_or_done()
@@ -9175,6 +9260,41 @@ class Coordinator:
                                   'proof': 'the reviewer confirms the defect described above is fixed', 'sequence': sequence})
             self.state['gate_fail_items'] = items
 
+    def _settle_saved_rounds(self) -> None:
+        """S3 R2 F5: a state an earlier version saved charged EXEC rounds for FINISH, DOCS and SECURITY writes, writer replays
+        and POLISH-Q fixes, and has no gate FAIL baseline. Recount: an EXEC author turn counts when the next turn of another
+        role is the EXEC review (a POLISH-Q fix is followed by its specialists), plus a review-only run's existing change.
+        A saved gate FAIL takes the round count before the gate as its baseline, and the grants made so far add no
+        post-gate round (at most the 1 + 1 fix rounds). The count is never raised."""
+        if self.state.get('round_rules'):
+            return
+        self.state['round_rules'] = ROUND_RULES_VERSION
+        turns = sorted(self.state.get('turns', []), key=lambda turn: turn.get('sequence', 0))
+
+        def counted(before: Optional[int] = None) -> int:
+            total = REVIEW_ONLY_EXISTING_CHANGE_ROUNDS if self.state.get('review_only') else 0
+            for index, turn in enumerate(turns):
+                if (turn.get('role') != 'author' or turn.get('phase') != 'EXEC' or turn.get('error')
+                        or (before is not None and turn['sequence'] >= before)):
+                    continue
+                after = next((later for later in turns[index + 1:] if later.get('role') != 'author'), None)
+                total += after is None or (after.get('role') in ('reviewer', 'shadow') and after.get('phase') == 'EXEC')
+            return total
+
+        self.state['exec_rounds'] = min(self.state.get('exec_rounds', 0), counted())
+        verdict = self._gate_verdict_turn()
+        if verdict and self.state.get('gate_fail_items') and not self.state.get('gate_fail_round'):
+            def after_gate(row: dict) -> bool:   # a rejection made after the FAIL still grants its round
+                try:
+                    return datetime.fromisoformat(row['timestamp']).timestamp() > float(verdict.get('start') or 0)
+                except (KeyError, TypeError, ValueError):
+                    return False
+            later = len([row for row in self.state.get('rejections', []) if not row.get('over_limit') and after_gate(row)])
+            self.state['gate_fail_round'] = {'round': counted(verdict['sequence']), 'extra': self._exec_round_extra() - later,
+                                             'sequence': verdict['sequence']}
+            if not self.gate_fail_open_items():   # the saved repair already passed: its scope (F2) is closed
+                self.state['gate_fail_round']['closed_at'] = self.state.get('sequence', 0)
+
     def _legacy_verdict_turns(self) -> list[dict]:
         """The gate verdicts an earlier version saved (its old answer shape), in order."""
         return [turn for turn in self._gate_turns() if 'findings' in turn['answer'] and not turn.get('gate_malformed')]
@@ -9220,22 +9340,21 @@ class Coordinator:
                 'withdrawn disposition is recorded as still_open). There is no second gate: your APPROVE with every item fixed '
                 'ends EXEC review.\n' + rows + '\n')
 
-    def _post_gate_review(self, phase: str, open_ids: Optional[list] = None) -> bool:
-        """R2 / owner ruling 2026-11-20 ("只复查门审没过的那几项，再加上这次修改本身弄坏的东西"): an EXEC review of a gate FAIL fix,
-        i.e. one dispatched while a gate FAIL item was open (open_ids: the turn's open rows at dispatch), outside a post-DONE
-        rejection repair (Q4: the persistent reviewer reviews it in full) and report mode. A later FINISH or writer re-review
-        keeps the ordinary threshold, so a writer's regression still blocks and rolls the writer back."""
-        if phase != 'EXEC' or not self.state.get('gate_ran') or self.state.get('rejection_repair') \
-                or self.state['config'].get('review_report'):
+    def _post_gate_review(self, phase: str, sequence: Optional[int] = None) -> bool:
+        """R2 / owner ruling 2026-11-20 ("只复查门审没过的那几项，再加上这次修改本身弄坏的东西"): an EXEC review of the gate FAIL
+        repair, from the FAIL until a repair review passes (S3 R2 F2: gate_fail_round.closed_at; a replay of the closing review
+        stays in scope), outside a post-DONE rejection repair (Q4: the persistent reviewer reviews it in full) and report mode.
+        A later FINISH or writer re-review keeps the ordinary threshold, so a writer's regression still blocks and rolls back."""
+        fail = self.state.get('gate_fail_round')
+        if phase != 'EXEC' or not fail or self.state.get('rejection_repair') or self.state['config'].get('review_report'):
             return False
-        if open_ids is None:
-            return bool(self.gate_fail_open_items())
-        return bool({item['id'] for item in self.state.get('gate_fail_items') or []} & set(open_ids))
+        closed = fail.get('closed_at')
+        return closed is None or (sequence is not None and sequence <= closed)
 
     @staticmethod
     def _mark_post_gate_findings(findings: list[dict], regression_marker: bool) -> None:
-        """A post-gate finding blocks only as a regression of the change since the gate: the persistent reviewer says so by
-        starting its reachability with 'regression:'; every other one (and every fresh shadow one) is non-blocking."""
+        """A post-gate finding of the persistent reviewer blocks only as a regression of the change since the gate: the
+        reviewer says so by starting its reachability with 'regression:'; every other one is non-blocking."""
         for row in findings:
             regression = regression_marker and str(row.get('reachability') or '').strip().lower().startswith('regression:')
             if not regression:
@@ -9247,18 +9366,22 @@ class Coordinator:
         return ('## Post-gate review\nThe gate has run once. Review the complete change since the gate, but only the open '
                 'gate FAIL items above and blocking regressions introduced by the changes made since the gate can keep this '
                 'review from passing: start the reachability of such a regression with "regression:". Report every other '
-                'new finding as usual; the coordinator keeps it for the BACKLOG and it does not block.\n')
+                'new finding as usual; the coordinator keeps it for the BACKLOG and it does not block. A row marked "shadow '
+                'finding to confirm" came from an independent reviewer: dispose it still_open only if the change since the '
+                'gate caused it (compare with the tree the gate reviewed), otherwise withdrawn.\n')
 
     def _update_stop_rules(self, sequence: int, answer: dict, verdict: str) -> Optional[str]:
         """R4 (decided by the coordinator from the ledger), for one EXEC reviewer verdict: (b) the same blocking row marked
         still_open in two consecutive reviews; (c) after an approval, two consecutive reviews that each add a NEW blocking row
-        (category and reachability: blocks_by_severity). Gate FAIL items stay with R2. A replayed verdict is counted once;
+        (blocks_by_severity), the persistent reviewer's or the shadow's. Gate FAIL items stay with R2. A replayed verdict is counted once;
         --add-rounds restarts both streaks. Returns the HOLD reason, or None."""
         rules = self.state.setdefault('stop_rules', {'sequence': 0, 'still_open': [], 'new_blocking_streak': 0,
                                                      'approved': False})
         if sequence <= rules['sequence']:
             return None
         rules['sequence'] = sequence
+        previous = rules.get('seen', 0)   # the newest ledger row an earlier review already counted (its shadow's included)
+        rules['seen'] = max([sequence, *(row.get('origin_round') or 0 for row in self.state['finding_ledger'])])
         if verdict != 'REVISE':
             rules.update(approved=rules['approved'] or verdict.startswith('APPROVE'), still_open=[], new_blocking_streak=0)
             return None
@@ -9268,8 +9391,9 @@ class Coordinator:
                        and row['id'] in ledger and row['id'] not in gate_ids and blocks_by_severity(ledger[row['id']]))
         repeated = sorted(set(still) & set(rules['still_open']))
         rules['still_open'] = still
-        new = sorted(row['id'] for row in ledger.values() if row.get('origin_round') == sequence and row['status'] == 'open'
-                     and row.get('source') != 'adversarial-gate' and blocks_by_severity(row))
+        new = sorted(row['id'] for row in ledger.values() if (row.get('origin_round') or 0) > previous   # S3 R2 F7: reviewer
+                     and row.get('source') in ('persistent-reviewer', 'fresh-shadow')   # and shadow rows of this review
+                     and row['status'] == 'open' and blocks_by_severity(row))
         if rules['approved']:
             rules['new_blocking_streak'] = rules['new_blocking_streak'] + 1 if new else 0
         if repeated:
@@ -9379,6 +9503,9 @@ class Coordinator:
                              for row in secrets]}, ensure_ascii=False)
             self.state['next'] = 'author'
             self.save()
+            return
+        if not (verdict and verdict['sequence'] > reviewed) and self._gate_lacks_host_record(reviewed):
+            self.hold(TEST_EVIDENCE_HOLD)   # S3 R2 F10: the gate would end on the same missing record; it is not dispatched
             return
         result = self._gate_answer()
         if result is None:
@@ -9563,6 +9690,7 @@ class Coordinator:
                                  ', '.join(row['id'] for row in blocking))
             return 'DONE'
         self._settle_saved_gate()   # WI-GATE1: a state an earlier version saved never gates a second time
+        self._settle_saved_rounds()   # S3 R2 F5: and its EXEC rounds are counted by R1-R5
         if not (self.state.get('active') or self.state.get('uncertain_active')):
             self._refuse_past_deadline('resume')   # F2b: before any state change, so the HOLD (and RLO) survives
         past_deadline = self._wi_deadline_issue(record=False)   # with an uncertain turn: settle it below, then HOLD instead of a dispatch
