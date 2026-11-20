@@ -8,6 +8,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
 
@@ -27,7 +28,7 @@ class ProgressTests(unittest.TestCase):
 
     def run_with_sentinels(self, *extra):
         self.workitem.write_text(self.workitem.read_text() + PROMPT_SENTINEL + '\n')
-        return self.run_coordinator(*FLAGS, *extra, env={'FAKE_AUTHOR_RATIONALE': OUTPUT_SENTINEL})
+        return self.run_coordinator(*FLAGS, *extra, env={'FAKE_AUTHOR_RATIONALE': OUTPUT_SENTINEL + FAKE_SCENARIO_MATRIX})
 
     def test_a_run_writes_the_event_sequence_to_jsonl_and_stdout(self):
         done = self.run_with_sentinels()

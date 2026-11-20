@@ -752,7 +752,8 @@ def main():
                      if line.startswith('- F') and 'shadow finding to confirm' in line}
             prior = [{**row, 'disposition': confirm, 'evidence': 'fake confirmation'} if row['id'] in asked else row
                      for row in prior]
-            revise = revise or (confirm == 'still_open' and bool(asked))
+            revise = revise or (bool(asked) and (confirm == 'still_open' or
+                                                os.environ.get('FAKE_CONFIRM_SHADOW_REVISE')))
         if (log := os.environ.get('FAKE_REVIEW_PROMPT_LOG')) and role == 'reviewer' and phase == 'EXEC':
             with open(log, 'a') as out:   # WI-GATE1: what each EXEC reviewer round was asked to check
                 out.write(json.dumps(prompt) + '\n')

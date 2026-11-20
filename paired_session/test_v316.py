@@ -290,7 +290,9 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         rows = [('adversarial-gate', 'low')]
         state = self.review('control', rows)
         self.assertEqual((state['status'], state['review_verdicts'][-1]['effective_verdict']), ('DONE', 'APPROVE_WITH_ADVISORY'))
-        for name, change, reason in (('test-failed', {'test': (1, 'FAILED (failures=1)')}, LIMIT),
+        for name, change, reason in (('test-failed', {'test': (1, 'FAILED (failures=1)')},
+                                     rc.TEST_EVIDENCE_HOLD + '. The configured test command failed (exit status 1).'
+                                     ' Test output — FAILED (failures=1)'),
                                      ('test-not-run', {'test': None}, rc.TEST_EVIDENCE_HOLD),   # WI-GATE1 S3 R2 F8: only
                                      ('no-evidence', {'self_run_evidence': []}, rc.TEST_EVIDENCE_HOLD),   # the evidence is missing
                                      ('another-tree', {'reviewed_snapshot': '0' * 40}, LIMIT)):

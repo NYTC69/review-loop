@@ -9072,11 +9072,11 @@ class Coordinator:
         # V316 (owner 2026-10-13): a REVISE without any finding that only reports earlier rows still_open takes the same exit;
         # WI-GATE1 S3 (owner 2026-11-19): a REVISE whose open rows are all below the blocking threshold is an approval with
         # advisory rows (no fix round; the V317 advisory repair round is gone); the rows go to the BACKLOG at DONE
-        still_open = [row for row in answer['prior_findings'] if row.get('disposition') == 'still_open']
-        only_still_open = not answer['full_review'] and bool(still_open)
+        prior_open = [row for row in answer['prior_findings'] if row.get('disposition') in ('still_open', 'non_blocking')]
+        only_prior_open = not answer['full_review'] and bool(prior_open)
         advisory_only = (answer['status'] == 'REVISE'
                          and ((reviewer_findings_advisory and self.findings_are_advisory(answer['full_review']))
-                              or only_still_open)
+                              or only_prior_open)
                          and (phase != 'EXEC' or   # an EXEC approval still needs this tree and a passing test it observed
                               answer.get('reviewed_snapshot') == git_snapshot(self.workspace)[0]))
         matrix_findings = (self._plan_matrix_findings(result['sequence'], answer['status'] == 'APPROVE' or advisory_only)
@@ -9088,7 +9088,7 @@ class Coordinator:
         tested = phase == 'PLAN' or ((observed_pass or operator_record is not None) and bool(answer.get('self_run_evidence')))
         advisory_exit = advisory_only and tested and not self.blocking_open_findings()
         if (phase == 'EXEC' and advisory_only and not tested and not self.blocking_open_findings()
-                and not self.state['config'].get('review_report')):
+                and not replaying and not self.state['config'].get('review_report')):
             # R5: the test evidence is the only obstacle; the operator can rerun the command or address a real failure.
             self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
             self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
@@ -9106,7 +9106,7 @@ class Coordinator:
                 if receipt is not None:
                     receipt['operator_test_evidence'] = operator_record['id']
                     atomic_json(self.evidence / f"{result['sequence']:03d}-exec-reviewer.receipt.json", receipt)
-            self.mark_advisory_findings(answer['full_review'] + still_open)
+            self.mark_advisory_findings(answer['full_review'] + prior_open)
             answer['status'] = 'APPROVE'
         new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
         refusal = None
@@ -9167,7 +9167,7 @@ class Coordinator:
             return
         rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
         if (rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status'])
-                and not (advisory_exit and only_still_open)):
+                and not (advisory_exit and only_prior_open)):
             # FIELD-11b: the reviewer's own REVISE counts, even if advisory_exit or out-of-phase findings turned it into APPROVE;
             # V319-HOLD: a REVISE with no finding of its own that only leaves non-blocking rows open takes the advisory exit
             reason = ('the rewrite-only PLAN turn was not approved by the PLAN reviewer (the plan changed in substance or has '

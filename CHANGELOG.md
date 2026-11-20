@@ -89,6 +89,10 @@ S3/S4 第 3 轮修复（Sol R2 F5、F7、F8、F10、F11、F12）：v3.8.x 恢复
 
 - `test_rounds_threshold` 新增六条回归断言：旧状态的作者 HOLD 和重试不提高两处计数；连续两轮确认不同的 shadow 回归后 R4c HOLD；仅有建议时测试退出码 1 直接 HOLD 并显示失败；附带建议的批准记录操作员验证编号，改动目录树后不派门审；accept 和日志重放都保留已跟踪的 `Backlog.md`；有效的非回归 shadow 发现保持打开、保留类别并进入两处 backlog。原有断言保留。
 
+**按意图更新的测试断言（S3/S4 第 4 轮）**
+
+- `test_v316.RoundLimitStillOpenTests.test_a_failing_test_no_evidence_or_another_tree_at_the_limit_holds`：测试失败的子用例仍在同一轮 EXEC 审查进入 HOLD，原因按 F8 改为 `TEST_EVIDENCE_HOLD`，并包含测试退出码和输出。
+
 **按意图更新的测试断言（S7/S8）**
 
 - `test_v318cap`：默认 EXEC reviewer、shadow 和 gate 提示的逐字节比较新增矩阵提示后缀的断言，并继续比较原有提示和派发环境。

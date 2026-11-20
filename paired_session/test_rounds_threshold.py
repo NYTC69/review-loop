@@ -387,6 +387,29 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertIn('ACCEPTED', accepted.stdout, accepted.stdout + accepted.stderr)
         self.assertIn('- shadow regression (review-loop run', (self.workspace / 'BACKLOG.md').read_text())
 
+    def test_r4f14_a_non_blocking_shadow_disposition_approves_at_the_gate_repair_limit(self):
+        marker = str(self.root / 'gate-failed')
+        env = {'FAKE_GATE_BLOCK_ONCE': marker, 'FAKE_SHADOW_BLOCKER_IF_FILE': marker,
+               'FAKE_EXEC_WITHDRAW_GATE_ONCE': str(self.root / 'first-repair'),
+               'FAKE_CONFIRM_SHADOW': 'non_blocking', 'FAKE_CONFIRM_SHADOW_REVISE': '1'}
+        result = self.run_coordinator('--lifecycle-mode', 'off', '--max-exec-rounds', '1', env=env)
+        state = self.state()
+        self.assertEqual((state['exec_rounds'], len(self.authors(state)), len(gates(state))), (3, 3, 1))
+        verdict = state['review_verdicts'][-1]
+        [review] = [turn for turn in state['turns'] if turn['sequence'] == verdict['sequence']]
+        gate_item = next(row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate')
+        shadow_item = next(row for row in state['finding_ledger'] if row['source'] == 'fresh-shadow')
+        self.assertEqual({row['id']: row['disposition'] for row in review['answer']['prior_findings']},
+                         {gate_item['id']: 'fixed', shadow_item['id']: 'non_blocking'})
+        self.assertEqual(review['answer']['full_review'], [])
+        self.assertTrue(any(command['command'] == 'python3 -m unittest' and command['exit_code'] == 0
+                            for command in review['observed_commands']))
+        self.assertEqual(verdict['reviewer_raw_verdict'], 'REVISE')
+        self.assertEqual(verdict['effective_verdict'], 'APPROVE_WITH_ADVISORY', result.stdout + result.stderr)
+        self.assertIn(DONE, result.stdout)
+        self.assertFalse(state.get('round_limit_hold'))
+        self.assertIn('shadow regression', self.backlog())
+
     def test_r2f7_r4c_counts_the_shadow_s_new_blockers_too(self):
         co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
         self.assertIsNone(co._update_stop_rules(1, {}, 'APPROVE'))
