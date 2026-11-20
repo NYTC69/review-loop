@@ -61,14 +61,19 @@ The raw REVISE and effective verdict are recorded separately. The next phase
 receives the rows as non-blocking context. Every non-blocking row still open at
 DONE is listed in the run's `backlog.md`; `accept` appends them to the workspace
 `BACKLOG.md` (created with a `## P2` heading when missing), inside the accepted
-commit when `auto_commit` makes one, otherwise in the working tree.
+commit when `auto_commit` makes one (the worktree file is written only after the commit is journaled),
+otherwise in the working tree. A `BACKLOG.md` that is a symbolic link, not a regular file or ignored by git is
+never written: the rows stay in `backlog.md` and accept prints a NOTE.
+An EXEC advisory-only REVISE whose only gap is the test evidence HOLDs for `attach-verification` (no round).
+Before the gate, an EXEC approval that rested on an operator record HOLDs the same way when no record is bound to
+the current tree.
 EXEC still requires a successful configured test, no observed test failure, the reviewer's own run
 evidence, and the same snapshot. Blocking findings retain the normal repair
 loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
 round; its eligible advisory re-review exits immediately.
 Blocking means a CRITICAL, MAJOR or SECURITY finding (a gate's CRITICAL/HIGH) whose category is correctness,
-data-loss, security or money and which states how normal use reaches it; category `other` (wording, style, docs
-polish, extra robustness) never blocks. Program rows (test failure, secret scan, independence scan, sensitive paths)
+data-loss, security or money (an empty reachability statement never demotes it); category `other` (wording, style,
+docs polish, extra robustness) never blocks. Program rows (test failure, secret scan, independence scan, sensitive paths)
 set their own blocking category. A MINOR or LOW security-flagged finding is listed but advisory. A blocking row
 still open at the cap is the `PLAN round limit reached` / `EXEC round limit reached` HOLD; the EXEC round rules
 (R1-R5: cap 3 before the gate, two fix rounds after a gate FAIL, hard cap 5, a finding still open in two consecutive
@@ -377,7 +382,7 @@ writer calls and one replay); the state is in `lifecycle.quality_writers`, the
 outcome in the delivery report.
 
 Advisory fix round (ADVFIX, owner 2026-10-06): `--advisory-fix-round true` (default false, frozen; refused
-with `--review-report`) gives the author one fix round, at the first clean POLISH-Q exit, for the non-blocking
+with `--review-report` and, WI-GATE1, without `--review-only`) gives the author one fix round, at the first clean POLISH-Q exit, for the non-blocking
 findings still open (MINOR, LOW, a gate's MEDIUM/LOW), before the quality writers: fix what is reasonable,
 dismiss the rest with a reason; then EXEC review, shadow, FINISH and the specialists run again. Once per
 run, on its own round outside `--max-exec-rounds`; without invocation headroom it is skipped with the reason.
@@ -602,9 +607,12 @@ The gate runs once per work item (WI-GATE1). After a gate FAIL the repair is rev
 checks each open FAIL item in full every round and may close it only as fixed; no route gates again, also when an
 earlier version saved `gate_ran` reset after a FAIL. A FAIL gets one automatic fix round and at most one more,
 wherever the EXEC cap stood (round rule R2); a FAIL item still open after them HOLDs and recommends splitting the open
-gate items into a new work item. In a review of a FAIL fix (a FAIL item open when it started) only the open FAIL items
-and blocking regressions introduced by the fix (the reviewer starts their reachability with `regression:`) keep it from
-passing; other new findings go to the BACKLOG. Later FINISH and writer re-reviews use the ordinary threshold.
+gate items into a new work item. From the FAIL until a repair review passes, only the open FAIL items and blocking
+regressions introduced by the fix (the reviewer starts their reachability with `regression:`) keep a review from
+passing; other new findings go to the BACKLOG. A shadow blocker in that scope waits for the persistent reviewer, who
+confirms it (`still_open`: it blocks) or withdraws it, on the same tree and without an author round. The hard cap is
+5 EXEC rounds whatever `--max-exec-rounds` says. Later FINISH and writer re-reviews use the ordinary threshold. A
+state saved by v3.8.x is recounted on resume (stage writes and POLISH-Q fixes uncharged, a saved FAIL gets its 1 + 1).
 A gate answer that is not a verdict (a reply that is not JSON, a FAIL item without its basis, evidence, smallest change
 or proof, an unmet criterion without its own item, or missing evidence claims) is dispatched once more, one retry for
 all of these, then HOLDs (`malformed gate verdict`); resume starts a new attempt of the same bound and keeps the earlier

@@ -489,10 +489,12 @@ gate FAIL the author gets one fix round and at most one more, then the run HOLDs
 splitting the open gate items into a new work item; 5 rounds in total is a hard cap. The run also
 HOLDs when the same blocking finding stays open in two consecutive reviews, or when two reviews in a
 row after an approval each bring new blocking findings. Each such HOLD prints the round rule that
-stopped it. Only correctness, data-loss, security and money findings with a reachability statement
-block; a REVISE that leaves only non-blocking rows open is `APPROVE_WITH_ADVISORY` in any round (EXEC
-still requires a successful configured test, own run evidence and the same reviewed tree), and the
-rows go to the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md`. See
+stopped it. Only correctness, data-loss, security and money findings block (an empty reachability
+statement never demotes one); a REVISE that leaves only non-blocking rows open is `APPROVE_WITH_ADVISORY` in any round (EXEC
+still requires a successful configured test, own run evidence and the same reviewed tree; when only that
+evidence is missing the run HOLDs for `attach-verification` instead of using a round), and the rows go to
+the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md` (not when it is a symbolic link,
+not a regular file or ignored by git; then they stay in `backlog.md`). See
 [the advisory rules](paired_session/README.md#minor-only-review-revisions).
 
 **Quality Polish (POLISH-Q)** — With lifecycle on, after the gate and FINISH, read-only specialists review the change: the language
@@ -505,7 +507,7 @@ approve it again, including an eligible advisory-only replay REVISE accepted as 
 Other replay non-approvals roll it back with the reason. After a whole-group rollback,
 new blockers outside every writer's changed files stay open for EXEC repair with the usual round-limit HOLD;
 writer-file blockers and advisory rows are withdrawn, and operator-withdrawn rows stay withdrawn. The advisory fix round (`advisory_fix_round`,
-`--advisory-fix-round true`; code-quality-loop turns it on) gives the author one round for the open non-blocking
+`--advisory-fix-round true`; code-quality-loop turns it on, and a run without `--review-only` refuses it) gives the author one round for the open non-blocking
 findings after the first clean POLISH-Q. Tune with `quality_focus` and `skip_quality_polish` (which skips the
 specialists and the writers).
 
