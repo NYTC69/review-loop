@@ -29,7 +29,9 @@
 # soft_limit_plan: 3            # --max-plan-rounds; a blocking review at the cap HOLDs and `resume --add-rounds N`
                                 # continues it; an eligible advisory-only review at the cap is approved with its rows
                                 # left open as advisory
-# soft_limit_exec: 3            # --max-exec-rounds
+# soft_limit_exec: 3            # --max-exec-rounds, before the single gate verdict
+                                # A FAIL allows up to two repair reviews. The automatic EXEC hard cap is 5.
+                                # See paired_session/README.md, Acceptance, rejection and round limits.
 # auto_commit: false            # review-only runs (/review-loop on existing code, code-quality-loop): false keeps the
                                 # accepted change uncommitted (with lifecycle on: normally one local commit at accept, never a push);
                                 # lifecycle off stops after the gate; acceptance returns the uncommitted tree;

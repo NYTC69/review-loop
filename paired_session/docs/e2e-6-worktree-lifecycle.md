@@ -27,22 +27,20 @@ Stage receipts reuse the `lifecycle_spine.begin/complete` bookkeeping, with `can
 `git_snapshot(workspace)` digest before the stage and `output_oid` to the digest after it. Stage
 transitions are owned by the W router, not by `lifecycle_spine.advance()`: `advance()` restarts EXEC on
 any digest change and maps DOCS/SECURITY to the fake `STOP_BEFORE_*` stages, which fits neither the
-allowlisted DOCS write nor the W stage order. A code-invalidating write starts a new EXEC convergence
-(normal reviewer; WI-GATE1: the gate runs once per work item and is not run again); an allowlisted DOCS write that is disjoint from the
-EXEC-reviewed change set advances to SECURITY on its new digest after the docs review and retest. Any
+allowlisted DOCS write nor the W stage order. A code-invalidating write returns to EXEC review. The gate records one verdict per work item.
+An allowlisted DOCS write advances to SECURITY on its new digest after docs review and retest. Any
 change to `lifecycle_spine.py` itself needs separate authorization, because the fake candidate-tree route
 depends on it.
 
 ## Doc 1 rules: adopted or replaced
 
 - Adopted: the stage order; coordinator-owned dispatch, evidence and stage advance; the tool-use guard;
-  the blocking taxonomy (MEDIUM blocks); one gate per EXEC convergence, gate SKIP only for
-  `skipped-by-config`; the finisher and other writers as separate fresh sessions of the author role.
+  and separate fresh sessions for the finisher and other writers. WI-GATE1 updates the
+  [work-item gate and blocking threshold](e2e-1-stages-and-roles.md#gate-and-blocking-findings).
 - Adopted (doc 1 §Writes): `docs_file` and the docs allowlist are reserved for DOCS. If the EXEC-reviewed
   change set already touches an allowlisted path, W HOLDs before DOCS instead of replaying, so DOCS can
   never start a replay loop. Implemented (W2b-1): the EXEC author and finisher prompts name the reserved
-  paths, and the check sees deletions, staged deletions and renames. One exception: an allowlisted file that DOCS has written (`lifecycle.docs_owned`, accumulated when DOCS
-  routes to an EXEC replay or to SECURITY) is DOCS's own entry. The EXEC author is told it may edit it only
+  paths, and the check sees deletions, staged deletions and renames. One exception is an allowlisted file that DOCS has already written and recorded in `lifecycle.docs_owned`. The EXEC author is told it may edit it only
   to fix a delivered docs finding, the entry check lets it through, and every later DOCS reviews it again;
   DOCS may rewrite it ("a replayed DOCS stage replaces its own entry"). Any other touched allowlisted path
   leaves only abort, or a rerun with that path outside `--docs-file`/`--docs-allowlist`.
@@ -55,7 +53,7 @@ depends on it.
   a fix that leaves the tree unchanged since the last review HOLDs. Specialist counts are per epoch
   (legacy 3.5.2 caps one Step 3.5 run): 4 per specialist with room for two dispatches, so an owner gets
   its review plus up to two re-reviews per epoch, checked before the author writes. POLISH-Q stays capped
-  at 32 calls per run, and every fix is an EXEC author round under the EXEC round limit.
+  at 32 calls per run. POLISH-Q fixes and review replays use no EXEC round (R5).
 - Adopted (W2a-2): blocking findings still open at EXEC convergence start an EXEC repair round (author,
   reviewer; no second gate) up to the EXEC round limit, which HOLDs with the RLO-capable round-limit reason.
 - Replaced: candidate materialization and OS separation (docs 2a–4) by the live worktree; the same-vendor
@@ -67,12 +65,12 @@ depends on it.
 |---|---|---|---|---|
 | FINISH | fresh author session, same author flags | worktree | unchanged digest → POLISH-Q; changed → EXEC replay | Step 3.4 spent; executor readiness |
 | POLISH-Q | fresh reviewer turns per detected language plus code/silent-failure/test reviewers, inlined `agents/*.md` bodies in the frozen role manifest; fixes via the polish author/reviewer turn implementations; one simplifier pass and test consolidation by fresh author sessions | fix, simplify and test writers only | open specialist blocker, zero tool use after one retry, cap → HOLD; any write → EXEC replay; `skip_quality_polish: true` → no-op receipt | Step 3.5 (static-analysis fix 2, code review 3, simplify 1, tests 2 rounds), tool-use guard |
-| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` or `"docs_file": ""` in a profile; `paired-session-config.example.json` leaves the key out so the default applies; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | HOLD set (below) → HOLD; any other path outside the allowlist (source, tests, comments) → EXEC replay; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
-| SECURITY | coordinator `sensitive_policy` path scan and `scripts/security_preflight.py`; fresh security reviewer | none | a sensitive path the run added or changed (an unchanged committed one is a note; see below), any preflight result other than a clean exit 0, any open security-reviewer finding (any severity) or any open blocking finding → HOLD (no automatic repair, no `.gitignore` edit); a no-op run still scans; tree change during the stage → HOLD; `BUDGET_CAPS['SECURITY']` (3 reviews per run) | Step 3.7 scans; the reviewer follows the parity map W3a |
+| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` or `"docs_file": ""` in a profile; `paired-session-config.example.json` leaves the key out so the default applies; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | paths outside the allowlist → rollback, HOLD if rollback fails; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
+| SECURITY | coordinator `sensitive_policy` path scan and `scripts/security_preflight.py`; fresh security reviewer | none | a sensitive path the run added or changed (an unchanged committed one is a note; see below), any preflight result other than a clean exit 0, any open blocking finding → HOLD (no automatic repair, no `.gitignore` edit); a no-op run still scans; tree change during the stage → HOLD; `BUDGET_CAPS['SECURITY']` (3 reviews per run) | Step 3.7 scans; the reviewer follows the parity map W3a |
 | DONE | after SECURITY only | — | acceptance pending | Delivery gate |
 | DELIVERY | operator `accept --expect <digest>` from W DONE only (existing intent: tree, HEAD, index, state) | `auto_commit: false` (default): none. `auto_commit: true`: one hook-free local commit of the accepted manifest; drift → HOLD | external push/PR/merge refused (D8) | Step 4; differences from W04 below |
 
-**DOCS HOLD set.** A DOCS write to any of these HOLDs even if listed: `AGENTS.md`, `CLAUDE.md`,
+**Protected DOCS paths.** The allowlist cannot include `AGENTS.md`, `CLAUDE.md`,
 `agents/**`, `skills/**`, `.claude/**`, `docs/protocol/**`, `.review-loop/*`, config and manifest files,
 `.gitignore`, `.gitattributes`, `.git`, and symlink escapes. Implemented (W2b-1, `docs_denied`): any path
 with a `docs_policy.PROTECTED_PARTS` name at any depth (case-insensitive; this adds `.env`, `.npmrc`,
@@ -85,16 +83,14 @@ the set: like code, a DOCS write to them is rolled back to the pre-DOCS tree (WI
 earlier replay (`docs_owned`), a fresh docs reviewer (reviewer role, EXEC reviewer protocol) reviews the
 full diff and must run the configured test command. A missing observed test, a HOLD or a REVISE without
 findings HOLDs before the DOCS receipt, so resume reuses the recorded writer and reviews again. A blocking
-finding (the ledger rule: CRITICAL/MAJOR/SECURITY; since v3.8.1 a security flag does not raise MINOR/LOW) goes back
+finding on a docs-writer path goes back
 to a new docs writer attempt with the findings (source `docs-reviewer`, no owner) in its prompt, then a fresh docs
-review; EXEC is not reopened (WI-GATE1). A REVISE with only MINOR findings is advisory, and
-APPROVE advances to SECURITY, unless any blocking finding is still open. `BUDGET_CAPS['DOCS']` (7) bounds
+review, within DOCS. Findings outside the docs writer’s scope go to the run backlog. An advisory-only
+review can advance to SECURITY. `BUDGET_CAPS['DOCS']` (7) bounds
 the DOCS writer and review dispatches per run (a protocol retry may add one). A
 no-op DOCS writer without owned entries advances without a docs review (legacy 3.6 reviews only writes).
 POLISH-Q specialist turns record the configured test command they ran (`observed_test`) but are not
-required to run it: the candidate tree already has the EXEC reviewer's and the gate's observed tests.
-Every other write outside the allowlist,
-including comment fixes in code (legacy 3.6.2), goes to EXEC replay.
+required to run it. DOCS rolls back writes outside the allowlist, including code comments.
 
 **POLISH-Q differences from legacy (intentional, stricter).** Legacy language agents and the test analyzer
 use the cheap model tier; W uses the configured reviewer model. Legacy 3.5.2 reports and continues at its
@@ -119,7 +115,7 @@ For lifecycle delivery runs, `--run-changes-only` holds on sensitive paths and c
 added or changed, including changed staged blobs after deletion or rename. Unchanged committed hits and removed
 base blobs are recorded as notes; their oversized content is skipped and named without consuming the scan budget.
 Added or changed files over 8 MiB, content read over 256 MiB, incomplete coverage, ignore gaps and security reviewer
-findings still HOLD. Report mode scans the whole delivery without this partition.
+blocking findings still HOLD. Report mode scans the whole delivery without this partition.
 The `sensitive_policy` scan covers tracked plus non-ignored untracked paths. A repository without the legacy
 sensitive `.gitignore` patterns gets `review-required` (exit 1) and HOLDs at every SECURITY, as legacy does.
 FIELD-19: the preflight credits a `.gitignore` only when it is tracked and unchanged from HEAD, or when the
@@ -128,8 +124,8 @@ is known at start: creating a W state runs `security_preflight.py --ignore-cover
 `ignore_coverage` rules), records `lifecycle.ignore_coverage_at_start` and prints a WARNING naming the
 missing categories; the run proceeds (a warning, not a gate, in both modes). Operator recovery from the HOLD
 (verified on the fake): add the patterns to the tracked `.gitignore` in the worktree, **neither committed
-nor staged**, and resume. The tree change replays EXEC review (one EXEC round), then FINISH,
-POLISH-Q, DOCS, SECURITY, within the EXEC round limit and the invocation budget, and the edit ships with the
+nor staged**, and resume. The tree change replays EXEC review, then the downstream stages, within the invocation budget and without
+using an EXEC round (R5), and the edit ships with the
 delivery. A committed fix moves HEAD and HOLDs: restore HEAD to the run's lifecycle parent keeping the edit
 (`git reset -q <parent>`, i.e. `HEAD~1` when that commit is the only one added). A staged fix passes
 SECURITY, but an `auto_commit` accept refuses staged work: unstage it, keeping the worktree content. A
@@ -176,8 +172,7 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
 - Added in W1a, moved by W1b–W3a: a W run reaches DONE only after a READY SECURITY receipt, and until W3b
   `accept` refuses a W DONE, so a real run never silently skips a stage.
 - Added in W3a-2: after the SECURITY clean scan a fresh security reviewer (reviewer role, EXEC reviewer
-  protocol, its own earlier findings in an owner ledger) must make tool calls and report no open finding of
-  its own; any finding, HOLD or unusable verdict HOLDs. A turn without tool calls is discarded and retried
+  protocol, its own earlier findings in an owner ledger) must make tool calls and clear its open blocking findings. A blocking finding, HOLD or unusable verdict HOLDs. A turn without tool calls is discarded and retried
   once and never touches the ledger; a crash replay reuses only the turn `invoke` returned (evidence contract
   checked), and a HOLD, unusable or malformed review is discarded so resume reviews again. A resume on the tree its
   findings were left open on is refused ("security findings need a fix on a new tree"); the operator's fix
@@ -196,7 +191,7 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   inside the worktree.
 - Added in W3b-1: a W accept needs status DONE and stage DONE and `--expect` over an intent that also binds
   the stage receipts (`receipts_sha256`); `--override-rejection` is refused, so neither a rejected tree nor a
-  round-limit HOLD (FINISH, DOCS or SECURITY reasons included) is accepted, and open specialist or security
+  round-limit HOLD is accepted, and open specialist or security
   blockers are never put into an accepted record. At the rejection limit the reject still reopens EXEC and
   HOLDs `rejected-tree` with a W hint ("note and resume, reject --scope-change, or abort"; before the limit
   "note, change the
@@ -223,7 +218,7 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   change is never replayed into ACCEPTED) finishes
   the journaled commit (CAS from the parent, or nothing if HEAD already is the commit). The accept's own
   `--auto-commit` value is not consulted; the frozen config decides. A reject on a W DONE
-  reopens EXEC (epoch+1, the persistent author gets the rejection note, then reviewer, gate, FINISH,
+  reopens EXEC (epoch+1, the persistent author gets the rejection note, then reviewer, FINISH,
   POLISH-Q, DOCS and SECURITY again).
 - Not a refusal: author and reviewer may share a vendor exactly as in real EXEC (ADR-11 D-8).
 

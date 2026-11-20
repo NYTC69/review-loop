@@ -71,16 +71,16 @@ EXEC still requires a successful configured test, no observed test failure, the 
 evidence, and the same snapshot. Blocking findings retain the normal repair
 loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
 round; its eligible advisory re-review exits immediately.
-Blocking means a CRITICAL, MAJOR or SECURITY finding (a gate's CRITICAL/HIGH) whose category is correctness,
-data-loss, security or money (an empty reachability statement never demotes it); category `other` (wording, style,
+Blocking means a CRITICAL, MAJOR or SECURITY finding whose category is correctness,
+data-loss, security or money. Findings carry a reachability statement, and an empty statement leaves an otherwise
+blocking finding blocking. Gate FAIL items are mandatory checks. Category `other` (wording, style,
 docs polish, extra robustness) never blocks. Program rows (test failure, secret scan, independence scan, sensitive paths)
 set their own blocking category. A MINOR or LOW security-flagged finding is listed but advisory. A blocking row
 still open at the cap is the `PLAN round limit reached` / `EXEC round limit reached` HOLD; the EXEC round rules
-(R1-R5: cap 3 before the gate, two fix rounds after a gate FAIL, hard cap 5, a finding still open in two consecutive
+(R1-R5: cap 3 before the gate, up to two fix rounds after a gate FAIL, hard cap 5, a non-gate blocker still open in two consecutive
 reviews, new blockers in two consecutive reviews after an approval; lifecycle writes use no round) each name
 themselves in a NOTE line at the HOLD.
-Fresh shadow/gate blockers retain their existing blocking behavior. Review
-comparison shows each reviewer decision separately from the final coordinator
+Review comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
 
 Delivery PLAN drafts include a [scenario matrix](../docs/protocol/scenario-matrix.md).
@@ -392,7 +392,7 @@ outcome in the delivery report.
 
 Advisory fix round (ADVFIX, owner 2026-10-06): `--advisory-fix-round true` (default false, frozen; refused
 with `--review-report` and, WI-GATE1, without `--review-only`) gives the author one fix round, at the first clean POLISH-Q exit, for the non-blocking
-findings still open (MINOR, LOW, a gate's MEDIUM/LOW), before the quality writers: fix what is reasonable,
+findings still open, before the quality writers: fix what is reasonable,
 dismiss the rest with a reason; then EXEC review, shadow, FINISH and the specialists run again. Once per
 run, on its own round outside `--max-exec-rounds`; without invocation headroom it is skipped with the reason.
 Findings still open afterwards stay advisory. The delivery report says ran (N of M addressed), skipped or off.
@@ -610,26 +610,29 @@ deadline; pass the time it may use as its own `--wi-deadline`.
 At a current PLAN or EXEC round-limit HOLD, `resume --add-rounds N` (1-10)
 continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
-next author turn; a HOLD after a FINISH, DOCS, SECURITY or writer change keeps
-that change's pending review. This also covers writer rollback HOLDs.
-The gate runs once per work item (WI-GATE1). After a gate FAIL the repair is reviewed by the EXEC reviewer, which
-checks each open FAIL item in full every round and may close it only as fixed; no route gates again, also when an
-earlier version saved `gate_ran` reset after a FAIL. A FAIL gets one automatic fix round and at most one more,
+next author turn. For a saved legacy HOLD after a lifecycle write or writer rollback, the pending review is preserved.
+The gate runs once per work item (WI-GATE1) and returns PASS or FAIL with per-criterion results and evidence.
+The four required parts of a FAIL item are the quoted unmet acceptance criterion or blocking class, evidence,
+the smallest change, and proof it is fixed. PASS requires every listed criterion met and an empty FAIL list.
+The EXEC reviewer checks each open FAIL item in full every round and may close it only as fixed.
+A saved verdict also counts when an earlier version reset `gate_ran`. A FAIL gets one automatic fix round and at most one more,
 wherever the EXEC cap stood (round rule R2); a FAIL item still open after them HOLDs and recommends splitting the open
 gate items into a new work item. From the FAIL until a repair review passes, only the open FAIL items and blocking
 regressions introduced by the fix (the reviewer starts their reachability with `regression:`) keep a review from
 passing; other new findings go to the BACKLOG. A shadow blocker in that scope waits for the persistent reviewer, who
-confirms it (`still_open`: it blocks) or withdraws it, on the same tree and without an author round. The hard cap is
-5 EXEC rounds whatever `--max-exec-rounds` says. Later FINISH and writer re-reviews use the ordinary threshold. A
+confirms a blocking regression, marks a valid finding outside the fix non-blocking, or withdraws an incorrect
+finding. The confirmation uses the same tree and no author round. The automatic hard cap is
+5 EXEC rounds whatever `--max-exec-rounds` says. Explicit extensions, counted rejections and the opt-in advisory fix
+round add their own allowance. Later FINISH and writer re-reviews use the ordinary threshold. R4 asks the owner when
+the same non-gate blocker is marked `still_open` in two consecutive reviews, and recommends a split when two consecutive
+reviews after an approval each add new blockers. `resume --add-rounds N` resets both streaks. R5 excludes lifecycle
+writes, writer replay and rollback, CLI failures and timeouts, and an approval held for host test evidence. A
 state saved by v3.8.x is recounted on resume (stage writes and POLISH-Q fixes uncharged, a saved FAIL gets its 1 + 1).
 A gate answer that is not a verdict (a reply that is not JSON, a FAIL item without its basis, evidence, smallest change
 or proof, an unmet criterion without its own item, or missing evidence claims) is dispatched once more, one retry for
 all of these, then HOLDs (`malformed gate verdict`); resume starts a new attempt of the same bound and keeps the earlier
 receipts.
-At a round-limit HOLD produced by a write (FINISH, DOCS, a SECURITY-stage change,
-or a writer rollback), the round is already used; a plain `resume` keeps the HOLD
-and `resume --add-rounds N` continues with the pending review.
-At that round-limit HOLD, `run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
+At a round-limit HOLD, `run` and `resume` print `NEXT: resume --add-rounds N`; after `reject --expect`,
 inspect whether `round_limit_hold.hold_reason` equals the current `hold_reason`.
 Other exits are `note --scope-change` or `abort`. Ordinary notes cannot extend a cap.
 

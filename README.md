@@ -217,12 +217,12 @@ through its four skills (`review-loop`, `guide`, `paired-session`, `review-pr`).
 
 In PLAN a blocking finding goes back to the author for the next plan round. From EXEC on, a blocking finding of the
 reviewer, the shadow or the gate goes back to the author; FINISH fixes what blocks delivery in its own session; a
-FINISH or POLISH-Q fix is reviewed again by the reviewer only, without using an EXEC round. The gate runs once per work item: it answers PASS
+FINISH or POLISH-Q write returns to EXEC review without using an EXEC round. The gate runs once per work item: it answers PASS
 or FAIL, each FAIL item names an unmet acceptance criterion or a blocking-class defect (correctness, data loss, security,
 money) with evidence, the smallest change and its proof, and every later EXEC review checks the open items until they are
 fixed. A DOCS write outside the docs is rolled back, and a DOCS-review REVISE goes back to the docs writer. SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
 additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
-256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
+256 MiB, for a `.gitignore` coverage gap, and for any blocking security reviewer finding. The same hits in files that were already
 committed and left unchanged are printed once as a NOTE and recorded in the SECURITY receipt; a path the run removed
 and that is still in the index is also named in a NOTE. Such a file over 8 MiB is not content-scanned and is named in the NOTE.
 A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
@@ -235,7 +235,7 @@ makes one verdict and audits coverage and gaps, including blocking defects outsi
 Non-blocking corner cases go to BACKLOG. Review-only, code-quality-loop, and review-pr skip the matrix.
 
 None of the review roles shares the author's session: the reviewer keeps its own session across rounds, and the
-shadow, the gate and the stage reviewers start fresh each time. Default roles: Codex is the author
+shadow and stage reviewers start fresh on each dispatch. The gate uses a fresh session. Default roles: Codex is the author
 and the gate (`gpt-6.1-sol`), Claude the reviewer and the shadow (`claude-opus-5-5`); the operator profile changes
 roles and models.
 
@@ -254,16 +254,17 @@ flowchart TD
   PLAN --> AUTH["EXEC: author implements or fixes"]
   AUTH --> REV["EXEC review: persistent reviewer + fresh shadow"]
   REV -->|"blocking finding"| AUTH
-  REV --> G["GATE: fresh adversarial review"]
-  G -->|"critical / high with complete six-part body"| AUTH
-  G --> F["FINISH: fresh finisher runs the tests"]
+  REV -->|"first approval"| G["GATE: one fresh PASS/FAIL verdict"]
+  G -->|"FAIL: repair and EXEC re-review"| AUTH
+  G -->|"PASS"| F["FINISH: fresh finisher runs the tests"]
+  REV -->|"approval after gate"| F
   F -->|"tree changed"| REV
   F --> Q["POLISH-Q: language + quality specialists"]
   Q -->|"specialist blocker: fix, then specialist re-reviews"| AUTH
-  Q -.->|"optional: advisory fix round (default off)"| AUTH
+  Q -.->|"code-quality-loop: optional advisory fix"| AUTH
   Q -.->|"optional: simplifier / test-writer (main: off; review-only: both by default)"| REV
   Q --> D["DOCS: docs writer, then docs reviewer"]
-  D -->|"write outside the docs / docs-review REVISE"| REV
+  D -->|"docs-review blocker: docs writer revises"| D
   D --> S["SECURITY: secret + .gitignore scan, security reviewer"]
   S -->|"finding: you fix it outside the run, then resume"| REV
   S --> DONE["DONE: acceptance pending"]
@@ -311,8 +312,8 @@ strategy as blocking; the author revises and the reviewer approves on round 2.
 per route, a deviation from the approved plan; the author fixes it, and the reviewer and the shadow approve.
 
 **GATE to SECURITY** — The gate finds nothing blocking. In POLISH-Q, `rust-reviewer` checks the change and
-`pr-test-analyzer` notes a missing test for the 429 response; the author adds it, and the EXEC review and the gate run
-again. DOCS adds the run's entry to `CHANGELOG.md`; SECURITY finds no secret and full `.gitignore` coverage.
+`pr-test-analyzer` notes a missing test for the 429 response; the author adds it, and EXEC review checks the updated tree. DOCS adds the run’s entry to `CHANGELOG.md`. SECURITY
+finds no secret and confirms full `.gitignore` coverage.
 
 **DONE** — You accept; the agent shows the delivery report. The change stays uncommitted unless the operator profile
 sets `auto_commit`.
@@ -488,18 +489,21 @@ key-named-literal rules apply only to lines the run adds and to a review-pr post
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory under `<repo>/.review-loop/runs/<UUID>/` (gitignored); legacy `.review-loop/sessions/` files are left on disk and never read.
 
-**Round Caps** — Blocking reviews at the hard round caps (plan 3 / exec 3 unless set) end in a HOLD;
-`resume --add-rounds N` continues the same run (L100). EXEC rounds count author turns the reviewer
-reviews: FINISH, POLISH-Q, DOCS and SECURITY writes, writer replays and failed turns use none. After a
-gate FAIL the author gets one fix round and at most one more, then the run HOLDs and recommends
-splitting the open gate items into a new work item; 5 rounds in total is a hard cap. The run also
-HOLDs when the same blocking finding stays open in two consecutive reviews, or when two reviews in a
-row after an approval each bring new blocking findings. Each such HOLD prints the round rule that
-stopped it. Only correctness, data-loss, security and money findings block (an empty reachability
-statement never demotes one); a REVISE that leaves only non-blocking rows open is `APPROVE_WITH_ADVISORY` in any round (EXEC
-still requires a successful configured test, own run evidence and the same reviewed tree; when only that
-evidence is missing the run HOLDs for `attach-verification` instead of using a round), and the rows go to
-the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md` (not when it is a symbolic link,
+**Round Caps** — PLAN and pre-gate EXEC default to 3 rounds each. After a gate FAIL, the author gets
+one automatic fix round and at most one more. If gate items stay open, the run HOLDs and recommends
+splitting them into a new work item. The automatic EXEC hard cap is 5 rounds.
+`resume --add-rounds N` continues the same run at a round-limit HOLD. FINISH, POLISH-Q, DOCS and
+SECURITY writes, writer replay and rollback, and failed or timed-out CLI turns use no EXEC round.
+The run also HOLDs to ask the owner when the same non-gate blocker is marked `still_open` in two consecutive
+reviews, or recommends splitting when two consecutive reviews after an approval each bring new blocking
+findings. Each such HOLD prints its round rule. Review findings block at CRITICAL, MAJOR or SECURITY
+severity in correctness, data-loss, security or money. Findings carry a reachability statement. An empty
+statement leaves an otherwise blocking finding blocking. With only non-blocking rows left and valid
+evidence, a REVISE becomes `APPROVE_WITH_ADVISORY`. EXEC requires a passing configured test, the reviewer’s
+own run evidence and the current tree. When test evidence is the only obstacle, the run HOLDs for
+`attach-verification` without using a round. Before dispatching
+the gate, the coordinator checks that any host verification the approval relied on is bound to the current tree.
+Open advisory rows go to the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md` (not when it is a symbolic link,
 not a regular file or ignored by git; then they stay in `backlog.md`). See
 [the advisory rules](paired_session/README.md#minor-only-review-revisions).
 

@@ -122,6 +122,17 @@ outcome with the stage receipts. After a whole-group review rollback, new blocke
 files stay open for EXEC repair with the usual round-limit HOLD; writer-file blockers and advisory rows are
 withdrawn, and operator-withdrawn rows stay withdrawn.
 
+The fresh gate records one PASS or FAIL per work item. Each FAIL item gives an unmet acceptance
+criterion or blocking class, evidence, the smallest change, and proof it is fixed. Before dispatch, an
+EXEC approval that relied on host verification HOLDs for `attach-verification` if the current tree has
+no associated record. After FAIL, the EXEC reviewer checks the open items and regressions introduced by
+the repair. The automatic budget is one repair round and at most one more, within the 5-round hard cap.
+Open gate items at the repair limit trigger a split recommendation. The
+[operator reference](../../paired_session/README.md#acceptance-rejection-and-round-limits)
+covers R1–R6, and its [finding rules](../../paired_session/README.md#minor-only-review-revisions)
+cover the shared threshold and backlog at acceptance. Delivery plans use the
+[scenario matrix](scenario-matrix.md).
+
 ## Work item
 
 Write `WORKITEM.md` in `<repo>/.review-loop/runs/<UUID>/` with goal, acceptance criteria, scope, and verification.
@@ -209,7 +220,7 @@ and refusals). code-quality-loop takes no base, so no `--base` is passed.
   handling, tests and simplicity; fix what the reviews find." No review history. `quality_focus` and
   `review_style` reach the review roles through the run flags of Profile and settings, not the work item.
 - Non-blocking fix round: pass `--advisory-fix-round true` in both blocks (owner decision "加一轮修非阻塞"). After the first clean
-  POLISH-Q the author gets one round for the open non-blocking findings (MINOR, LOW, a gate's MEDIUM/LOW): fix what is
+  POLISH-Q the author gets one round for the open non-blocking findings: fix what is
   reasonable, dismiss the rest with a reason; then EXEC review, shadow, FINISH and the specialists run again, before
   the quality writers. It runs once, on its own round outside `--max-exec-rounds`, and is skipped with the reason when the
   invocation budget has no room; findings still open stay advisory.

@@ -114,7 +114,7 @@ Create `.review-loop/config.md` in your project to customize:
 |-----|---------|-------------|
 | `entry` | absent (paired-session) | `paired-session` (`legacy` is refused since v2.13.0); routes every `/review-loop` (Claude) or review-loop skill (Codex) request, review-pr and code-quality-loop (see Entry above) |
 | `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (a hard cap that HOLDs blocking reviews) |
-| `soft_limit_exec` | unset → 3 | Becomes `--max-exec-rounds` (a hard cap that HOLDs blocking reviews) |
+| `soft_limit_exec` | unset → 3 | Becomes `--max-exec-rounds` (the pre-gate EXEC cap) |
 | `docs_file` | `CHANGELOG.md` | Becomes `--docs-file`; `""` to skip |
 | `skip_quality_polish` | false | Becomes `--skip-quality-polish` |
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |
@@ -149,11 +149,13 @@ review_focus: |
 ## Key features
 
 - **Independent review** — the reviewer, shadow and gate never share the author's session
-- **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
-  Eligible advisory-only reviews get one repair attempt per phase, then advisory acceptance, or exit at the cap
-  without an attempt. Writer replay takes the advisory exit at any round and preserves the attempt.
-  Blocking rounds preserve it; send-back grants a new EXEC attempt. EXEC needs a passed configured test,
-  own run evidence and the current tree.
+- **Round caps** — PLAN and pre-gate EXEC default to 3 rounds each. The gate gives one PASS/FAIL
+  verdict. FAIL allows one repair review and at most one more within the automatic 5-round EXEC hard cap.
+  At a round-limit HOLD, `resume --add-rounds N` (1–10) extends the run on the operator's decision.
+  Advisory-only reviews can pass, with open findings recorded in the run backlog and carried to acceptance.
+  An advisory fix round is available only through code-quality-loop. EXEC needs a passed configured test,
+  own run evidence and the current tree. See [round rules and gate repair](../../paired_session/README.md#acceptance-rejection-and-round-limits)
+  and the [delivery scenario matrix](../../docs/protocol/scenario-matrix.md).
   See [the advisory rules](../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
 - **Project-specific config** — tailor review priorities per project

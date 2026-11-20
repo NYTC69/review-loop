@@ -455,3 +455,107 @@ Amendment 2026-10-29 (B3a, live agy test): the read-only settings also allow rea
 Amendment 2026-11-01 (GM1, merge onto v3.4.0): gemini is not part of ADR-20. On native Windows a gemini role, named on the command line, in the profile or frozen in a saved run, is refused before any lease or state write (`REFUSED: a gemini role is not supported on Windows ...`); `status`, `abort` and `stop` stay usable. Gemini read-only turns use the v3.4.0 scratch layout like the Codex read-only roles: the per-dispatch TMPDIR sits under the run's external `scratch_base` (legacy runs keep `run_dir/role-tmp`), and the INTERNAL_WORKSPACE_DIRS exclusions apply to them unchanged because the read-only checks key on the role, not the vendor.
 
 Amendment 2026-11-01 (owner, v3.5.0 release gate): Codex quota is exhausted, so the owner had Opus review the whole release delta in place of the cross-vendor (Sol) review, and accepted runs 6f497f93 (ACCEPTED, af0cfc8) and 85f8ba20 (merged code: every gemini turn up to the DOCS reviewer succeeded, then the Gemini individual quota held the run) as the G11 real-run evidence. The agy exit status is read only from the first line of a run_command output (review finding).
+
+---
+
+## ADR-22: Gate once per work item; shared blocking threshold; round rules; scenario matrix
+
+**Date** 2026-11-19–20. **Status** Accepted by Yuan via main-rc and research-rc.
+
+**Context**
+
+Re-gating after FAIL repairs, later code changes and lifecycle writes made the independent
+gate act as a second per-round reviewer. The earlier single-pass learning set the boundary
+at EXEC convergence. In poker-tools (1b959a22 and 3812c747), runs with both approvals
+already recorded reached an EXEC round-limit HOLD after DOCS, with only changelog wording
+at issue. Another poker-tools run (S1c) spent 33 minutes in the gate before a HOLD for a
+missing host record. In gg-pipeline WI-413, the fresh gate hit an independence-scan HOLD on
+an already approved plan. These cases exposed the cost of late checks and repeated review.
+[Single-pass convergence learning](LEARNINGS.md#L-review-loop-adversarial-gate-single-pass-convergence) · [v3.8.6 field report](CHANGELOG.md#v386plan-里由-work-item-用词组成的斜杠列表不再被当成路径)
+
+**Options considered**
+
+Keep the gate scoped to each EXEC convergence, or record one independent verdict per work
+item and use the persistent reviewer for repair and later changes.
+
+**Decision**
+
+1. Record one gate verdict per work item on delivery and report routes. Keep `gate_ran` set
+   through repairs, reject, resume and lifecycle writes. A scope-change successor is a new
+   work item.
+2. Give the fresh gate the goal, acceptance criteria, candidate diff and test evidence
+   without review history. It returns PASS or FAIL, with results and evidence per criterion.
+3. Every FAIL item gives the quoted unmet criterion or blocking class, evidence, the smallest
+   change, and proof it is fixed. PASS requires all listed criteria met and an empty FAIL
+   list. FAIL requires a complete item for every unmet criterion and at least one item.
+   Completed unusable replies share one retry before HOLD. Resume after a malformed-verdict
+   HOLD starts a new bounded attempt. A timeout or CLI failure follows its own HOLD path.
+4. Persist open FAIL items as mandatory checks in every later EXEC review, with closure
+   only as fixed. RF-5 keeps an approval from proceeding while an item remains open.
+   An effective approval with all items fixed advances to the next stage.
+5. Apply one review threshold across the persistent reviewer, shadow, specialists, DOCS and
+   SECURITY. CRITICAL, MAJOR and SECURITY findings block in correctness, data-loss, security
+   or money. Findings must state how normal use reaches the problem. An omitted or empty reachability statement
+   leaves an otherwise blocking row blocking. Legacy rows without category keep their
+   severity rule. Advisory-only revisions can pass when required evidence is valid. Under
+   Q1, open non-blocking findings go to run `backlog.md`, then to workspace `BACKLOG.md` at
+   accept, in the accepted commit when auto-commit is enabled. Under Q2, ADVFIX is an
+   explicit option on code-quality-loop only.
+6. Count EXEC author rounds that receive review under R1–R6 below. The invocation cap remains
+   a separate runaway guard. The research-rc rules supersede the original Q3 allowance of
+   one repair review at the EXEC cap.
+7. Bind stale-tree checks to the latest EXEC review. Later writes that need EXEC review
+   go to the reviewer, with shadow when enabled and applicable. DOCS rolls back out-of-allowlist
+   writes, sends eligible blockers to the DOCS writer and backlogs out-of-scope findings.
+   Under Q4, ordinary reject after DONE goes through author and EXEC review. Every later
+   EXEC review receives the rejection notes.
+8. Both `aba` (gate uses the author vendor by default) and `abb` (for the default
+   Codex/Claude pair, `gate_vendor: claude`) remain configurable under ADR-10.
+9. For delivery plans, require a [scenario matrix](docs/protocol/scenario-matrix.md) with
+   scenario, expected behavior and test ID for each blocking-class scenario across seven
+   dimensions, or a reason for N/A. Trivial changes may give a reason instead. The
+   coordinator converts a PLAN approval with an invalid matrix to REVISE. The PLAN reviewer
+   checks coverage, EXEC reviewer and shadow check handling and tests, and the gate audits
+   coverage and looks for missing blocking scenarios. A gap requires a row, handling and
+   test. Review-only, code-quality-loop and report mode are exempt.
+10. Gate FAIL may cite blocking defects outside acceptance criteria. The per-round reviewer
+    and fresh shadow own robustness depth. Non-blocking corner cases go to the backlog.
+
+**Round rules** (research-rc, owner approved November 19, with the November 20 flag 1 ruling)
+
+- **R1** Pre-gate EXEC defaults to three author/review rounds.
+- **R2** FAIL gets one automatic repair round and at most one more within R3. Open gate
+  items at the R2 limit HOLD with a recommendation to split them into a new work item.
+  Under flag 1, the reviewer examines the whole delta since the gate. Only open gate
+  items and blocking regressions introduced by that delta can block, until a repair
+  review passes. The reviewer marks those regressions with `regression:` at the start of
+  reachability and confirms shadow candidates on the same tree. Other valid new findings
+  go to the backlog. Later lifecycle reviews and post-DONE rejection use the ordinary
+  threshold.
+- **R3** The automatic hard cap is five EXEC rounds even with a higher
+  `--max-exec-rounds`. Operator extensions, counted rejections and opt-in ADVFIX carry their
+  own allowances.
+- **R4** With only non-blocking findings left, proceed with the backlog when the required
+  evidence is valid. If the same non-gate blocker is marked `still_open` in two consecutive
+  reviews, HOLD and ask the owner. If two consecutive reviews after an approval each
+  introduce new blockers, including qualifying shadow findings, HOLD and recommend a split.
+  `resume --add-rounds N` resets both streaks.
+- **R5** FINISH, POLISH-Q, DOCS and SECURITY writes, writer replay and rollback, and failed
+  or timed-out CLI turns use no EXEC round. If missing sandbox test evidence alone prevents
+  approval, HOLD for `attach-verification` without charging a round. Before gate dispatch,
+  an approval that relied on host verification also HOLDs if the current tree has no
+  bound record. Lifecycle stages retain their own budgets.
+- **R6** A gate FAIL states the criterion or blocking issue, evidence, required change and
+  proof, as in item 3.
+
+**Consequences**
+
+The gate contributes one independent verdict. The reviewer owns convergence on the current
+tree. Resuming a compatible v3.8.x run preserves its gate verdict, carries forward valid
+saved gate blockers, and recounts EXEC rounds once using R5. The saved pre-gate cap stays
+in effect.
+
+**Supersedes in part** ADR-13 addendum (a), for the paired-session repair allowance, and
+the per-convergence re-gate rules in V319-HOLD R2/R3 ([v3.1.9](CHANGELOG.md#v319没过-gate-的代码不会再交出去长命令留出作答时间失败原因更好读))
+and V3110-GATE ([v3.1.10](CHANGELOG.md#v3110旧版本存下的-gate-打回后修复中的-run-也要再过-gate环境变量变化的-hold-写明怎么恢复两步-reject-不再因重复豁免失效)). Clarifies the gate and lifecycle behavior
+referenced by ADR-11. ADR-10 still permits both vendor pairings.

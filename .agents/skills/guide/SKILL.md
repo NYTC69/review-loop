@@ -51,11 +51,13 @@ Not on Codex:
   On Windows `--detach` is refused, Git for Windows
   (Git Bash) is required, and run directories and workspaces stay out of OneDrive-synced folders. On Windows the
   Codex skills run their commands in PowerShell as best effort; the Claude Code entry is the tested Windows path.
-- **Hard caps** — blocking PLAN/EXEC reviews HOLD at the cap; `resume --add-rounds N` (1-10) continues the run.
-  Eligible advisory-only reviews get one repair attempt per phase, then advisory acceptance, or exit at the cap
-  without an attempt. Writer replay takes the advisory exit at any round and preserves the attempt.
-  Blocking rounds preserve it; send-back grants a new EXEC attempt. EXEC needs a passed configured test,
-  own run evidence and the current tree.
+- **Round caps** — PLAN and pre-gate EXEC default to 3 rounds each. The gate gives one PASS/FAIL
+  verdict. FAIL allows one repair review and at most one more within the automatic 5-round EXEC hard cap.
+  At a round-limit HOLD, `resume --add-rounds N` (1–10) extends the run on the operator's decision.
+  Advisory-only reviews can pass, with open findings recorded in the run backlog and carried to acceptance.
+  An advisory fix round is available only through code-quality-loop. EXEC needs a passed configured test,
+  own run evidence and the current tree. See [round rules and gate repair](../../../paired_session/README.md#acceptance-rejection-and-round-limits)
+  and the [delivery scenario matrix](../../../docs/protocol/scenario-matrix.md).
   See [the advisory rules](../../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - Keep the shared review-loop config in `.review-loop/config.md`; roles and models come from the
   paired-session operator profile; gemini (Antigravity CLI `agy`) is an optional third vendor for the reviewer and
