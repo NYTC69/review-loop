@@ -1225,6 +1225,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
             ('out of delta', {'out_of_delta': True, 'advisory': True}, {}, False),
             ('advisory severity', {'severity': 'MINOR'}, {}, False),
             ('security tagged', {}, {'security': True}, False),
+            ('security severity', {}, {'severity': 'SECURITY'}, False),
         )
         for label, first, second, covers in cases:
             with self.subTest(label=label):

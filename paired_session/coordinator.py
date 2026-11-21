@@ -4035,6 +4035,7 @@ class Coordinator:
                      (row.get('owner_role') or '').startswith('specialist:') and row['owner_role'] != owner and
                      (not blocking or (blocks_by_severity(row) and not row.get('out_of_delta'))) and
                      (not finding.get('security') or row.get('security')) and
+                     (str(finding['severity']).upper() != 'SECURITY' or row['severity'] == 'SECURITY') and
                      self._specialist_location(row.get('file')) == location), None)
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
