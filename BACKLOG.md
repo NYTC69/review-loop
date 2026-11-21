@@ -8,18 +8,18 @@
   - 1 patch pack: gate prompt removesuffix + test isolation — done in v3.10.1.
   - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE) — done in v3.11.0.
   - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried` — done in v3.11.0.
-  - 4 WI-SPEC: GR-3 + GR-2 + GR-7.
+  - 4 WI-SPEC: GR-3 + GR-2 + GR-7 — done in v3.12.0.
   - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6.
   - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status`.
   - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21).
-- Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
-- Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-4: allow skipping PLAN review for small work items that already list their files and acceptance criteria. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-6: allow a role model change on resume. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
-- Gate-survey follow-up GR-7: when quota is tight, cut the specialists first and keep the fresh shadow (poker-tools evidence: the shadow found the real defects). (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 
 ## P2 — normal
 
+- v3.12.0 follow-up (Opus, WI-SPEC plan review): if specialist A later withdraws a row that B's claim was attached to, B's claim goes with it; B raises it again only when a later delta touches that file. (added 2026-11-22)
+- v3.12.0 follow-up (Opus, WI-SPEC): `resume --skip-quality-polish true` is silently unsaved when resume stops before the save point (round-limit HOLD without --add-rounds, past deadline, DONE, uncertain-turn HOLD); documented, consider a NOTE. (added 2026-11-22)
+- v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner decision; quota_status.py is machine-local). (added 2026-11-22)
 - v3.11.1 follow-up (Opus, WI-DISPFIX): a still_open row for a closed unexpected id, or an open id the reviewer was not asked about, still HOLDs at once without the protocol retry; make it InvalidDispositionIDs if it shows up in the field. (added 2026-11-22)
 - v3.11.1 follow-up (Opus, WI-DISPFIX): record ignored dispositions in the receipt (ignored_prior_findings) for audit, like _ignore_operator_dispositions. (added 2026-11-22)
 - v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (added 2026-11-22)
@@ -57,6 +57,9 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.12.0 WI-SPEC (covered findings attach at ingestion))
+- ~~Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.12.0 WI-SPEC)
+- ~~Gate-survey follow-up GR-7: when quota is tight, cut the specialists first and keep the fresh shadow (poker-tools evidence: the shadow found the real defects). (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.12.0 WI-SPEC (manual resume --skip-quality-polish true; automatic quota sensing not done))
 - ~~Field (v3.10.1 real run): a reviewer answer that adds a disposition for an already-closed finding (here F001, fixed a round earlier, next to the open gate item F002) HOLDs at once with "invalid finding dispositions: duplicate or unknown id", without the one protocol retry; ignore (or note) dispositions for closed ids outside `open_finding_ids`, or give that error the existing retry. Resume continued the run to ACCEPTED.~~ (added 2026-11-21) (closed 2026-11-22, see v3.11.1 WI-DISPFIX)
 - ~~Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.11.0 WI-TESTEVID)
 - ~~Gate-survey follow-up GR-5: on a provider rate limit, wait and retry automatically instead of HOLD. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.11.0 WI-TURNFAIL)
