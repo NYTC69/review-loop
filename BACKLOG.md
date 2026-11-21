@@ -4,9 +4,18 @@
 
 ## P1 — high priority
 
+- Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
+- Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
+- Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
+- Gate-survey follow-up GR-4: allow skipping PLAN review for small work items that already list their files and acceptance criteria. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
+- Gate-survey follow-up GR-5: on a provider rate limit, wait and retry automatically instead of HOLD. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
+- Gate-survey follow-up GR-6: allow a role model change on resume. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
+- Gate-survey follow-up GR-7: when quota is tight, cut the specialists first and keep the fresh shadow (poker-tools evidence: the shadow found the real defects). (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 
 ## P2 — normal
 
+- v3.9.0 follow-up: scenario-matrix label detection only on headings, bold or numbered lines, so a short prose line such as "Dependency note: none" under another dimension does not switch the dimension (costs one PLAN round, never lets a bad plan through). (Opus review 2026-11-21) (added 2026-11-21)
+- v3.9.0 follow-up: the gate prompt independence scan strips the matrix excerpt with removesuffix, which assumes the excerpt is last; build the prompt with an explicit excluded part instead. (Opus review 2026-11-21) (added 2026-11-21)
 - Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line. (added 2026-11-09)
 - Gate note (v3.7.2 Opus gate): a note queued for a reused DOCS writer can reach DONE undelivered; `status` at DONE should list it ("undelivered note N001: use reject"). (added 2026-11-09)
 - Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings. (added 2026-11-08)
