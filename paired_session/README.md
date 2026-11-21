@@ -630,7 +630,8 @@ A continuing `resume` can change any of `--author-model`, `--reviewer-model`, `-
 `--flag=value` work. Omitted model and effort flags inherit the saved values on every action
 that restores the run, even when the current profile supplies different defaults. The saved
 vendors and `allowed_models` policy apply. Other actions that restore a run refuse explicit model or
-vendor changes and ignore explicit effort changes. Explicit flags win on
+vendor changes; an explicit effort change is ignored by `accept`, `reject`, `note`, `withdraw-findings` and
+`attach-verification` and refused by `abort`, a restoring `run` and `resume --polish`. Explicit flags win on
 every continuing `resume`: a caller that re-sends its original role flags undoes an earlier override (with a
 NOTE), and an author or reviewer model revert opens another session.
 

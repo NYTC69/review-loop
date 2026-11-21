@@ -3135,8 +3135,11 @@ class Coordinator:
         if getattr(self.args, 'allowed_models', None) not in (None, policy):
             raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
         self.args.allowed_models = policy
+        # An explicit differing effort: applied by a continuing resume, ignored by the operator actions (as before
+        # WI-RESUME), and left for the resume config check to refuse on run / abort / resume --polish.
+        keep = set(overrides) | (set(ROLE_EFFORT_DESTS) if self.args.action not in EFFORT_IGNORING_ACTIONS else set())
         for key in (*ROLE_DESTS, *ROLE_EFFORT_DESTS, 'gate_vendor_source'):
-            if key not in overrides or key not in explicit:
+            if key not in keep or key not in explicit:
                 setattr(self.args, key, saved[key])
         return saved
 
@@ -10869,6 +10872,7 @@ CONFIGURABLE_DESTS = {
 
 ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_model', 'gate_vendor', 'gate_model')
 ROLE_EFFORT_DESTS = ('author_effort', 'reviewer_effort', 'gate_effort')
+EFFORT_IGNORING_ACTIONS = ('accept', 'reject', 'note', 'withdraw-findings', 'attach-verification')
 ROLE_RESUME_DESTS = ('author_model', 'reviewer_model', 'gate_model', *ROLE_EFFORT_DESTS)
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 

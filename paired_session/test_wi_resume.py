@@ -176,8 +176,12 @@ class ResumeTests(unittest.TestCase):
                         with patch.object(rc, '_execute_locked', side_effect=restore_only) as execute:
                             code, output = self.cli(action, *flags, '--author-effort=low',
                                                     '--reviewer-effort=low', '--gate-effort=low')
-                        self.assertEqual(code, 0, output)
-                        execute.assert_called_once()
+                        if action in rc.EFFORT_IGNORING_ACTIONS:   # the saved effort wins, as before WI-RESUME
+                            self.assertEqual(code, 0, output)
+                            execute.assert_called_once()
+                        else:   # run / abort refuse an explicit differing effort, as before WI-RESUME
+                            self.assertEqual(code, 2, output)
+                            self.assertIn('resume configuration differs: author_effort', output)
                         for flag in ('--author-model=gpt-6-sol', '--author-vendor=claude'):
                             code, output = self.cli(action, *flags, flag)
                             self.assertEqual(code, 2, output)
