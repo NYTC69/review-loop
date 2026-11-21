@@ -1,9 +1,18 @@
-**Last updated**: 2026-11-19
+**Last updated**: 2026-11-21
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
 
+- Execution plan (owner 2026-11-21, backlog audit .compass/results/backlog-audit-2026-11-21.md): do these merged work items in order after v3.10.0. (added 2026-11-21)
+  - 1 patch pack: gate prompt removesuffix + test isolation (v3.9.0 follow-up / test_v3a3 items below).
+  - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE).
+  - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried`.
+  - 4 WI-SPEC: GR-3 + GR-2 + GR-7.
+  - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6.
+  - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status`.
+  - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21).
+- CI: shard the macOS jobs into 5 groups (the free plan runs 5 macOS jobs at once; one job per module queued ~150 macOS jobs and took 40-45 min). Owner 2026-11-21: do it right after v3.10.0. (added 2026-11-21)
 - Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
@@ -14,12 +23,12 @@
 
 ## P2 — normal
 
+- v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (added 2026-11-21)
+- v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (added 2026-11-21)
 - v3.9.0 follow-up: scenario-matrix label detection only on headings, bold or numbered lines, so a short prose line such as "Dependency note: none" under another dimension does not switch the dimension (costs one PLAN round, never lets a bad plan through). (Opus review 2026-11-21) (added 2026-11-21)
 - v3.9.0 follow-up: the gate prompt independence scan strips the matrix excerpt with removesuffix, which assumes the excerpt is last; build the prompt with an explicit excluded part instead. (Opus review 2026-11-21) (added 2026-11-21)
 - Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line. (added 2026-11-09)
 - Gate note (v3.7.2 Opus gate): a note queued for a reused DOCS writer can reach DONE undelivered; `status` at DONE should list it ("undelivered note N001: use reject"). (added 2026-11-09)
-- Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings. (added 2026-11-08)
-- Field (poker-tools, v3.6.0): PostgreSQL initdb inside a Claude role's Bash sandbox: shmget is allowed but shmctl(IPC_RMID) is denied, so every failed run leaks one SysV segment; the 32-slot table (kern.sysv.shmmni) fills and blocks initdb host-wide. `excludedCommands` does not escape the sandbox in headless runs (tested 11-08, also with allowUnsandboxedCommands). The routes (host verification with `attach-verification`, or a Codex reviewer) and the cleanup (`ipcrm` of NATTCH-0 segments) are documented since v3.7.2 (paired_session/README.md troubleshooting); the sandbox itself is unchanged. (added 2026-11-08)
 - Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1, the EXEC author since v3.8.3 (poker-tools run 9156fede); the POLISH-Q and DOCS writers still do not. (added 2026-11-08)
 - Supervisor note (WI-NOPROBE run, 2026-11-08): a large change needed more than the default 2-hour author turn (EXEC r1 timed out at 7200 s; resumed with `--exec-turn-timeout 14400`); consider a longer default or a hint in the timeout HOLD. (added 2026-11-09)
 - Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match. (added 2026-11-09)
@@ -37,8 +46,6 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
   - gg-pipeline feature requests (2026-10-20; triaged as features, not fixes):
     - An operator route to send a held EXEC run back to the author with a note (`resume --to-author`, or `reject` on a HOLD), and dispatch the author first after `note` + `resume` (gg-pipeline WI-266b, 2026-10-21; deferred).
     - A requirement change after plan approval that reaches the EXEC reviewer without a full scope-change successor (a superseding operator note shown to the reviewer, or a short re-plan inside the run). Today: `note --scope-change` (gg-pipeline WI-266e, 2026-10-22; deferred).
-    - An option for an open MEDIUM+ finding to block DONE, or a dedicated route to fix open findings on a DONE run. Existing route: `reject --text "..."` on the DONE run reopens EXEC on the same run.
-    - Permission probes run the configured test command once (reviewer and gate probe each ran a 50-minute command). Obsolete: `permission-probe` was removed in v3.7.0.
     - When the base moved under a parked run, have the author re-run the configured command and refresh the recorded verification before the gate.
     - Warn at `note` time when the operator text contains a phrase the independence check rejects later (the author may quote the note into the change); and at the last EXEC round, give the author one reword turn instead of the gate HOLD (gg-pipeline WI-263m, 2026-10-21; v3.2.3 only adds the path:line places to the HOLD).
     - A run/resume pre-flight check that each vendor CLI is logged in under the run's CODEX_HOME / Claude config, refusing early with a refresh hint instead of a mid-run HOLD (gg-pipeline WI-282a, 2026-10-24; deferred).
@@ -46,6 +53,8 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings~~ (added 2026-11-08) (closed 2026-11-21, see v3.9.0 shared threshold: MEDIUM/MINOR rows go to BACKLOG by design; backlog audit 2026-11-21)
+- ~~Field (poker-tools, v3.6.0): PostgreSQL initdb inside a Claude role's Bash sandbox: shmget is allowed but shmctl(IPC_RMID) is denied, so every failed run leaks one SysV segment; the 32-slot table (kern.sysv.shmmni) fills and blocks initdb host-wide. `excludedCommands` does not escape the sandbox in headless runs (tested 11-08, also with allowUnsandboxedCommands). The routes (host verification with `attach-verification`, or a Codex reviewer) and the cleanup (`ipcrm` of NATTCH-0 segments) are documented since v3.7.2 (paired_session/README.md troubleshooting); the sandbox itself is unchanged~~ (added 2026-11-08) (closed 2026-11-21, see documented limit in paired_session/README.md troubleshooting since v3.7.2; backlog audit 2026-11-21)
 - ~~WI-NOPROBE: remove `permission-probe` and strict mode~~ (added 2026-11-08) (closed 2026-11-09, see v3.7.0)
 
 - ~~WI-RVW: Codex reviewer-type roles may write in the workspace (workspace-write like the author, optional extra_writable_roots for caches outside the repository); tracked-file guard and git guards kept~~ (added 2026-11-07) (closed 2026-11-08, see v3.6.0)
