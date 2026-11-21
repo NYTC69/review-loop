@@ -5,14 +5,13 @@
 ## P1 — high priority
 
 - Execution plan (owner 2026-11-21, backlog audit .compass/results/backlog-audit-2026-11-21.md): do these merged work items in order after v3.10.0. (added 2026-11-21)
-  - 1 patch pack: gate prompt removesuffix + test isolation (v3.9.0 follow-up / test_v3a3 items below).
+  - 1 patch pack: gate prompt removesuffix + test isolation — done in v3.10.1.
   - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE).
   - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried`.
   - 4 WI-SPEC: GR-3 + GR-2 + GR-7.
   - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6.
   - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status`.
   - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21).
-- CI: shard the macOS jobs into 5 groups (the free plan runs 5 macOS jobs at once; one job per module queued ~150 macOS jobs and took 40-45 min). Owner 2026-11-21: do it right after v3.10.0. (added 2026-11-21)
 - Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
@@ -23,10 +22,10 @@
 
 ## P2 — normal
 
+- v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (added 2026-11-21)
 - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (added 2026-11-21)
 - v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (added 2026-11-21)
 - v3.9.0 follow-up: scenario-matrix label detection only on headings, bold or numbered lines, so a short prose line such as "Dependency note: none" under another dimension does not switch the dimension (costs one PLAN round, never lets a bad plan through). (Opus review 2026-11-21) (added 2026-11-21)
-- v3.9.0 follow-up: the gate prompt independence scan strips the matrix excerpt with removesuffix, which assumes the excerpt is last; build the prompt with an explicit excluded part instead. (Opus review 2026-11-21) (added 2026-11-21)
 - Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line. (added 2026-11-09)
 - Gate note (v3.7.2 Opus gate): a note queued for a reused DOCS writer can reach DONE undelivered; `status` at DONE should list it ("undelivered note N001: use reject"). (added 2026-11-09)
 - Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1, the EXEC author since v3.8.3 (poker-tools run 9156fede); the POLISH-Q and DOCS writers still do not. (added 2026-11-08)
@@ -34,7 +33,6 @@
 - Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match. (added 2026-11-09)
 - Field (gg-pipeline WI-413, v3.8.3): an operator `note` is refused while a turn is in flight and at the "uncertain in-flight CLI turn" HOLD, and a reviewer REVISE auto-dispatches the next author turn, so a ruling the reviewer asked the operator for has no delivery window (the author burned a turn to HOLD for it). (added 2026-11-19)
 - Review note (v3.8.5 Opus R3): PLAN approval / plan restatement (`_plan_history_issue`) does not apply the plan branch of `_introduced_history_matches`, so shapes that stay caught (`/srv/codex/notes/`, `.codex/sessions/`, `Codex approved`) pass PLAN approval and hold only at the gate. Have the PLAN check use the same branch. (added 2026-11-19)
-- Test isolation: `test_v3a3.test_operator_profile_and_cli_on_start_a_run` fails (main returns 2) when run in one process after the scan modules (field11..v317fa), on main too; passes alone and in CI's per-module jobs. (added 2026-11-19)
 
 Protocol-hardening work is Workstream 2 and follows Workstream 1 productization. Candidate implementations and offline reviews are groundwork, not closure evidence for real-run items. Deprecating legacy invocation means replacing the default call surface; the old implementation remains an explicit control path until all four replacement criteria pass. Workstream 2 must cover every open paired-session P1/P2/P3 item across this backlog, regardless of where the item appears, and crosswalk findings from runs #1–#10 and later audits to those items. Add any untracked run finding before declaring Workstream 2 complete. Keep each item open until its own acceptance evidence is recorded.
 
@@ -53,6 +51,9 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~v3.9.0 follow-up: the gate prompt independence scan strips the matrix excerpt with removesuffix, which assumes the excerpt is last; build the prompt with an explicit excluded part instead. (Opus review 2026-11-21)~~ (added 2026-11-21) (closed 2026-11-21, see v3.10.1 GatePromptParts)
+- ~~Test isolation: `test_v3a3.test_operator_profile_and_cli_on_start_a_run` fails (main returns 2) when run in one process after the scan modules (field11..v317fa), on main too; passes alone and in CI's per-module jobs.~~ (added 2026-11-19) (closed 2026-11-21, see v3.10.1 FIELD-29 cleanup order)
+- ~~CI: shard the macOS jobs into 5 groups (the free plan runs 5 macOS jobs at once; one job per module queued ~150 macOS jobs and took 40-45 min). Owner 2026-11-21: do it right after v3.10.0.~~ (added 2026-11-21) (closed 2026-11-21, see refs/ci/workflow-src-d13: 5 macOS groups x 3 processes, CI 35-45 min -> 15-18 min)
 - ~~Field (range-build-tool, v3.5.3): in the POLISH-Q fix round (EXEC r6) the author fixed only the POLISH-Q finding and left the open gate finding (MEDIUM) and a specialist finding (MINOR); check whether that round's prompt scopes out other open findings~~ (added 2026-11-08) (closed 2026-11-21, see v3.9.0 shared threshold: MEDIUM/MINOR rows go to BACKLOG by design; backlog audit 2026-11-21)
 - ~~Field (poker-tools, v3.6.0): PostgreSQL initdb inside a Claude role's Bash sandbox: shmget is allowed but shmctl(IPC_RMID) is denied, so every failed run leaks one SysV segment; the 32-slot table (kern.sysv.shmmni) fills and blocks initdb host-wide. `excludedCommands` does not escape the sandbox in headless runs (tested 11-08, also with allowUnsandboxedCommands). The routes (host verification with `attach-verification`, or a Codex reviewer) and the cleanup (`ipcrm` of NATTCH-0 segments) are documented since v3.7.2 (paired_session/README.md troubleshooting); the sandbox itself is unchanged~~ (added 2026-11-08) (closed 2026-11-21, see documented limit in paired_session/README.md troubleshooting since v3.7.2; backlog audit 2026-11-21)
 - ~~WI-NOPROBE: remove `permission-probe` and strict mode~~ (added 2026-11-08) (closed 2026-11-09, see v3.7.0)
