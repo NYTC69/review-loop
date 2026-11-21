@@ -1,5 +1,20 @@
 # Changelog
 
+### v3.10.0：gemini（Antigravity CLI `agy`）可以当作者
+
+Yuan 2026-11-19 解除 ADR-21 的 G2 限制，2026-11-21 定为 v3.10.0，在 v3.9.0 之后发布，用来在真实项目的小 work item 上试用 gemini 作者。
+
+**改动**
+- `author_vendor: gemini`（或 `--author-vendor gemini`）让 agy 跑 PLAN 和 EXEC 的作者回合；finisher、docs writer 和 POLISH-Q writer 跟随作者的 vendor。没有设置 `gate_vendor` 时，ADR-10 的默认 gate 也跟着变成 gemini，所以需要同时给 `gate_model`；想要跨厂商把关就显式设置 `gate_vendor`。
+- gemini 没有默认模型，gemini 角色必须给 `*_model`（例如 `gemini-3.8-flash`），effort 默认 `medium`。
+- 作者回合：`agy --sandbox`，加本回合专用的 settings，只允许写工作区（不允许写 run 目录），允许读文件和执行命令，禁止 URL 和 MCP；作者用 `--conversation` 接着上一轮的对话（门审 FAIL 后的修复轮也是），新开的 writer 不接对话；作者用自己的 `TMPDIR`。
+- 回合结束后的检查和 Claude 作者相同（git HEAD 和控制文件，lifecycle writer 另查 refs 和 index，全局配置和 coordinator context），另加 run 目录的文件检查。没有 conversation id 的 gemini 回合按失败处理（fail closed）。
+- 只支持 macOS；Windows 仍然拒绝（GM1）。
+
+**真实 run**（玩具仓库，gemini-3.8-flash 作者，claude-haiku-5-5 reviewer，codex gpt-6.2-astra 门审）：PLAN r1 和 EXEC r1 通过，门审 FAIL 两项 HIGH，gemini 接着对话在 EXEC r2 修好，reviewer APPROVE，没有第二次门审，走完 lifecycle 后 ACCEPTED。
+
+没有新增必须的配置，已有的 run 和配置不受影响。
+
 ### v3.9.0：门审每个 work item 只跑一次，并有固定的答案格式
 
 Yuan 的定义：门审是没有历史的严格对抗性检查，对照工作目标和改动给出符合或不符合；不符合时写明理由和修法，交给执行方修改，再由 reviewer 复审，确认门审意见都修了，这一轮 approve 就通过。之后不再门审，但 reviewer 每一轮都带上门审要求修改的意见。
