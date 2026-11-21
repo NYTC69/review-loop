@@ -9968,7 +9968,8 @@ class Coordinator:
                 'blocking check in this review: verify the fix against its evidence and its proof. Dispose each as fixed only '
                 'when the proof holds on the current tree, otherwise still_open; a gate FAIL item cannot be withdrawn (a '
                 'withdrawn disposition is recorded as still_open). There is no second gate: your APPROVE with every item fixed '
-                'ends EXEC review.\n' + rows + '\n')
+                'ends EXEC review. A scenario matrix row the gate asks for lives alongside its test in the workspace (for '
+                'example in a test description); plan.md stays as approved, so do not require the row there.\n' + rows + '\n')
 
     def _post_gate_review(self, phase: str, sequence: Optional[int] = None) -> bool:
         """R2 / owner ruling 2026-11-20 ("只复查门审没过的那几项，再加上这次修改本身弄坏的东西"): an EXEC review of the gate FAIL
