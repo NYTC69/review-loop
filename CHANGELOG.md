@@ -4,8 +4,9 @@
 
 **改动**
 
-- Codex、Claude 和 Gemini 的明确配额拒绝会保留回执、退回调用额度，并在预算内重试同一个回合。能解析的重置时间写入回执。优先等到重置，重置时间不可用时按 30、60、120、240 秒退避，耗尽后进入带原因的 `rate_limited` HOLD。
-- `--max-rate-limit-wait` / `max_rate_limit_wait` 是整个 run 的累计等待预算，默认 21600 秒，设为 0 则立即 HOLD。等待时 `status --brief` 显示 UTC 重试时间；`stop` 或 Ctrl-C 中断后可用普通 `resume` 继续，已安排的等待只计费一次。
+- Codex、Claude 和 Gemini 的明确配额拒绝会保留回执、退回调用额度，并在预算内重试同一个回合。能解析的重置时间写入回执。重置时间不可用时按 30、60、120、240 秒退避；不到 60 秒的已知重置仍按供应商给出的时间等待，并消耗一次退避重试机会。重试机会耗尽后进入带原因的 `rate_limited` HOLD。
+- agy 错误里的文件行号 `:429` 不再被当作配额拒绝。Claude 的允许或超额事件只取消较早的 API 错误或结果中的限流信号。
+- `--max-rate-limit-wait` / `max_rate_limit_wait` 是整个 run 的累计等待预算，默认 21600 秒，设为 0 则立即 HOLD，恢复时不能提高预算。如果重试时间达到或超过 work item 截止时间，则立即按截止时间 HOLD。重试派发启动失败时清除已保存的等待记录。等待时 `status --brief` 显示 UTC 重试时间；`stop` 或 Ctrl-C 中断后可用普通 `resume` 继续，已安排的等待只计费一次。
 - EXEC、FINISH 和 DOCS 的作者超时时，HOLD 写明实际使用的秒数。低于上限时提示 `resume --exec-turn-timeout 14400`，到达上限时说明这是最大值。
 
 **按意图更新的测试断言**
@@ -14,6 +15,8 @@
 - `test_rl_weekly` 的精确回执断言增加可解析的 `reset_at`，保留原有的显示提示断言。
 - `test_progress` 在被拒绝的派发结束事件之后增加等待耗尽事件的断言。
 - `test_ratelimit`、`test_rl_weekly`、`test_real_coordinator`、`test_gate_once`、`test_d09_c1b1`、`test_progress` 和 `test_readonly_scratch` 中专门检查 HOLD 的用例显式选择 0 秒预算。
+- `test_ratelimit` 的截止时间断言改为在睡眠前 HOLD，等待时间和新增预算扣款均为 0；新增短重置耗尽、重试启动失败和恢复时禁止提高已耗尽预算的回归用例。
+- `test_rl_weekly` 新增 agy 文件行号和 Claude 事件顺序断言。`test_detach` 额外核对 `stop` 后协调器退出，以及普通 `resume` 只对成功派发计数。
 
 ### v3.10.0：gemini（Antigravity CLI `agy`）可以当作者
 

@@ -560,15 +560,17 @@ changes the workspace is void (the workspace is restored and the turn
 re-dispatched once; a second change or a failed restore holds), and an author
 turn that changes HEAD or the branch holds.
 `--max-rate-limit-wait SECONDS` (`max_rate_limit_wait` in the JSON profile) is
-a nonnegative integer fixed at run start. The default is 21600 seconds (6 hours),
-including for older supported runs. Scheduled waits share this budget across
-every role and stage. A full wait to a usable reset must fit the remaining
-budget. Without a usable reset, the coordinator tries delays of 30, 60, 120 and
-240 seconds for consecutive quota rejections. A wait to a known reset uses
-none of these four attempts. Set the budget to 0 to HOLD immediately. A quota
-HOLD shows the reset hint when available and explains why automatic retries
-stopped. After quota clears, use plain `resume` with the same workspace, work
-item, run directory, role settings and test command.
+a nonnegative integer fixed at run start and cannot be raised on resume. The
+default is 21600 seconds (6 hours), including for older supported runs. Scheduled
+waits share this budget across every role and stage. A full wait to a usable
+reset must fit the remaining budget. Without a usable reset, the coordinator
+tries delays of 30, 60, 120 and 240 seconds for consecutive quota rejections.
+A known reset under 60 seconds uses one of those four retry slots and keeps
+the provider's delay. If the retry would reach or pass the whole-WI deadline,
+the coordinator HOLDs immediately on the deadline. Set the budget to 0 for
+immediate quota HOLD. A quota HOLD shows the reset hint when available and
+explains why automatic retries stopped. After quota clears, use plain `resume`
+with the same workspace, work item, run directory, role settings and test command.
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every turn except author turns in EXEC,
@@ -855,9 +857,10 @@ bin/paired-session resume \
 
 `run`, `resume` and `reject` support `--detach`: the caller
 returns after launch, and the coordinator continues with a separate log. `stop`
-sends SIGTERM to that detached coordinator. Inspect any interrupted CLI turn
-before retrying. If stopped during a quota wait, plain `resume` honors the saved
-UTC retry time and keeps the original budget charge. See [detached commands](docs/detach.md).
+sends SIGTERM to that detached coordinator and stops its active CLI child.
+Inspect any interrupted CLI turn before retrying. If stopped during a quota
+wait, plain `resume` honors the saved UTC retry time and keeps the original
+budget charge. See [detached commands](docs/detach.md).
 Plain `status` reads state under the run lease; while a coordinator owns it,
 it prints `HOLD: another coordinator currently owns this run` and exits 2.
 Use lease-free `status --brief [N]` (default 20 events) during a run. It shows the

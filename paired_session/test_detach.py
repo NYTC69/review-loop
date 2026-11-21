@@ -164,10 +164,11 @@ class DetachTests(unittest.TestCase):
         self.assertEqual(self.record()['exit_code'], 130)
         self.assertIn('STOPPED: `stop` ended this detached command', Path(self.record()['log']).read_text())
         self.assertTrue(self.wait(lambda: not alive(turn_pid), 10))          # the coordinator killed the turn's group first
+        self.assertTrue(self.wait(lambda: not alive(self.record()['pid']), 10))
         self.assertEqual(self.state()['active']['pid'], turn_pid)          # the interrupted turn stays active: uncertain on resume
         self.assertIn('NOTE: no detached command is running', self.call(action='stop').stdout)
 
-    def test_wait_budget_and_lease(self):
+    def test_stopped_quota_wait_uses_plain_resume_and_keeps_the_budget_charge(self):
         quota = {'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_UNKNOWN': '1'}
         result = self.call('--detach', '--max-rate-limit-wait', '30',
                            env={**quota, 'FAKE_RATE_LIMIT_MATCH': 'plan author. Phase: PLAN.'})
@@ -205,6 +206,7 @@ class DetachTests(unittest.TestCase):
         final = self.state()
         self.assertEqual(waits, [7])
         self.assertEqual(final['rate_limit_wait_used'], 30)
+        self.assertEqual(final['invocations_used'], 1)   # only the resumed author turn completed
         self.assertEqual(final['hold_kind'], 'rate_limited')
         self.assertIn('only 0 s of the run-wide wait budget remain', final['hold_reason'])
         self.assertEqual([(r['role'], r.get('error_kind')) for r in final['turns']],

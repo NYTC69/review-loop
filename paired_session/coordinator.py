@@ -400,7 +400,7 @@ class RateLimitedTurn(RuntimeError):
 
 
 class RateLimitDeadline(RuntimeError):
-    """The work-item deadline passed before a quota retry could dispatch."""
+    """The work-item deadline prevents a quota retry."""
 
 
 def sleep_rate_limit(seconds: float) -> None:
@@ -625,15 +625,17 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '', 
     known_codes = {'429', 'rate_limit', 'rate_limit_error', 'rate_limit_exceeded',
                    'insufficient_quota', 'usage_limit_exceeded', 'quota_exceeded'}
     epoch_hint, epoch, last_window = None, None, None
+    last_window_row = -1
     structured, claude_sources = [], []
-    for event in rows:
+    for row, event in enumerate(rows):
         info = event.get('rate_limit_info')   # RL-WEEKLY: Claude stream-json announces its limit window state
         if event.get('type') == 'rate_limit_event' and isinstance(info, dict):
             last_window = info   # only the LAST event counts: a later allowed/allowed_warning cancels an earlier rejection
+            last_window_row = row
             continue
         if event.get('is_api_error_message') is True and str(event.get('error', '')).strip().lower() in known_codes:
             content = (event.get('message') or {}).get('content') if isinstance(event.get('message'), dict) else None
-            claude_sources.append((event, [str(part.get('text', '')) for part in content or [] if isinstance(part, dict)]))
+            claude_sources.append((row, event, [str(part.get('text', '')) for part in content or [] if isinstance(part, dict)]))
             continue
         is_error = vendor == 'gemini' or event.get('type') in ('error', 'turn.failed') or event.get('is_error') is True
         if not is_error:
@@ -650,20 +652,21 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '', 
         message = str(message)
         agy_quota = vendor == 'gemini' and (
             '429' in codes or any(str(value).upper() == 'RESOURCE_EXHAUSTED' for value in [*codes, *statuses])
-            or re.search(r'(?:^|[\[(:])\s*429\b|\bRESOURCE_EXHAUSTED\b|\bHTTP\s+429\b', message, re.I))
+            or re.search(r'^\s*429\b|\bHTTP\s+429\b|\b(?:status(?:\s+code)?|code)(?:\s*[:=]\s*|\s+)429\b|'
+                         r'\bRESOURCE_EXHAUSTED\b', message, re.I))
         if (agy_quota or codes & known_codes or any(str(value) == '429' for value in statuses)
                 or (not codes and strong_message.search(message))):
             if event.get('type') == 'result':
-                claude_sources.append((event, [message]))
+                claude_sources.append((row, event, [message]))
             else:
                 confirmed = True
                 structured.append(event)
                 reset_sources.append(message)
     rejected = (last_window and last_window.get('status') == 'rejected' and last_window.get('isUsingOverage') is not True
                 and last_window.get('overageStatus') not in ('allowed', 'allowed_warning'))
-    if last_window is None or rejected:
-        confirmed |= bool(claude_sources)
-        for event, messages in claude_sources:
+    for row, event, messages in claude_sources:
+        if rejected or row > last_window_row:
+            confirmed = True
             structured.append(event)
             reset_sources.extend(messages)
     if rejected:
@@ -4290,7 +4293,8 @@ class Coordinator:
         self._progress_terminal('HOLD', reason)
         return 'HOLD'
 
-    def _wi_deadline_issue(self, record=True) -> Optional[str]:   # F2: checked before every dispatch; a running turn is never cut
+    def _wi_deadline_issue(self, record=True, *, retry_at: Optional[float] = None) -> Optional[str]:
+        # F2: check before every dispatch. A running turn is never cut.
         limit = self.state['config'].get('wi_deadline')
         if not limit: return None
         now, seen = time.time(), self.state.get('wi_clock', 0)
@@ -4304,6 +4308,9 @@ class Coordinator:
             return (f'whole-WI deadline reached: {elapsed:.0f}s since the run started (--wi-deadline {limit}s); '
                     'no new turn was started and resume is refused; abort, or note --scope-change to start a successor '
                     'with its own --wi-deadline')
+        if retry_at is not None and retry_at - self.state['started_at'] >= limit:
+            return (f'whole-WI deadline would be reached by the quota retry (--wi-deadline {limit}s); '
+                    'abort, or note --scope-change to start a successor with its own --wi-deadline')
         return None
 
     def _refuse_past_deadline(self, action: str) -> None:   # F2: a deadline blocks new dispatches only; it never rewrites a DONE or a HOLD
@@ -6840,25 +6847,28 @@ class Coordinator:
         waited = self.state.get('rate_limit_wait_used', 0)
         budget = self.args.max_rate_limit_wait
         count = (self.state.get('rate_limit_wait') or {}).get('backoff_count', 0)
-        reset = rejection.get('reset_at') or 0
+        reset_delay = (rejection.get('reset_at') or 0) - now
+        uses_slot = reset_delay < 60   # a short known reset shares the same retry cap as an unavailable reset
         reason = None
         if budget == 0:
             reason = 'automatic waiting is disabled (--max-rate-limit-wait 0)'
-        elif reset > now:
-            seconds = reset - now
-        elif count == len(RATE_LIMIT_BACKOFF):
-            reason = 'automatic retry backoff exhausted (30/60/120/240 s)'
+        elif uses_slot and count >= len(RATE_LIMIT_BACKOFF):
+            reason = 'automatic retry backoff exhausted'
         else:
-            seconds = RATE_LIMIT_BACKOFF[count]
-            count += 1
+            seconds = reset_delay if reset_delay > 0 else RATE_LIMIT_BACKOFF[count]
+            if uses_slot:
+                count += 1
         if reason is None and waited + seconds > budget:
             reason = f'next wait needs {seconds:g} s but only {budget - waited:g} s of the run-wide wait budget remain'
         if reason:
             self.progress('quota-wait-exhausted', dispatch=f"{dispatch['phase']} {dispatch['role']}",
                           rejected_sequence=rejection['sequence'], reason=reason)
             raise RateLimitedTurn(rejection['error'] + '; ' + reason + '; resume after the quota clears')
+        retry_at = now + seconds
+        if issue := self._wi_deadline_issue(record=False, retry_at=retry_at):
+            raise RateLimitDeadline(issue)
         wait = {'dispatch': dispatch, 'rejected_sequence': rejection['sequence'],
-                'retry_at': datetime.fromtimestamp(now + seconds, timezone.utc).isoformat(),
+                'retry_at': datetime.fromtimestamp(retry_at, timezone.utc).isoformat(),
                 'backoff_count': count, **retry}
         self.state.update(rate_limit_wait=wait, rate_limit_wait_used=waited + seconds)
         self.save()
@@ -6869,7 +6879,10 @@ class Coordinator:
             writer_guard(rejection['error'])
         detail = {'dispatch': f"{wait['dispatch']['phase']} {wait['dispatch']['role']}",
                   'rejected_sequence': wait['rejected_sequence'], 'retry_at': wait['retry_at']}
-        remaining = datetime.fromisoformat(wait['retry_at']).timestamp() - time.time()
+        retry_at = datetime.fromisoformat(wait['retry_at']).timestamp()
+        if issue := self._wi_deadline_issue(record=False, retry_at=retry_at):
+            raise RateLimitDeadline(issue)
+        remaining = retry_at - time.time()
         if remaining > 0:
             self.progress('quota-wait', **detail, seconds=round(remaining, 3))
             sleep_rate_limit(remaining)
@@ -7190,6 +7203,7 @@ class Coordinator:
                 self.state['pending_rejection_id'] = rejection['id']
                 atomic_json(Path(rejection['evidence']), rejection)
             self.state['active'] = None
+            self.state.pop('rate_limit_wait', None)
             failure = {**receipt, 'error': type(exc).__name__ + ': ' + str(exc),
                        'invocation_budget_counted': False, 'child_created': False,
                        'failed_at': time.time()}

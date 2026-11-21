@@ -110,16 +110,19 @@ class RateLimitDriveTests(unittest.TestCase):
     def test_plan_and_exec_roles(self):
         self.check_sites(SITES[:6])
 
-    def test_retry_sites_and_deadline(self):
+    def test_retry_after_the_work_item_deadline_holds_without_waiting(self):
         self.fresh('retry-deadline')
         env = self.limited_env(SITES[0][0])
         with self.clock() as (now, waits):
             env['FAKE_RATE_LIMIT_RESET_AT'] = str(now + 30)
             self.assertEqual(self.drive(env, '--wi-deadline', '29'), 'HOLD')
-        self.assertEqual(waits, [30])
-        self.assertIn('whole-WI deadline reached', self.state().get('hold_reason'))
-        self.assertEqual(len(self.state()['turns']), 1)
-        self.assertNotIn('rate_limit_wait', self.state())
+        self.assertEqual(waits, [])
+        state = self.state()
+        self.assertIn('whole-WI deadline would be reached', state['hold_reason'])
+        self.assertEqual(len(state['turns']), 1)
+        self.assertNotIn('hold_kind', state)
+        self.assertNotIn('rate_limit_wait', state)
+        self.assertEqual(state.get('rate_limit_wait_used', 0), 0)
 
     def test_worktree_lifecycle_stages(self):
         self.check_sites(SITES[6:])
@@ -180,6 +183,53 @@ class RateLimitDriveTests(unittest.TestCase):
                 self.assertIn(message, state['hold_reason'])
                 self.assertNotIn('hold_kind', state)
                 self.assertEqual((waits, state['invocations_used']), ([], 1))
+
+    def test_repeated_short_known_resets_exhaust_the_retry_slots(self):
+        env = {**self.limited_env(SITES[0][0], once=False), 'FAKE_RATE_LIMIT_RETRY_AFTER': '12'}
+        with self.clock() as (_, waits):
+            self.assertEqual(self.drive(env, '--max-rate-limit-wait', '60'), 'HOLD')
+        self.assertEqual(waits, [12, 12, 12, 12])
+        state = self.state()
+        self.assertEqual((state['hold_kind'], state['invocations_used'], state['rate_limit_wait_used']),
+                         ('rate_limited', 0, 48))
+        self.assertIn('backoff exhausted', state['hold_reason'])
+        self.assertEqual(len(state['turns']), 5)
+        self.assertTrue(all(not row['invocation_budget_counted'] for row in state['turns']))
+
+    def test_spawn_failure_on_quota_retry_clears_the_saved_wait(self):
+        env = {**self.limited_env(SITES[0][0]), 'FAKE_RATE_LIMIT_RETRY_AFTER': '12'}
+        co = rc.Coordinator(self.h.args())
+        spawn = rc.winplat.spawn_group
+
+        def spawn_or_fail(*args, **kwargs):
+            if co.state['active']['sequence'] == 2:
+                raise OSError('quota retry executable missing')
+            return spawn(*args, **kwargs)
+
+        with self.clock() as (_, waits), patch.dict(os.environ, env), \
+                patch.object(rc.winplat, 'spawn_group', side_effect=spawn_or_fail):
+            with self.assertRaisesRegex(RuntimeError, 'failed to start: quota retry executable missing'):
+                co.invoke('author', 'PLAN', co._author_prompt(), rc.author_schema())
+        self.assertEqual(waits, [12])
+        state = self.state()
+        self.assertNotIn('rate_limit_wait', state)
+        self.assertIsNone(state['active'])
+        self.assertEqual(state['invocations_used'], 0)
+        self.assertEqual([row['sequence'] for row in state['turns']], [1])
+        [failure] = state['spawn_failures']
+        self.assertEqual(failure['sequence'], 2)
+        self.assertFalse(failure['child_created'])
+
+    def test_an_exhausted_wait_budget_cannot_be_raised_on_resume(self):
+        env = {**self.limited_env(SITES[0][0], once=False), 'FAKE_RATE_LIMIT_RETRY_AFTER': '12'}
+        with self.clock() as (_, waits):
+            self.assertEqual(self.drive(env, '--max-rate-limit-wait', '12'), 'HOLD')
+        self.assertEqual(waits, [12])
+        state = self.state()
+        self.assertIn('only 0 s of the run-wide wait budget remain', state['hold_reason'])
+        with self.assertRaisesRegex(ValueError, 'resume configuration differs: max_rate_limit_wait'):
+            self.drive({}, '--max-rate-limit-wait', '24', action='resume')
+        self.assertEqual(self.state(), state)
 
     def test_resume_saved_wait(self):
         expected = self.baseline()

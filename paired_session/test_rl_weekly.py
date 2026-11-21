@@ -133,6 +133,27 @@ class ClassifierTests(unittest.TestCase):
         rejected_last = [event(status='allowed'), event(status='rejected', isUsingOverage=False, resetsAt=1791612000)]
         self.assertEqual(rc.classify_rate_limit_failure(1, '', '\n'.join([*rejected_last, ordinary]))['kind'], 'rate_limited')
 
+    def test_claude_window_cancels_only_earlier_quota_signals(self):
+        signals = ({'type': 'assistant', 'is_api_error_message': True, 'error': 'rate_limit'},
+                   {'type': 'result', 'is_error': True, 'api_error_status': 429})
+        for info in ({'status': 'allowed_warning'}, {'status': 'rejected', 'isUsingOverage': True}):
+            window = json.dumps({'type': 'rate_limit_event', 'rate_limit_info': info})
+            for signal in signals:
+                with self.subTest(window=info, signal=signal):
+                    error = json.dumps(signal)
+                    self.assertEqual(rc.classify_rate_limit_failure(1, '', '\n'.join([window, error])),
+                                     {'kind': 'rate_limited', 'reset_hint': None})
+                    self.assertIsNone(rc.classify_rate_limit_failure(1, '', '\n'.join([error, window])))
+
+    def test_agy_429_requires_a_quota_status_or_code(self):
+        for message, limited in (('SyntaxError in src/app.py:429', False),
+                                 ('429: request throttled', True), ('HTTP 429', True),
+                                 ('Provider error code: 429', True), ('status=429', True)):
+            with self.subTest(message=message):
+                stdout = json.dumps({'event': 'result', 'result': {'status': 'ERROR', 'error': message}})
+                expected = {'kind': 'rate_limited', 'reset_hint': None} if limited else None
+                self.assertEqual(rc.classify_rate_limit_failure(0, '', stdout, vendor='gemini'), expected)
+
     def test_provider_reset_values(self):
         for hint, epoch in (
             ('Try again in 2h 3m 4s.', self.now + 7384),
