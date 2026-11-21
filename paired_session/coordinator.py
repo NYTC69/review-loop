@@ -2912,7 +2912,8 @@ class Coordinator:
         if getattr(args, 'lifecycle_mode', None) is None:
             args.lifecycle_mode = saved_state['config']['lifecycle_mode'] if saved_state else (
                 'off' if os.environ.get('PAIRED_SESSION_INTERNAL_TEST_LIFECYCLE_OFF') == '1' else 'on')
-        resolve_role_model_defaults(args)
+        if saved_state is None:
+            resolve_role_model_defaults(args)
         if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates after restoring its models
             validate_role_models(args)
         if args.lifecycle_mode == 'on':
@@ -3123,18 +3124,18 @@ class Coordinator:
                 self.state['lifecycle']['ignore_coverage_at_start'] = self._start_ignore_coverage()
             self.save()
 
-    def _restore_role_policy(self, explicit) -> dict:
-        """Saved role vendors, models and allowed_models win; only an explicit different flag is refused."""
+    def _restore_role_policy(self, explicit, allow_overrides=False) -> dict:
+        """Restore the saved roles, allowing explicit model and effort changes on a continuing resume."""
         saved = self._saved_config()
-        for key in explicit:
-            if getattr(self.args, key) != saved[key]:
-                raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
+        overrides = ROLE_RESUME_DESTS if allow_overrides else ()
+        refuse_role_flag_changes(self.args, saved, explicit, overrides)
         policy = saved.get('allowed_models')
         if getattr(self.args, 'allowed_models', None) not in (None, policy):
             raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
         self.args.allowed_models = policy
-        for key in (*ROLE_DESTS, 'gate_vendor_source'):
-            setattr(self.args, key, saved[key])
+        for key in (*ROLE_DESTS, *ROLE_EFFORT_DESTS, 'gate_vendor_source'):
+            if key not in overrides or key not in explicit:
+                setattr(self.args, key, saved[key])
         return saved
 
     @staticmethod
@@ -3228,6 +3229,7 @@ class Coordinator:
         manifest = self.state.get('role_dispatch_manifest')
         bound = (isinstance(manifest, dict) and self.state.get('role_dispatch_manifest_version') == 1
                  and canonical(manifest) == self.state.get('role_dispatch_manifest_sha256')
+                 and canonical(config) == manifest.get('config_sha256')
                  and manifest.get('gate_prompt_sha256') == old.split(':', 1)[1])
         self.state.setdefault('gate_prompt_refreezes', []).append(
             {'time': time.strftime(UTC_FORMAT, time.gmtime()), 'from': old, 'to': new})
@@ -3335,7 +3337,7 @@ class Coordinator:
             manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
     def _refresh_resumed_config_digest(self) -> None:
-        """Update only the config binding after an authorized resume raise; keep role flags and agent bodies frozen."""
+        """Refresh the config binding and manifest digest after an authorized change."""
         manifest = self.state.get('role_dispatch_manifest')
         if manifest is not None:
             manifest['config_sha256'] = hashlib.sha256(json.dumps(
@@ -3350,14 +3352,18 @@ class Coordinator:
         digest = hashlib.sha256(json.dumps(current, sort_keys=True,
                                            separators=(',', ':')).encode()).hexdigest()
         saved = self.state.get('role_dispatch_manifest')
-        if (current != saved and saved and self.state.get('role_dispatch_manifest_version') == 1
-                and hashlib.sha256(json.dumps(saved, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-                == self.state.get('role_dispatch_manifest_sha256') and v360_sandbox_migration(saved) == current):
+        intact = (current != saved and isinstance(saved, dict) and saved
+                  and self.state.get('role_dispatch_manifest_version') == 1
+                  and hashlib.sha256(json.dumps(saved, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                  == self.state.get('role_dispatch_manifest_sha256'))
+        paths = {key: current[key] for key in ('agents_dir', 'gate_prompt_path')}
+        rebound = intact and paths.keys() <= saved.keys() and {**saved, **paths} == current
+        if intact and not rebound and v360_sandbox_migration(saved) == current:
             # v3.6.0 upgrade: a run saved by v3.5.x resumes with the opened sandbox and network; nothing else may differ
             print('NOTE: this run was started by an earlier release; it resumes with the v3.6.0 sandbox (Codex reviewers write the '
                   'workspace, network on)')
             self.state['role_dispatch_manifest'], self.state['role_dispatch_manifest_sha256'] = current, digest
-        if (current != self.state.get('role_dispatch_manifest') or
+        if not rebound and (current != self.state.get('role_dispatch_manifest') or
                 digest != self.state.get('role_dispatch_manifest_sha256') or
                 self.state.get('role_dispatch_manifest_version') != 1):
             saved = self.state.get('role_dispatch_manifest') or {}
@@ -3385,6 +3391,15 @@ class Coordinator:
         if (not current['role_flags']['author']['tmp_isolated'] and
                 not worktree_lifecycle.is_worktree(self.state)):   # W accepts the real-EXEC author TMP (ADR-11)
             raise RuntimeError('lifecycle author TMP is not isolated from coordinator state')
+        if rebound:
+            self.state['role_dispatch_manifest'], self.state['role_dispatch_manifest_sha256'] = current, digest
+            self.state.setdefault('role_manifest_rebinds', []).append({
+                'timestamp': datetime.now().astimezone().isoformat(),
+                'old': {key: saved[key] for key in paths},
+                'new': paths,
+            })
+            self.save()
+            self._operator_note('NOTE: review-loop install moved; rebound the frozen role dispatch paths')
 
     def reviewer_commands(self) -> list[str]:
         current = workitem_reviewer_commands(self.workitem.read_text(encoding='utf-8'))
@@ -3423,6 +3438,10 @@ class Coordinator:
             updates = normal_cli_updates(frozen, current) if issue is None else None
             if updates:
                 self.state.setdefault('program_updates', []).extend(updates)
+                self.state['operator_programs'] = current
+                self.save()
+            elif (issue is None and changed == ['gate_prompt'] and 'gate_prompt' in frozen and
+                    dict(frozen['gate_prompt'], path=current['gate_prompt']['path']) == current['gate_prompt']):
                 self.state['operator_programs'] = current
                 self.save()
             elif issue is None:   # v3.7.0: re-frozen with a NOTE (a gate prompt from another release included)
@@ -3630,8 +3649,19 @@ class Coordinator:
             requested_exec_timeout = getattr(self.args, 'exec_turn_timeout', None)
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 requested_exec_timeout, self.args.timeout)
-        self._restore_role_policy(getattr(self.args, 'explicit_role_flags', ROLE_DESTS))
+        allow_overrides = self.args.action == 'resume' and not self.args.polish
+        explicit = getattr(self.args, 'explicit_role_flags', ())
+        saved = self._restore_role_policy(explicit, allow_overrides=allow_overrides)
         validate_role_models(self.args)
+        if allow_overrides:
+            allowed = self.args.allowed_models or {}
+            for role in ('author', 'reviewer', 'gate'):
+                key = role + '_model'
+                vendor, model = saved[role + '_vendor'], getattr(self.args, key)
+                if (model != saved[key] and vendor != 'gemini' and model not in allowed.get(vendor, []) and
+                        any(model in allowed.get(other, []) or model.startswith(prefix)
+                            for other, prefix in VENDOR_MODEL_PREFIXES.items() if other != vendor)):
+                    raise ValueError(f'{key} {model} does not belong to the saved {vendor} vendor')
         for key, _ in GUIDANCE_KEYS:   # L105: fixed at run start; a resume without the flag keeps the saved text
             if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'][key])
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
@@ -3652,7 +3682,7 @@ class Coordinator:
         skip = lambda key: self.args.action == 'resume' and raised.get(key, False)   # the three values a resume may raise
         refreeze_gate_prompt = refreeze_commands = False
         for key, value in self.state['config'].items():
-            if skip(key):
+            if skip(key) or (allow_overrides and key in ROLE_RESUME_DESTS):
                 continue
             if key == 'max_exec_rounds' and not getattr(self.args, 'max_exec_rounds_explicit', False):
                 self.args.max_exec_rounds = value   # WI-GATE1 R1: a run saved under the old default 4 keeps its cap
@@ -5370,6 +5400,8 @@ class Coordinator:
         contract = self.author_control_contract()
         phase = self.state['phase']
         first = self.state[f'{phase.lower()}_rounds'] == 0
+        plan = self.context / 'plan.md'
+        replacement = self.state.get('replacement_author_session') and plan.is_file()
         if phase == 'PLAN':
             task = ('Write a concrete implementation and verification plan as body. Do not edit the workspace.' if first
                     else 'Revise the plan to address the reviewer findings below. Return the complete replacement plan as body.')
@@ -5383,6 +5415,7 @@ class Coordinator:
             return '\n'.join([
                 f'Role: persistent {self.args.author_vendor} plan author. Phase: PLAN.',
                 f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
+                *([f'Current draft: {plan.resolve()}'] if replacement and not first else []),
                 contract, self._docs_reserved_note('plan'),
                 'PLAN only: return a plan; do not implement, edit the workspace, or run implementation checks.',
                 'Include the "## Scenario matrix" section in the plan body for plan.md. Follow this checklist:',
@@ -5411,6 +5444,7 @@ class Coordinator:
         return '\n'.join([
             f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
+            *([f'Approved plan: {plan.resolve()}'] if replacement and not review_only else []),
             *([f'The change under review is the existing work in this workspace; its review scope (no plan was approved): '
                f'{self.context / "plan.md"}. Fix only what the delivered findings ask for.'] if review_only else []),
                 contract,
@@ -7564,6 +7598,8 @@ class Coordinator:
                 if session:
                     self.state['sessions'][role] = session
                 self.state['started'][role] = True
+                if role == 'author':
+                    self.state.pop('replacement_author_session', None)
         except Exception as exc:   # any other exception is recorded here only after a failed undo, which must lead the hold
             if not isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)) and (voided is None or voided.restored): raise
             receipt['error'] = str(exc)
@@ -10344,6 +10380,50 @@ class Coordinator:
                 return self.hold(str(exc), rate_limited=type(exc) is RateLimitedTurn)
         return self.state['status']
 
+    def _apply_resume_role_changes(self) -> list[dict]:
+        config = self.state['config']
+        explicit = getattr(self.args, 'explicit_role_flags', ())
+        changes = [{'key': key, 'old': config[key], 'new': getattr(self.args, key)}
+                   for key in ROLE_RESUME_DESTS if key in explicit and config[key] != getattr(self.args, key)]
+        if not changes:
+            return changes
+        manifest = self.state.get('role_dispatch_manifest')
+        patches = []
+        if manifest is not None or config.get('lifecycle_mode') == 'on':
+            digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            if (not isinstance(manifest, dict) or self.state.get('role_dispatch_manifest_version') != 1 or
+                    digest(manifest) != self.state.get('role_dispatch_manifest_sha256') or
+                    digest(config) != manifest.get('config_sha256') or
+                    digest(manifest.get('role_flags')) != manifest.get('role_flags_sha256')):
+                raise RuntimeError('frozen role dispatch changed; abort or start a new run')
+            flags = manifest['role_flags']
+            slots = {'author': ('author',), 'reviewer': ('reviewer', 'shadow'), 'gate': ()}
+            for change in changes:
+                key = change['key']
+                role, setting = key.split('_', 1)
+                for slot in slots[role]:
+                    field = setting if role == 'author' else key
+                    if flags.get(slot, {}).get(field) != change['old']:
+                        raise RuntimeError('frozen role dispatch changed; abort or start a new run')
+                    patches.append((flags[slot], field, change['new']))
+            for slot, field, value in patches:
+                slot[field] = value
+            if patches:
+                manifest['role_flags_sha256'] = digest(flags)
+        timestamp = datetime.now().astimezone().isoformat()
+        for change in changes:
+            key = change['key']
+            config[key] = change['new']
+            role, setting = key.split('_', 1)
+            if setting == 'model' and role in ('author', 'reviewer'):
+                self.state['started'][role] = False
+                self.state['sessions'][role] = str(uuid.uuid4()) if config[role + '_vendor'] == 'claude' else None
+                if role == 'author':
+                    self.state['replacement_author_session'] = True
+            change['timestamp'] = timestamp
+        self.state.setdefault('role_resume_changes', []).extend(changes)
+        return changes
+
     def resume(self, retry_uncertain=False) -> str:
         refuse_removed_options(self.args)
         if (pending := self.state.get('delivery_pending')) and self.state['status'] == 'HOLD':   # finishes only via accept
@@ -10352,8 +10432,8 @@ class Coordinator:
                 not self.at_round_limit_hold() or self.state['config'].get('review_report')):
             raise ValueError(f"--add-rounds needs a PLAN or EXEC round-limit HOLD (not report mode); this run is {self.state['status']}"
                              + (f": {self.state.get('hold_reason')}" if self.state['status'] == 'HOLD' else ''))
-        if self.state['status'] == 'ACCEPTED': return 'ACCEPTED'
-        if self.state['status'] == 'REPORTED': return 'REPORTED'   # LG2-a3: terminal
+        if self.state['status'] in ('ACCEPTED', 'CLOSED', 'REPORTED'):
+            return self.state['status']
         if issue := self._missing_review_start_issue():
             return self.hold(issue)
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author' or
@@ -10364,8 +10444,6 @@ class Coordinator:
             retry_uncertain = True
         if self.state['status'] == 'ABORTED':
             raise ValueError('run was ABORTED by scope change; start its successor')
-        if self.state['status'] == 'ACCEPTED':
-            return 'ACCEPTED'
         if self.state['status'] == 'HOLD' and self.state.get('terminal_hold_kind') == 'rejection_limit':
             return self.rejection_limit_hold()
         if self.state['status'] == 'DONE':
@@ -10431,6 +10509,7 @@ class Coordinator:
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
+        role_changes = self._apply_resume_role_changes() if self.args.action == 'resume' else []
         resume_config_changed = any(self.state['config'].get(key) != getattr(self.args, key)
                                     for key in ('timeout', 'exec_turn_timeout', 'max_invocations', 'max_rate_limit_wait',
                                                 'skip_quality_polish'))
@@ -10451,13 +10530,16 @@ class Coordinator:
             dispatch = (self.state.get('rate_limit_wait') or {}).get('dispatch', {})
             if dispatch.get('specialist') and dispatch.get('next') == 'polish-q':
                 self.state.pop('rate_limit_wait')
-        if resume_config_changed:
+        if resume_config_changed or role_changes:
             self._refresh_resumed_config_digest()
         self.save()
         if self.args.max_invocations > old_cap:
             self.progress('invocation-cap-raise', **cap_raise)
         if skip_polish:
             self._operator_note('NOTE: skip_quality_polish is now true for this run')
+        if role_changes:
+            self._operator_note('NOTE: resumed with role changes: ' + ', '.join(
+                f"{row['key']} {row['old']} -> {row['new']}" for row in role_changes))
         return self.drive()
 
     def _settle_legacy_probe_turn(self, turn: dict, retry_uncertain: bool) -> None:
@@ -10634,6 +10716,12 @@ class StoreExplicitInteger(argparse.Action):
         setattr(namespace, self.dest + '_explicit', True)
 
 
+class StoreRoleFlag(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.explicit_role_flags = (*namespace.explicit_role_flags, self.dest)
+
+
 def config_bool(value):
     if type(value) is bool: return value
     if value in ('true', 'false'): return value == 'true'
@@ -10652,15 +10740,17 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--run-dir', required=True)
     p.add_argument('--supersedes', help='resolved parent run dir for a scope-change successor')
     p.add_argument('--config', help='JSON profile; defaults to <workspace>/.review-loop/paired-session.json')
-    p.add_argument('--author-vendor', choices=VENDORS, default='codex')
-    p.add_argument('--author-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
-    p.add_argument('--author-effort', default='medium')
-    p.add_argument('--reviewer-vendor', choices=VENDORS, default='claude')
-    p.add_argument('--reviewer-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
-    p.add_argument('--reviewer-effort', default='medium')
-    p.add_argument('--gate-vendor', choices=VENDORS, help="defaults to the author's vendor (ADR-10); an explicit value is recorded as operator")
-    p.add_argument('--gate-model', help='default: the vendor default (ADR-9); give the full model id the CLI reports')
-    p.add_argument('--gate-effort', default='medium')
+    p.set_defaults(explicit_role_flags=())
+    p.add_argument('--author-vendor', action=StoreRoleFlag, choices=VENDORS, default='codex')
+    p.add_argument('--author-model', action=StoreRoleFlag, help='default: the vendor default (ADR-9); give the full model id the CLI reports')
+    p.add_argument('--author-effort', action=StoreRoleFlag, default='medium')
+    p.add_argument('--reviewer-vendor', action=StoreRoleFlag, choices=VENDORS, default='claude')
+    p.add_argument('--reviewer-model', action=StoreRoleFlag, help='default: the vendor default (ADR-9); give the full model id the CLI reports')
+    p.add_argument('--reviewer-effort', action=StoreRoleFlag, default='medium')
+    p.add_argument('--gate-vendor', action=StoreRoleFlag, choices=VENDORS,
+                   help="defaults to the author's vendor (ADR-10); an explicit value is recorded as operator")
+    p.add_argument('--gate-model', action=StoreRoleFlag, help='default: the vendor default (ADR-9); give the full model id the CLI reports')
+    p.add_argument('--gate-effort', action=StoreRoleFlag, default='medium')
     p.add_argument('--shadow', choices=['on', 'off'], default='on')
     p.add_argument('--adversarial-gate', choices=['on', 'off'], default='on', metavar='on', help='required adversarial gate')
     # removed in 3.0.0; ignored (hidden deprecated compatibility option, on or off).
@@ -10776,7 +10866,16 @@ CONFIGURABLE_DESTS = {
 
 
 ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_model', 'gate_vendor', 'gate_model')
+ROLE_EFFORT_DESTS = ('author_effort', 'reviewer_effort', 'gate_effort')
+ROLE_RESUME_DESTS = ('author_model', 'reviewer_model', 'gate_model', *ROLE_EFFORT_DESTS)
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
+
+
+def refuse_role_flag_changes(args, saved, explicit, overrides=()) -> None:
+    for key in sorted(set(explicit) - set(overrides)):
+        if getattr(args, key) != saved[key]:
+            reason = 'role policy is fixed' if key in ROLE_EFFORT_DESTS else 'role models are fixed'
+            raise ValueError(f'{reason} for this run: {key} differs from the saved run')
 
 
 VENDORS = ('codex', 'claude', 'gemini')   # ADR-21 G1
@@ -11075,6 +11174,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
     for key, value in values.items():
         if key in explicit:
             continue
+        if writable_profile and key in ('author_vendor', 'reviewer_vendor', 'gate_vendor'):
+            # A workspace profile attempting to switch the saved vendor still gets the fixed-role refusal.
+            p.set_defaults(explicit_role_flags=(*p.get_default('explicit_role_flags'), key))
         if writable_profile and key in worktree_lifecycle.PROFILE_KEYS:
             p.set_defaults(workspace_lifecycle_keys=sorted({*(p.get_default('workspace_lifecycle_keys') or ()), key}))
         if key in ('lifecycle_mode', 'adversarial_gate') and value == 'off':
@@ -11318,8 +11420,6 @@ def main(argv=None) -> int:
         return 2
     args.test_command_given = bool(args.no_test_command) or any(   # v3.7.2: resume without it uses the saved command
         a == '--test-command' or a.startswith('--test-command=') for a in raw_argv)
-    args.explicit_role_flags = {a.dest for a in cli_parser._actions if a.dest in ROLE_DESTS and any(
-        arg == o or arg.startswith(o + '=') for o in a.option_strings for arg in raw_argv)}
     roots = (Path(args.workspace), Path(args.run_dir))
     os.environ['PATH'] = safe_path(os.environ.get('PATH', ''), (*roots, roots[1] / 'author-tmp'))
     if args.add_rounds is not None and (args.action != 'resume' or args.polish):
@@ -11347,9 +11447,14 @@ def main(argv=None) -> int:
         print('REFUSED: --reason is only for accept and withdraw-findings')
         return 2
     try:
-        resolve_role_model_defaults(args)
-        if not (Path(args.run_dir) / 'state.json').exists():   # an existing run validates its restored, frozen models (ADR-9 M5)
+        if not (Path(args.run_dir) / 'state.json').exists():
+            resolve_role_model_defaults(args)
             validate_role_models(args)
+        elif args.action == 'status' and args.explicit_role_flags:
+            state = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8'))
+            config = state.get('config') if isinstance(state, dict) else None
+            if isinstance(config, dict) and set(args.explicit_role_flags) <= config.keys():
+                refuse_role_flag_changes(args, config, args.explicit_role_flags)
         if args.action in ('run', 'resume') and not restores_run(args):   # ADR-12: actions that create state
             workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,

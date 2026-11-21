@@ -750,6 +750,12 @@ sys.exit(result.returncode)
                 '--test-command', 'python3 -m unittest',
                 *old_lifecycle_default(self.workspace, extra), *extra]
 
+    def command_without_default_efforts(self, *extra):
+        command = self.command(*extra)
+        index = command.index('--author-effort')
+        del command[index:index + 6]   # remove the harness defaults, keeping any explicit options in extra
+        return command
+
     def run_coordinator(self, *extra, env=None, skip_probe=True):
         merged = os.environ.copy()
         if env:
@@ -761,7 +767,7 @@ sys.exit(result.returncode)
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def run_operator_action(self, action, *extra, env=None):
-        command = self.command(*extra)
+        command = RealCoordinatorTests.command_without_default_efforts(self, *extra)
         command[2] = action
         command.append('--skip-probe')
         if action in ('accept', 'reject') and '--scope-change' not in extra:
@@ -775,7 +781,7 @@ sys.exit(result.returncode)
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def issue_operator_intent(self, action, *extra):
-        command = self.command(*extra); command[2] = action
+        command = RealCoordinatorTests.command_without_default_efforts(self, *extra); command[2] = action
         command.extend(['--intent-only', '--skip-probe'])
         return subprocess.run(command, cwd=self.root, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4485,19 +4491,18 @@ sys.exit(result.returncode)
                 self.assertEqual(result, 'HOLD')
                 self.assertIn('F900', co.state['hold_reason'])
 
-    def test_resume_config_mismatch_is_refused_without_traceback(self):
-        args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
-            '--workitem', str(self.workitem), '--run-dir', str(self.run_dir),
-            '--test-command', 'python3 -m unittest'])
-        co = rc.Coordinator(args)
-        co.state['config']['author_effort'] = 'high'
-        co.save()
-        command = self.command('--skip-probe')
+    def test_resume_inherits_saved_author_effort(self):
+        self.coordinator('--author-effort', 'high', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                         '--timeout', tsc.scaled_arg(10), '--test-command', 'python3 -m unittest')
+        command = self.command('--skip-probe', '--stop-after-plan')
         command[2] = 'resume'
+        index = command.index('--author-effort')
+        del command[index:index + 2]
         result = subprocess.run(command, cwd=self.root, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 2)
-        self.assertIn('REFUSED: resume configuration differs: author_effort', result.stdout)
+        self.assertIn('HOLD: ' + rc.PLAN_STOP_REASON, result.stdout)
+        self.assertEqual(json.loads((self.run_dir / 'state.json').read_text())['config']['author_effort'], 'high')
         self.assertNotIn('Traceback', result.stderr)
 
     def test_resume_timeout_can_only_increase_to_documented_cap(self):

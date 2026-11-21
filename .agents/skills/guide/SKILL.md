@@ -64,6 +64,11 @@ Not on Codex:
   macOS (README.md, Configuration). Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
   `docs/protocol/paired-session-entry.md` (Profile and settings).
+- On a continuing `resume`, use `--author-model`, `--reviewer-model`, `--gate-model` or the corresponding
+  `--*-effort` flags. Omitted flags keep their saved values. Vendors and model policy stay fixed.
+  A persistent model change starts a new session for that role. Effort changes keep the session.
+  A moved install can continue with matching frozen inputs and the same custom gate prompt path.
+  See [resume settings and relocation](../../../paired_session/README.md#changing-role-settings-or-moving-an-install).
 - Under quota pressure, keep the fresh shadow and use the one-way `resume --skip-quality-polish true` to skip new
   specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. Existing blockers still need
   the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
