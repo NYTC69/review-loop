@@ -9,6 +9,7 @@ import types
 import unittest
 from unittest import mock
 
+from paired_session import review_report
 from paired_session import test_real_coordinator as trc
 from paired_session import worktree_lifecycle as wl
 
@@ -788,6 +789,42 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped']), ('READY', [], True))
         self.assertFalse([row for row in state['turns'] if row['phase'] == 'POLISH-Q'])
 
+    def test_mid_polish_downgrade(self):
+        flags = ('--max-invocations', '60')
+        env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer',
+               'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once'),
+               'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_MATCH': 'Role: specialist silent-failure-hunter,',
+               'FAKE_RATE_LIMIT_RETRY_AFTER': '30'}
+        co = rc.Coordinator(self.args(*flags))
+        with mock.patch.dict(os.environ, env), mock.patch.object(rc, 'sleep_rate_limit', side_effect=rc.DetachStop), \
+                self.assertRaises(rc.DetachStop):
+            co.drive()
+        saved = json.loads(co.state_path.read_text())
+        wait = saved['rate_limit_wait']
+        self.assertEqual((wait['dispatch']['next'], wait['dispatch']['specialist']), ('polish-q', 'silent-failure-hunter'))
+        rejected = next(row for row in saved['turns'] if row['sequence'] == wait['rejected_sequence'])
+        self.assertEqual(rejected['error_kind'], 'rate_limited')
+        done = saved['lifecycle']['specialist_done']
+        self.assertEqual(set(done), {'code-reviewer', 'python-reviewer'})
+        [blocker] = [row for row in saved['finding_ledger'] if row['status'] == 'open']
+
+        result = self.run_operator_action('resume', '--lifecycle-mode', 'on', *flags, '--skip-quality-polish', 'true')
+        self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
+        final = json.loads(co.state_path.read_text())
+        self.assertNotIn('rate_limit_wait', final)
+        self.assertEqual(next(row for row in final['turns'] if row['sequence'] == rejected['sequence']), rejected)
+        first, later = [row for row in final['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
+        self.assertEqual({row['name']: row for row in first['specialist_turns']}, done)
+        self.assertEqual((first['status'], later['status'], later['specialist_turns']), ('HOLD', 'READY', []))
+        [fix] = final['lifecycle']['polish_fixes']
+        [recheck] = fix['recheck_turns']
+        self.assertEqual(recheck['name'], 'code-reviewer')
+        self.assertLess(rejected['sequence'], fix['author_sequence'])
+        self.assertLess(fix['author_sequence'], recheck['sequence'])
+        self.assertEqual([row['sequence'] for row in final['turns']
+                          if row['phase'] == 'POLISH-Q' and row['sequence'] > rejected['sequence']], [recheck['sequence']])
+        self.assertEqual([row['status'] for row in final['finding_ledger'] if row['id'] == blocker['id']], ['fixed'])
+
     def docs_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
 
@@ -1102,6 +1139,101 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 prompts[name] = prompt
             return {'answer': answer, 'sequence': co.state['sequence'], 'snapshot': tree, 'role': role}
         return invoke
+
+    def test_fresh_stage_reviewers_see_operator_rulings(self):
+        co = self.polish_at(approve_first=False)
+        tree = rc.git_snapshot(self.workspace)[0]
+        [withdrawn, open_row] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
+            {'severity': 'MAJOR', 'file': 'sum_ints.py:1', 'summary': 'decided issue'},
+            {'severity': 'MAJOR', 'file': 'sum_ints.py:2', 'summary': 'unrelated issue'}])
+        co.state['finding_ledger'][0]['status'] = 'withdrawn'
+        co.state['lifecycle'].update(stage='POLISH-Q', fix_base='pre-fix tree')
+        reason = 'Keep the public return type to preserve callers.'
+        rulings = [{'id': 'R001', 'reason': reason, 'finding_ids': [withdrawn['id']]}]
+
+        class PromptCaptured(Exception):
+            pass
+
+        cases = (('POLISH-Q', lambda: co._specialist_turn('python-reviewer', ['sum_ints.py'], tree)),
+                 ('POLISH-Q', co.worktree_polish_recheck_turn),
+                 ('DOCS', lambda: co._docs_review_turn(tree, [])),
+                 ('SECURITY', lambda: co._security_review_turn(tree, 'security-test')))
+        with mock.patch.object(co, 'invoke', side_effect=PromptCaptured) as invoke:
+            for index, (phase, run) in enumerate(cases):
+                with self.subTest(phase=phase, recheck=index == 1):
+                    prompts = []
+                    for rows in ([], rulings):
+                        co.state['operator_rulings'] = rows
+                        with self.assertRaises(PromptCaptured):
+                            run()
+                        role, actual_phase, prompt, _ = invoke.call_args.args
+                        self.assertEqual((role, actual_phase, invoke.call_args.kwargs['fresh']), ('reviewer', phase, True))
+                        prompts.append(prompt)
+                    plain, ruled = prompts
+                    self.assertNotIn('## Operator decisions', plain)
+                    self.assertEqual(ruled.removesuffix(co.operator_rulings_prompt('fresh')).encode(), plain.encode())
+                    self.assertIn(reason, ruled)
+                    self.assertIn('implementation of the approved behavior', ruled)
+                    self.assertNotIn(withdrawn['id'], ruled)
+                    if index == 1:
+                        self.assertIn(open_row['id'], ruled)
+
+    def test_specialist_cross_owner_duplicate(self):
+        co = self.polish_at(approve_first=False)
+        tree = rc.git_snapshot(self.workspace)[0]
+        a, b = 'code-reviewer', 'python-reviewer'
+        first = {'severity': 'MAJOR', 'file': 'sum_ints.py:1', 'summary': 'first report'}
+        second = {**first, 'summary': 'second report'}
+        with mock.patch.object(co, 'invoke', side_effect=self.polish_invoke(co, {a: [first], b: [second]})):
+            co._specialist_turn(a, ['sum_ints.py'], tree)
+            receipt = co._specialist_turn(b, ['sum_ints.py'], tree)
+        [row] = co.state['finding_ledger']
+        [replayed] = co.record_findings('specialist:' + b, 'POLISH-Q', receipt['sequence'], [second])
+        self.assertEqual(replayed['id'], row['id'])
+        self.assertEqual(row['status_history'][1:], [
+            {'round': receipt['sequence'], 'status': 'open', 'evidence': 'also reported by specialist:python-reviewer: second report'}])
+        report = review_report.render({**co.state, 'turns': []})
+        self.assertIn('## Important (1)', report)
+        self.assertIn(f"**{row['id']}**", report)
+        disposition = [{'id': row['id'], 'disposition': 'fixed', 'evidence': 'verified the fix'}]
+        with self.assertRaisesRegex(RuntimeError, 'requires its owning specialist'):
+            co.apply_dispositions(disposition, 3, [row['id']], 'specialist:' + b)
+        co.state['lifecycle'].update(stage='POLISH-Q', fix_base=tree)
+        co.args.max_invocations = co.state['invocations_used'] + 2  # one author and one owner fit
+        with mock.patch.object(co, 'author_turn') as author, mock.patch.object(co, '_specialist_budget') as reserve:
+            co.worktree_polish_fix_turn()
+            author.assert_called_once()
+            reserve.assert_called_once_with(a)
+        (self.workspace / 'sum_ints.py').write_text('# fixed\n')
+        with mock.patch.object(co, '_specialist_turn', return_value={'name': a}) as recheck:
+            co.worktree_polish_recheck_turn()
+        recheck.assert_called_once()
+        self.assertEqual(recheck.call_args.args[0], a)
+
+    def test_specialist_location_boundaries(self):
+        co = self.polish_at(approve_first=False)
+        base = {'severity': 'MAJOR', 'file': 'sum_ints.py:12', 'summary': 'first report'}
+        cases = (
+            ('dot path', {}, {'file': './sum_ints.py:12'}, True),
+            ('absolute range', {}, {'file': f'{self.workspace / "sum_ints.py"}:12-19'}, True),
+            ('column', {}, {'file': 'sum_ints.py:12:5'}, True),
+            ('first positive line', {}, {'file': 'sum_ints.py:0:012'}, True),
+            ('other line', {}, {'file': 'sum_ints.py:13'}, False),
+            ('no line', {}, {'file': 'sum_ints.py'}, False),
+            ('multiple paths', {}, {'file': 'sum_ints.py:12, other.py:12'}, False),
+            ('outside workspace', {}, {'file': f'{self.root / "sum_ints.py"}:12'}, False),
+            ('out of delta', {'out_of_delta': True, 'advisory': True}, {}, False),
+            ('advisory severity', {'severity': 'MINOR'}, {}, False),
+            ('security tagged', {}, {'security': True}, False),
+        )
+        for label, first, second, covers in cases:
+            with self.subTest(label=label):
+                co.state['finding_ledger'].clear()
+                co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [{**base, **first}])
+                if first.get('out_of_delta'):  # the specialist path marks this after ingestion
+                    co.state['finding_ledger'][0].update(first)
+                co.record_findings('specialist:python-reviewer', 'POLISH-Q', 2, [{**base, 'summary': 'second report', **second}])
+                self.assertEqual(len(co.state['finding_ledger']), 1 if covers else 2)
 
     def test_a_later_polish_q_pass_reviews_only_the_paths_changed_since_the_last_pass(self):
         co = self.polish_at()

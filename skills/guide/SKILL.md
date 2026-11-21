@@ -127,6 +127,11 @@ Unset paired-session caps are plan 3 / exec 4 rounds. `reviewer_model` and `exec
 (models come from the operator profile); the other legacy keys are ignored. See
 `docs/paired-session-migration.md` (Config mapping).
 
+Under quota pressure, keep the fresh shadow and use the one-way `resume --skip-quality-polish true` to skip new
+specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. Existing blockers still need
+the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
+See the [resume details](../../paired_session/README.md#skipping-quality-polish-on-resume).
+
 ### review_focus examples
 
 ```yaml

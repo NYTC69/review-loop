@@ -3657,6 +3657,14 @@ class Coordinator:
             if key == 'max_exec_rounds' and not getattr(self.args, 'max_exec_rounds_explicit', False):
                 self.args.max_exec_rounds = value   # WI-GATE1 R1: a run saved under the old default 4 keeps its cap
                 continue
+            if key == 'skip_quality_polish':
+                if not getattr(self.args, 'skip_quality_polish_explicit', False):
+                    self.args.skip_quality_polish = value
+                    continue
+                if (self.args.action == 'resume' and self.state['config'].get('lifecycle_mode') == 'on'
+                        and not self.state['config'].get('review_report')
+                        and value is False and current_config[key] is True):
+                    continue
             current = current_config[key]
             if key == 'workitem_reviewer_commands' and current != value:
                 if self.state['config'].get('lifecycle_mode') != 'on':   # v3.7.0: recorded with a NOTE once nothing else differs
@@ -3968,11 +3976,17 @@ class Coordinator:
             if prior:
                 recorded.append({'id': prior['id'], **finding})
                 continue
-            if source != 'adversarial-gate' and (same := self._open_duplicate(source, finding)):   # FIELD-25: a re-report
-                same['status_history'].append({'round': origin_round, 'status': same['status'],
-                                               'evidence': f're-reported by {source} in {phase}; not a new finding'})
+            if source != 'adversarial-gate' and (same := self._open_duplicate(source, phase, finding)):   # FIELD-25
+                cross_owner = specialist_owner and same.get('owner_role') != source
+                evidence = f're-reported by {source} in {phase}; not a new finding'
+                if cross_owner:
+                    summary = finding.get('summary') or finding.get('recommendation') or str(finding.get('body', '')).partition('\n')[0]
+                    evidence = f'also reported by {source}: {summary}'
+                history = {'round': origin_round, 'status': same['status'], 'evidence': evidence}
+                if not cross_owner or history not in same['status_history']:
+                    same['status_history'].append(history)
+                    changed = True
                 recorded.append({'id': same['id'], **finding})
-                changed = True
                 continue
             finding_id = f"F{self.state['next_finding_id']:03d}"
             self.state['next_finding_id'] += 1
@@ -4002,16 +4016,26 @@ class Coordinator:
             self.write_ledger()
         return recorded
 
-    def _open_duplicate(self, source: str, finding: dict) -> Optional[dict]:
-        """FIELD-25: an open finding of the same owner, file, severity and security flag that this one re-reports: its
-        summary opens with that id ("F003 (still open) ...", a class label, case and spacing aside). Equal claims from
-        two reviewers stay two rows (two Q reviewer proofs raise the same advisory)."""
+    def _open_duplicate(self, source: str, phase: str, finding: dict) -> Optional[dict]:
+        """Prefer an explicit re-report by the same owner, then look for a covering POLISH-Q specialist row."""
         owner = source if source.startswith('specialist:') or source == 'security-reviewer' else None
         claim = ' '.join(CLASS_LABEL_RE.sub('', str(finding.get('summary') or ''), count=1).lower().split())
-        return next((row for row in self.open_findings()
+        rows = self.open_findings()
+        same = next((row for row in rows
                      if claim.startswith(row['id'].lower()) and not claim[len(row['id']):][:1].isalnum() and
                      row.get('owner_role') == owner and row['file'] == finding.get('file', '') and
                      row['severity'] == str(finding['severity']).upper() and bool(row.get('security')) == bool(finding.get('security'))), None)
+        if same or phase != 'POLISH-Q' or not source.startswith('specialist:'):
+            return same
+        location = self._specialist_location(finding.get('file'))
+        if location is None:
+            return None
+        blocking = blocks_by_severity(finding) and not finding.get('out_of_delta')
+        return next((row for row in rows if row.get('phase') == phase and
+                     (row.get('owner_role') or '').startswith('specialist:') and row['owner_role'] != owner and
+                     (not blocking or (blocks_by_severity(row) and not row.get('out_of_delta'))) and
+                     (not finding.get('security') or row.get('security')) and
+                     self._specialist_location(row.get('file')) == location), None)
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
@@ -8013,7 +8037,8 @@ class Coordinator:
                   self._test_instruction(tree) + '\n' + MISSING_HOST_TEST_RULE + '\n' +
                   (worktree_lifecycle.owned_ledger(owned) + 'Close an open docs row as fixed only when the current tree '
                    'fixes it; a row the tree does not fix stays still_open.\n' if owned else '') +
-                  'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
+                  'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json) +
+                  self.operator_rulings_prompt('fresh'))
         self._docs_budget()
         result = self.invoke('reviewer', 'DOCS', prompt, review_schema(), fresh=True)
         turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
@@ -8556,7 +8581,8 @@ class Coordinator:
                               worktree_lifecycle.owned_ledger(owned) +
                               self._review_protocol(self._changed_paths()) + '\n' + MISSING_HOST_TEST_RULE +
                               (f'\n{test_instruction}' if (test_instruction := self._test_instruction(tree, reuse_only=True)) else '') +
-                              '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
+                              '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json) +
+                              self.operator_rulings_prompt('fresh'))
                 used = self._stage_calls('SECURITY')
                 if used + 1 > self._worktree_run_cap('SECURITY'):
                     raise RuntimeError(f'SECURITY budget exhausted ({used} security reviews in this run); abort')
@@ -8747,6 +8773,8 @@ class Coordinator:
         paths = scope['paths'] if scope['base'] else full   # v3.8.1: only what changed since the last specialist pass
         names = self._polish_specialists(paths) if paths or not scope['base'] else ()   # an empty delta: no dispatch
         done = self.state['lifecycle']['specialist_done']
+        if self.state['config'].get('skip_quality_polish'):
+            names = tuple(done)
         if (need := len([name for name in names if name not in done])) > (
                 self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
             raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; resume with a higher --max-invocations, or abort')
@@ -9322,6 +9350,27 @@ class Coordinator:
                 return False
         return True
 
+    def _specialist_location(self, file) -> Optional[tuple[str, str]]:
+        """Find one unambiguous path and the first positive line in a specialist's file field."""
+        drive, tail = os.path.splitdrive(str(file or '').strip())
+        location = re.fullmatch(r'([^\s,;():]+)((?::[0-9]+(?:-[0-9]+)?)+)', tail)
+        if location is None:
+            return None
+        path, suffix = location.groups()
+        path = drive + path
+        if os.path.isabs(path):
+            try:
+                path = Path(path).relative_to(self.workspace).as_posix()
+            except ValueError:
+                return None
+        while path.startswith('./'):
+            path = path[2:]
+        if not path or path == '.' or '..' in Path(path).parts:
+            return None
+        line = next((number for match in re.finditer(r':([0-9]+)', suffix)
+                     if (number := match.group(1).lstrip('0'))), None)
+        return (path, line) if line is not None else None
+
     def _specialist_turn(self, name: str, paths: list[str], tree: str, delta_paths: Optional[list[str]] = None) -> dict:
         life = self.state['lifecycle']
         path = HERE.parent / 'agents' / (name + '.md')
@@ -9339,9 +9388,11 @@ class Coordinator:
             '\nOnly these paths changed since the last specialist pass; the rest of delta.patch was covered already: '
             'review these paths only.' if delta_paths is not None else '')
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
-                                                       protocol + '\n' + MISSING_HOST_TEST_RULE, self._change_noun(),
+                                                       protocol + '\n' + MISSING_HOST_TEST_RULE +
+                                                       '\nUse a single path:line in the file field of each finding.', self._change_noun(),
                                                        test_instruction=self._test_instruction(tree)) +
-                  self._guidance(QUALITY_GUIDANCE) + self._specialist_operator_evidence(tree))
+                  self._guidance(QUALITY_GUIDANCE) + self._specialist_operator_evidence(tree) +
+                  self.operator_rulings_prompt('fresh'))
         pending = (self.state.get('rate_limit_wait') or {}).get('dispatch', {})
         first_attempt = pending.get('tool_attempt', 1) if pending.get('specialist') == name else 1
         for attempt in range(first_attempt, 3):   # a turn without tool calls is discarded and retried once
@@ -10380,7 +10431,8 @@ class Coordinator:
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
         resume_config_changed = any(self.state['config'].get(key) != getattr(self.args, key)
-                                    for key in ('timeout', 'exec_turn_timeout', 'max_invocations', 'max_rate_limit_wait'))
+                                    for key in ('timeout', 'exec_turn_timeout', 'max_invocations', 'max_rate_limit_wait',
+                                                'skip_quality_polish'))
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
         self.state['config']['max_rate_limit_wait'] = self.args.max_rate_limit_wait
@@ -10390,11 +10442,21 @@ class Coordinator:
                          'timestamp': datetime.now().astimezone().isoformat()}
             self.state.setdefault('invocation_cap_raises', []).append(cap_raise)
             self.state['config']['max_invocations'] = self.args.max_invocations
+        skip_polish = self.args.skip_quality_polish and not self.state['config']['skip_quality_polish']
+        if skip_polish:
+            self.state['config']['skip_quality_polish'] = True
+            self.state.setdefault('quality_polish_downgrades', []).append({
+                'old': False, 'new': True, 'timestamp': datetime.now().astimezone().isoformat()})
+            dispatch = (self.state.get('rate_limit_wait') or {}).get('dispatch', {})
+            if dispatch.get('specialist') and dispatch.get('next') == 'polish-q':
+                self.state.pop('rate_limit_wait')
         if resume_config_changed:
             self._refresh_resumed_config_digest()
         self.save()
         if self.args.max_invocations > old_cap:
             self.progress('invocation-cap-raise', **cap_raise)
+        if skip_polish:
+            self._operator_note('NOTE: skip_quality_polish is now true for this run')
         return self.drive()
 
     def _settle_legacy_probe_turn(self, turn: dict, retry_uncertain: bool) -> None:
@@ -10608,7 +10670,7 @@ def parser() -> argparse.ArgumentParser:
                    help=argparse.SUPPRESS)
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md; empty string skips the docs entry")
     p.add_argument('--docs-allowlist', action='append', default=[])
-    p.add_argument('--skip-quality-polish', type=config_bool, default=False)
+    p.add_argument('--skip-quality-polish', type=config_bool, action=StoreExplicitInteger, default=False)
     for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
                             ('--review-style', 'tone and rules for every review role (config.md review_style)'),
                             ('--quality-focus', 'priorities for the POLISH-Q specialists (config.md quality_focus)')):
