@@ -12,7 +12,7 @@
 - `test_a_no_op_worktree_run_goes_through_every_stage_and_reaches_done_only_after_security` 检查 POLISH-Q 专家复用结果并记录来源，保留其独立审查。
 - `test_default_review_dispatch_bytes_match_release_except_for_review_rules_and_exec_author_grows` 将缺少主机记录的规则、命令包装措辞及 reviewer 自跑证据说明纳入提示字节比较。
 - `test_a_gemini_gate_approval_counts_the_test_run_from_a_tool_step` 在没有通过证据的新工作树检查缺少工具结果时的拒绝路径。
-- `test_winend2end.test_full_lifecycle_interrupt_resume_done_and_auto_commit_accepted`（Windows）改为断言门审复用 reviewer 在同一工作树上的测试通过（`reused_test_evidence`），不再在 bash.exe 里重跑配置的测试命令。fake 的门审和 EXEC reviewer 在 evidence-guard 与 shadow 确认场景里保留一次自愿重跑，用来继续覆盖原有路径。
+- `test_winend2end.test_full_lifecycle_interrupt_resume_done_and_auto_commit_accepted`（Windows）改为断言门审复用 reviewer 在同一工作树上的测试通过（`reused_test_evidence`），不再在 bash.exe 里重跑配置的测试命令；同一个辅助断言里的 review-pr 报告 run 不复用证据，仍断言门审在 bash.exe 里跑了测试。fake 的门审和 EXEC reviewer 在 evidence-guard 与 shadow 确认场景里保留一次自愿重跑，用来继续覆盖原有路径。
 
 ### v3.10.1：门审重派不再误判矩阵里的工具路径（WI-PATCH1）
 
