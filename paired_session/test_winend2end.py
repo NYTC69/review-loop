@@ -452,8 +452,11 @@ class WindowsEndToEndTests(unittest.TestCase):
             self.assertEqual(record['exit'], 0, record)
         self.assertTrue(any(row['argv'][0] == 'powershell.exe' and row['argv'][-1] == TEST_COMMAND
                             and 'W7_REAL_UNITTEST_OK' in row['stdout'] for row in records))
-        self.assertTrue(any(Path(row['argv'][0]).name.lower() == 'bash.exe' and row['argv'][-1] == TEST_COMMAND
-                            and 'W7_REAL_UNITTEST_OK' in row['stdout'] for row in records))
+        gate = next(turn for turn in state['turns'] if (turn['role'], turn['phase']) == ('gate', 'EXEC'))
+        self.assertEqual(gate['reused_test_evidence'], reviewer['sequence'])
+        self.assertFalse(any(row['command'] == TEST_COMMAND for row in gate['observed_commands']))
+        self.assertTrue(any(Path(row['argv'][0]).name.lower() == 'bash.exe' and row['argv'][-1] == 'git status --short'
+                            for row in records))
         tests = [json.loads(path.read_text(encoding='utf-8')) for path in self.telemetry.glob('*.test.json')]
         self.assertTrue(tests)
         self.assertTrue(all(row['in_job'] for row in tests))

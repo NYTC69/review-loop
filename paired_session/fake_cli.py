@@ -522,6 +522,8 @@ def main():
     elif prompt.startswith('You are an adversarial reviewer'):
         configured_test = (prompt.split('Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0]
                            if 'Run this test command exactly as written' in prompt else 'git status --short')   # LG2-b2: no-test
+        if reused_test in ('ls evidence/', 'ls tests/evidence/'):
+            configured_test = reused_test   # Exercise relative path handling in the evidence-guard fixtures.
         blocking = os.environ.get('FAKE_GATE_BLOCK')
         block_once = os.environ.get('FAKE_GATE_BLOCK_ONCE')
         if block_once:
@@ -598,8 +600,9 @@ def main():
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
                                'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0])
-        if reused_test and role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_REVIEW_TEST_FAILURE'):
-            configured_test = reused_test   # a voluntary rerun in the sandbox
+        if reused_test and role == 'reviewer' and phase == 'EXEC' and (
+                os.environ.get('FAKE_REVIEW_TEST_FAILURE') or os.environ.get('FAKE_CONFIRM_SHADOW_REVISE')):
+            configured_test = reused_test   # These scenarios exercise a voluntary rerun in the sandbox.
         if 'No test command is configured for this review' in prompt:   # LG2-b2: a read command, no test
             configured_test = 'git status --short'
         open_ids = []

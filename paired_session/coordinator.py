@@ -6086,7 +6086,7 @@ class Coordinator:
         roles = (self.args.reviewer_vendor, self.args.gate_vendor)
         return roles if self.state['config'].get('review_report') else (self.args.author_vendor, *roles)
 
-    def _test_instruction(self, tree: str, *, reuse_only=False) -> str:
+    def _test_instruction(self, tree: Optional[str] = None, *, reuse_only=False) -> str:
         """Use the same evidence decision in the prompt and in the configured-test checks."""
         if self._test_proof(tree):
             return f'The configured test passed on this tree: {self.args.test_command}'
@@ -7835,27 +7835,36 @@ class Coordinator:
 
     def _operator_test_record(self, tree):
         """The operator record that settles the EXEC configured-test check for this exact tree, or None (never in report mode)."""
-        if self.state['config'].get('review_report') or not self.args.test_command:
+        if self.state.get('config', {}).get('review_report') or not self.args.test_command:
             return None
         return opv.passing_test_record(self, tree, lambda command: command_invokes_test(command, self.args.test_command), atomic_json)
 
     def _test_proof(self, tree: str, current: Optional[dict] = None, *, result: Optional[dict] = None) -> dict:
         """Passing proof for the exact tree and configured command. Only tool observations count."""
         command = self.args.test_command
-        if not tree or not command or self.state['config'].get('review_report'):
+        if not tree or not command or self.state.get('config', {}).get('review_report'):
             return {}
         record = self._operator_test_record(tree)
-        turns = self.state['turns']
+        turns = self.state.get('turns', [])
         if current is not None and not any(turn is current for turn in turns):
             turns = [*turns, current]
         current_sequence = current['sequence'] if current is not None else None
+        if result is not None:
+            current_sequence = result['sequence']
         observation, source = None, None
         for turn in reversed(turns):
-            if (turn.get('snapshot_before') != tree or turn.get('snapshot_after') != tree
+            sequence = turn.get('sequence')
+            # Qualify a review with the evidence available when it finished, including on replay.
+            if type(sequence) is not int or (result is not None and sequence > current_sequence):
+                continue
+            result_matches = result is not None and sequence == current_sequence and result.get('snapshot') == tree
+            # Older pending results can still use their own observation. They cannot supply proof to a later turn.
+            legacy_current = result_matches and 'snapshot_after' not in turn
+            answer = result['answer'] if legacy_current else turn.get('answer')
+            if (turn.get('snapshot_before') != tree or (not legacy_current and turn.get('snapshot_after') != tree)
                     or turn.get('discarded') or turn.get('verified_claims_error') or turn.get('gate_malformed')
                     or (turn.get('error') and turn.get('error_kind') != 'test_evidence_shortfall')
-                    or not isinstance(answer := turn.get('answer'), dict)
-                    or type(turn.get('sequence')) is not int or verified_claims_error(answer)):
+                    or not isinstance(answer, dict) or (not legacy_current and verified_claims_error(answer))):
                 continue
             role, phase = turn.get('role'), turn.get('phase')
             if phase == 'EXEC':
@@ -7867,15 +7876,10 @@ class Coordinator:
             elif (role != 'reviewer' or phase not in ('POLISH-Q', 'DOCS', 'SECURITY')
                   or not (turn is current or turn.get('test_evidence_validated'))):
                 continue
-            if observation := self._latest_test_observation(turn.get('observed_commands', [])):
-                source = turn['sequence']
+            rows = (result['answer'] if result_matches else turn).get('observed_commands', [])
+            if observation := self._latest_test_observation(rows):
+                source = sequence
                 break
-        # The current answer carries coordinator-observed commands even if the receipt has no matching observation.
-        if result is not None and result.get('snapshot', tree) == tree:
-            current_sequence = result['sequence']
-            if source is None or current_sequence >= source:
-                if row := self._latest_test_observation(result['answer'].get('observed_commands', [])):
-                    observation, source = row, current_sequence
         if observation and observation['exit_code'] == 0 and (not record or source == current_sequence):
             return {'reused_test_evidence': source}
         return {'operator_test_evidence': record['id']} if record else {}
