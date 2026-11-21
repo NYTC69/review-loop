@@ -100,6 +100,7 @@ S3/S4 第 3 轮修复（Sol R2 F5、F7、F8、F10、F11、F12）：v3.8.x 恢复
 - `test_real_coordinator.test_full_fake_run_forces_both_revisions_and_shadow`：提示行数上限（60）不再计入引用的 plan 场景矩阵行（这些是工作项自己的数据，不是提示膨胀）；提示里的检查清单改为七行摘要加完整规则文件路径。
 - `test_v324_test.test_advisory_revise_at_the_limit_exits_with_current_record`（未附验证记录的子用例）：只剩建议项、唯一障碍是测试证据时，S3 R3 F8 起 HOLD 原因是要求 attach-verification 的测试证据 HOLD（不占轮），不再是 'EXEC round limit reached'。
 - 新增 `test_scenario_matrix`，覆盖表格和列表解析、PLAN 退回及修正、EXEC 和 shadow 提示、门审覆盖审计及只复审一次门审提出的缺口，以及 review-only 豁免。
+- S7 第 2 轮 `test_scenario_matrix`：新增同一行 `N/A`、七维编号清单及修复提示绝对路径断言。旧版已批准且无矩阵的 PLAN 恢复后跳过矩阵审计，门审断言由 FAIL 改为 PASS。3.9 下批准的 PLAN 缺少矩阵或误称 `Trivial` 时仍断言 FAIL。
 
 ### v3.8.6：plan 里由 work item 用词组成的斜杠列表不再被当成路径
 

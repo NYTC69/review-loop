@@ -5286,7 +5286,7 @@ class Coordinator:
                 'source': 'scenario-matrix', 'severity': 'MAJOR', 'category': 'correctness', 'file': 'plan.md',
                 'reachability': 'a delivery plan is submitted for PLAN approval',
                 'summary': f'Scenario matrix: {error}.',
-                'failure_scenario': 'Fix the matrix in plan.md using docs/protocol/scenario-matrix.md.',
+                'failure_scenario': f'Fix the matrix in plan.md using {scenario_matrix.CHECKLIST}.',
             }
             if not opened:
                 return self.record_findings('scenario-matrix', 'PLAN', sequence, [finding])
@@ -5402,6 +5402,8 @@ class Coordinator:
             '\nAudit the complete current git delta in ' + str(self.workspace))
         if self.state.get('review_only'):
             matrix_audit = '\n\nReview-only scope: The scenario matrix requirement and audit are skipped.'
+        elif self.state.get('legacy_plan'):
+            matrix_audit = '\n\nThis plan was approved before scenario matrices were required. Skip the scenario matrix audit.'
         else:
             matrix_audit = ('\nScenario matrix audit applies. Audit the "## Scenario matrix" section of the plan '
                             f'as the template says (checklist: {scenario_matrix.CHECKLIST}).' + self._matrix_plan_excerpt())
@@ -9371,6 +9373,8 @@ class Coordinator:
         post-gate round (at most the 1 + 1 fix rounds). The count is never raised."""
         if self.state.get('round_rules'):
             return
+        if self.state['phase'] != 'PLAN' and not self.state.get('review_only'):
+            self.state['legacy_plan'] = True   # preserve the PLAN approval rules across subsequent resumes
         self.state['round_rules'] = ROUND_RULES_VERSION
         turns = sorted(self.state.get('turns', []), key=lambda turn: turn.get('sequence', 0))
         uncharged = {self.state.get('pending_author_result_sequence'),

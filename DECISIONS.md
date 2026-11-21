@@ -542,7 +542,9 @@ item and use the persistent reviewer for repair and later changes.
   `resume --add-rounds N` resets both streaks.
 - **R5** FINISH, POLISH-Q, DOCS and SECURITY writes, writer replay and rollback, and failed
   or timed-out CLI turns use no EXEC round. If missing sandbox test evidence alone prevents
-  approval, HOLD for `attach-verification` without charging a round. Before gate dispatch,
+  approval, HOLD for `attach-verification` without charging a round. An advisory-only review
+  whose configured test command fails also HOLDs for the operator without charging a round.
+  Before gate dispatch,
   an approval that relied on host verification also HOLDs if the current tree has no
   bound record. Lifecycle stages retain their own budgets.
 - **R6** A gate FAIL states the criterion or blocking issue, evidence, required change and

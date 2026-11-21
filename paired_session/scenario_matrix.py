@@ -17,11 +17,14 @@ def prompt_checklist() -> str:
     """A compact checklist for role prompts (one line per dimension); the full rules stay in CHECKLIST."""
     lines = [line.strip() for line in CHECKLIST.read_text(encoding='utf-8').splitlines() if re.match(r'^\d+\. \*\*', line.strip())]
     return '\n'.join([f'Scenario matrix checklist (full rules: {CHECKLIST}):', *lines,
+                      'Use one label line per dimension, followed by scenario | expected behavior | test id rows, '
+                      'or put N/A: <reason> on the label line or the next line.',
                       'Only blocking-class scenarios (correctness, data loss, security, money) need a row with a test; '
                       'others are BACKLOG notes; N/A needs a one-line reason; a trivial change writes only "Trivial: <reason>".'])
 
 
 BULLET = re.compile(r'^(?:[-+*]|\d+[.)])\s+')
+NA = re.compile(r'N/A\s*:\s*\S.*', re.I)
 
 
 def section(plan: str) -> str:
@@ -47,19 +50,28 @@ def validation_error(matrix: str) -> str:
     dimension = None
     for number, line in lines:
         # Subheadings and labels can include numbering, emphasis, or a trailing colon.
-        label = BULLET.sub('', re.sub(r'^#{3,6}\s+', '', line)).strip('# *_`:\t')
+        label = BULLET.sub('', re.sub(r'^#{3,6}\s+', '', line))
+        inline = ''
+        if split := re.match(r'^([^|]+?)\s*(?:[:—–]|\s-\s)\s*(.+)$', label):
+            prefix, rest = split.groups()
+            # Inline rows use the checklist's bold label to distinguish them from ordinary rows with a colon.
+            if NA.fullmatch(rest) or ('|' in rest and any(prefix.casefold() == f'**{name.casefold()}**' for name in DIMENSIONS)):
+                label, inline = prefix, rest
+        label = label.strip('# *_`:\t')
         normalized = re.sub(r'[-_/]+', ' ', label).lower()
         matches = [name for name, pattern in DIMENSIONS.items() if re.search(pattern, normalized)] if (
-            '|' not in line and not re.match(r'^N/A\s*:', line, re.I)) else []
+            '|' not in label and not re.match(r'^N/A\s*:', line, re.I)) else []
         if len(matches) == 1:
             dimension = matches[0]
             if dimension in covered:
                 return f'line {number} of the matrix repeats {dimension}'
             covered[dimension] = ''
-            continue
+            if not inline:
+                continue
+            line = inline
         if dimension is None:
             return f'line {number} of the matrix must start with a dimension label'
-        if re.fullmatch(r'N/A\s*:\s*\S.*', line, re.I) and not covered[dimension]:
+        if NA.fullmatch(line) and not covered[dimension]:
             covered[dimension] = 'N/A'
             continue
         cells = [cell.strip() for cell in re.split(r'(?<!\\)\|', line)]
@@ -69,7 +81,7 @@ def validation_error(matrix: str) -> str:
             cells = cells[:-1]
         if len(cells) != 3 or not all(cells) or covered[dimension] == 'N/A':
             return (f'{dimension}, line {number} of the matrix: expected '
-                    'scenario | expected behavior | test id, or N/A: <reason> on its own')
+                    'scenario | expected behavior | test id, or N/A: <reason> on the label line or the next line')
         if [cell.strip('*_`').lower() for cell in cells] == ['scenario', 'expected behavior', 'test id']:
             continue
         if all(re.fullmatch(r':?-{2,}:?', cell) for cell in cells):

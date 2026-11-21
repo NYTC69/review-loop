@@ -1,4 +1,5 @@
 """WI-GATE1 S7/S8: PLAN structure, per-round coverage and the single gate audit."""
+import json
 import unittest
 
 from paired_session import scenario_matrix
@@ -18,6 +19,21 @@ class ScenarioMatrixParserTests(unittest.TestCase):
         plan = FAKE_SCENARIO_MATRIX.replace('### Input boundaries', '**INPUT boundaries:**').replace(
             '### Repetition and concurrency', '3. **Concurrency**')
         self.assertEqual(self.error('# Plan\n' + plan + '\n## Verification\nRun unittest.'), '')
+
+    def test_na_on_the_label_line(self):
+        plan = ['## Scenario matrix', *(f'- **{name}**: N/A: No dependency or input changes.'
+                                        for name in scenario_matrix.DIMENSIONS)]
+        self.assertEqual(self.error('\n'.join(plan)), '')
+
+    def test_numbered_checklist_labels_with_inline_and_following_content(self):
+        plan = ['## Scenario matrix', f'1. **Input boundaries** — {ROW}',
+                '2. **Dependency failure** — N/A: No dependencies.',
+                '3. **Repetition and concurrency**', '   N/A: No retries.',
+                '4. **Ordering and state transitions**', '   N/A: No ordering changes.',
+                '5. **Partial failure and recovery**', '   N/A: No partial writes.',
+                '6. **Permissions and identity**', '   N/A: No access changes.',
+                '7. **Compatibility**', '   N/A: No compatibility changes.']
+        self.assertEqual(self.error('\n'.join(plan)), '')
 
     def test_markdown_table_with_header_alignment_and_escaped_pipe(self):
         plan = FAKE_SCENARIO_MATRIX.replace('- ' + ROW,
@@ -84,6 +100,7 @@ class ScenarioMatrixRunTests(unittest.TestCase):
                 self.assertIn('Include the "## Scenario matrix" section', self.prompt(first_author))
                 self.assertIn('silently skipped dimension is a blocking PLAN finding', self.prompt(first_review))
                 self.assertIn(message, self.prompt(repair))
+                self.assertIn(f'Fix the matrix in plan.md using {scenario_matrix.CHECKLIST}.', self.prompt(repair))
                 self.assertEqual(state['phase'], 'EXEC')
 
     def test_matrix_rows_reach_every_exec_review_shadow_and_gate(self):
@@ -119,23 +136,32 @@ class ScenarioMatrixRunTests(unittest.TestCase):
         self.assertIn('No passing evidence for test_rejects_bool', state['finding_ledger'][-1]['summary'])
         self.assertFalse(tgo.gates(state))
 
-    def test_gate_audits_a_legacy_plan_without_a_matrix_and_a_false_trivial_claim(self):
-        for name, draft, evidence in (('missing', FAKE_SCENARIO_MATRIX, 'has no scenario matrix'),
+    def test_gate_exempts_a_legacy_plan_and_audits_plans_approved_with_the_matrix_requirement(self):
+        for name, draft, evidence in (('legacy', FAKE_SCENARIO_MATRIX, ''),
+                                      ('missing', FAKE_SCENARIO_MATRIX, 'has no scenario matrix'),
                                       ('trivial', '\n## Scenario matrix\nTrivial: documentation only.', 'claims Trivial')):
             with self.subTest(name=name):
                 self.run_dir = self.root / name
-                env = {'FAKE_FIRST_PLAN_MATRIX': draft, 'FAKE_GATE_MATRIX_FINDING': name}
+                env = {'FAKE_FIRST_PLAN_MATRIX': draft, 'FAKE_GATE_MATRIX_FINDING': 'missing' if name == 'legacy' else name}
                 stopped = self.run_coordinator(*tgo.OFF, '--stop-after-plan', env=env)
                 self.assertIn(tgo.rc.PLAN_STOP_REASON, stopped.stdout, stopped.stdout + stopped.stderr)
-                if name == 'missing':
-                    # Model an older run that entered EXEC before PLAN required a matrix.
+                if name != 'trivial':
                     for path in (self.run_dir / 'plan.md', self.run_dir / 'context' / 'plan.md'):
                         path.write_text(path.read_text().split('## Scenario matrix')[0])
+                if name == 'legacy':
+                    # v3.8.x entered EXEC without a matrix or the 3.9 round rules marker.
+                    state = self.state()
+                    state.pop('round_rules')
+                    (self.run_dir / 'state.json').write_text(json.dumps(state))
                 result = self.run_operator_action('resume', *tgo.OFF, '--stop-after-plan', env=env)
                 self.assertIn(tgo.DONE, result.stdout, result.stdout + result.stderr)
                 [gate] = tgo.gates(self.state())
-                self.assertEqual(gate['answer']['verdict'], 'FAIL')
-                self.assertIn(evidence, gate['answer']['fail_items'][0]['evidence'])
+                if name == 'legacy':
+                    self.assertIn('Skip the scenario matrix audit.', self.prompt(gate))
+                    self.assertEqual(gate['answer']['verdict'], 'PASS')
+                else:
+                    self.assertEqual(gate['answer']['verdict'], 'FAIL')
+                    self.assertIn(evidence, gate['answer']['fail_items'][0]['evidence'])
                 self.clean()
 
     def test_review_only_skips_the_matrix_and_still_runs_the_gate(self):
