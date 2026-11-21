@@ -176,6 +176,7 @@ def note_strict_removed(args, *modes) -> None:
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 DEFAULT_TIMEOUT_SECONDS = 2700
 DEFAULT_MAX_RATE_LIMIT_WAIT = 21600
+RATE_LIMIT_MIN_RESET_WAIT = 30
 RATE_LIMIT_BACKOFF = (30, 60, 120, 240)
 RATE_LIMIT_WAIT_ERROR = '--max-rate-limit-wait must be a nonnegative integer in seconds'
 LONG_COMMAND_TIMEOUT_MS = 3600000
@@ -6849,16 +6850,16 @@ class Coordinator:
         budget = self.args.max_rate_limit_wait
         count = (self.state.get('rate_limit_wait') or {}).get('backoff_count', 0)
         reset_delay = (rejection.get('reset_at') or 0) - now
-        uses_slot = reset_delay < 60   # a short known reset shares the same retry cap as an unavailable reset
         reason = None
         if budget == 0:
             reason = 'automatic waiting is disabled (--max-rate-limit-wait 0)'
-        elif uses_slot and count >= len(RATE_LIMIT_BACKOFF):
+        elif reset_delay > 0:
+            seconds = max(reset_delay, RATE_LIMIT_MIN_RESET_WAIT)
+        elif count >= len(RATE_LIMIT_BACKOFF):
             reason = 'automatic retry backoff exhausted'
         else:
-            seconds = reset_delay if reset_delay > 0 else RATE_LIMIT_BACKOFF[count]
-            if uses_slot:
-                count += 1
+            seconds = RATE_LIMIT_BACKOFF[count]
+            count += 1
         if reason is None and waited + seconds > budget:
             reason = f'next wait needs {seconds:g} s but only {budget - waited:g} s of the run-wide wait budget remain'
         if reason:

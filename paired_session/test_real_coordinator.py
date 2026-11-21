@@ -2742,7 +2742,7 @@ sys.exit(result.returncode)
                 patch.object(rc, 'sleep_rate_limit', side_effect=waits.append), patch.dict(os.environ, env):
             self.assertEqual(resumed.resume(), 'DONE', resumed.state.get('hold_reason'))
         saved = json.loads(resumed.state_path.read_text())
-        self.assertEqual((saved['config']['max_rate_limit_wait'], waits), (21600, [12]))
+        self.assertEqual((saved['config']['max_rate_limit_wait'], waits), (21600, [30]))
         rejected, success = saved['turns'][:2]
         self.assertEqual((rejected['vendor'], rejected['error_kind'], rejected['invocation_budget_counted']),
                          ('gemini', 'rate_limited', False))

@@ -128,17 +128,17 @@ class RateLimitDriveTests(unittest.TestCase):
         self.check_sites(SITES[6:])
 
     def test_wait_budget_bounds(self):
-        for budget, status in ((30, 'DONE'), (29, 'HOLD'), (0, 'HOLD')):
-            with self.subTest(budget=budget):
+        for delay, budget, status in ((12, 30, 'DONE'), (12, 29, 'HOLD'), (12, 0, 'HOLD'), (45, 45, 'DONE')):
+            with self.subTest(delay=delay, budget=budget):
                 self.fresh(f'budget-{budget}')
                 env = self.limited_env(SITES[0][0])
                 with self.clock() as (now, waits):
-                    env['FAKE_RATE_LIMIT_RESET_AT'] = str(now + 30)
+                    env['FAKE_RATE_LIMIT_RESET_AT'] = str(now + delay)
                     self.assertEqual(self.drive(env, '--max-rate-limit-wait', str(budget)), status)
                 state = self.state()
                 self.assertEqual(state['config']['max_rate_limit_wait'], budget)
-                self.assertEqual(waits, [30] if budget == 30 else [])
-                if budget < 30:
+                self.assertEqual(waits, [budget] if status == 'DONE' else [])
+                if status == 'HOLD':
                     self.assertEqual(state['hold_kind'], 'rate_limited')
                     self.assertIn('29 s of the run-wide wait budget remain' if budget else 'waiting is disabled',
                                   state['hold_reason'])
@@ -184,16 +184,16 @@ class RateLimitDriveTests(unittest.TestCase):
                 self.assertNotIn('hold_kind', state)
                 self.assertEqual((waits, state['invocations_used']), ([], 1))
 
-    def test_repeated_short_known_resets_exhaust_the_retry_slots(self):
+    def test_repeated_short_known_resets_retry_until_the_next_wait_exceeds_budget(self):
         env = {**self.limited_env(SITES[0][0], once=False), 'FAKE_RATE_LIMIT_RETRY_AFTER': '12'}
         with self.clock() as (_, waits):
-            self.assertEqual(self.drive(env, '--max-rate-limit-wait', '60'), 'HOLD')
-        self.assertEqual(waits, [12, 12, 12, 12])
+            self.assertEqual(self.drive(env, '--max-rate-limit-wait', '179'), 'HOLD')
+        self.assertEqual(waits, [30] * 5)
         state = self.state()
         self.assertEqual((state['hold_kind'], state['invocations_used'], state['rate_limit_wait_used']),
-                         ('rate_limited', 0, 48))
-        self.assertIn('backoff exhausted', state['hold_reason'])
-        self.assertEqual(len(state['turns']), 5)
+                         ('rate_limited', 0, 150))
+        self.assertIn('next wait needs 30 s but only 29 s of the run-wide wait budget remain', state['hold_reason'])
+        self.assertEqual(len(state['turns']), 6)
         self.assertTrue(all(not row['invocation_budget_counted'] for row in state['turns']))
 
     def test_spawn_failure_on_quota_retry_clears_the_saved_wait(self):
@@ -210,7 +210,7 @@ class RateLimitDriveTests(unittest.TestCase):
                 patch.object(rc.winplat, 'spawn_group', side_effect=spawn_or_fail):
             with self.assertRaisesRegex(RuntimeError, 'failed to start: quota retry executable missing'):
                 co.invoke('author', 'PLAN', co._author_prompt(), rc.author_schema())
-        self.assertEqual(waits, [12])
+        self.assertEqual(waits, [30])
         state = self.state()
         self.assertNotIn('rate_limit_wait', state)
         self.assertIsNone(state['active'])
@@ -223,12 +223,12 @@ class RateLimitDriveTests(unittest.TestCase):
     def test_an_exhausted_wait_budget_cannot_be_raised_on_resume(self):
         env = {**self.limited_env(SITES[0][0], once=False), 'FAKE_RATE_LIMIT_RETRY_AFTER': '12'}
         with self.clock() as (_, waits):
-            self.assertEqual(self.drive(env, '--max-rate-limit-wait', '12'), 'HOLD')
-        self.assertEqual(waits, [12])
+            self.assertEqual(self.drive(env, '--max-rate-limit-wait', '30'), 'HOLD')
+        self.assertEqual(waits, [30])
         state = self.state()
         self.assertIn('only 0 s of the run-wide wait budget remain', state['hold_reason'])
         with self.assertRaisesRegex(ValueError, 'resume configuration differs: max_rate_limit_wait'):
-            self.drive({}, '--max-rate-limit-wait', '24', action='resume')
+            self.drive({}, '--max-rate-limit-wait', '60', action='resume')
         self.assertEqual(self.state(), state)
 
     def test_resume_saved_wait(self):

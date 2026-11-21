@@ -562,15 +562,16 @@ turn that changes HEAD or the branch holds.
 `--max-rate-limit-wait SECONDS` (`max_rate_limit_wait` in the JSON profile) is
 a nonnegative integer fixed at run start and cannot be raised on resume. The
 default is 21600 seconds (6 hours), including for older supported runs. Scheduled
-waits share this budget across every role and stage. A full wait to a usable
-reset must fit the remaining budget. Without a usable reset, the coordinator
-tries delays of 30, 60, 120 and 240 seconds for consecutive quota rejections.
-A known reset under 60 seconds uses one of those four retry slots and keeps
-the provider's delay. If the retry would reach or pass the whole-WI deadline,
-the coordinator HOLDs immediately on the deadline. Set the budget to 0 for
-immediate quota HOLD. A quota HOLD shows the reset hint when available and
-explains why automatic retries stopped. After quota clears, use plain `resume`
-with the same workspace, work item, run directory, role settings and test command.
+waits share this budget across every role and stage. For a usable reset, the
+coordinator waits until the reset or for 30 seconds, whichever is longer, without
+using a backoff slot. That full wait must fit the remaining budget, including an
+exact fit. Only unknown or stale resets use the four backoff slots of 30, 60,
+120 and 240 seconds for consecutive quota rejections. If the retry would reach
+or pass the whole-WI deadline, the coordinator HOLDs immediately on the deadline.
+Set the budget to 0 for immediate quota HOLD. A quota HOLD shows the reset hint
+when available and explains why automatic retries stopped. After quota clears,
+use plain `resume` with the same workspace, work item, run directory, role
+settings and test command.
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every turn except author turns in EXEC,
