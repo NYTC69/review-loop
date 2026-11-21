@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+import copy
 import importlib.util
 import errno
 import hashlib
@@ -4230,6 +4232,51 @@ sys.exit(result.returncode)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertIn('omitted open finding dispositions after retry', state['hold_reason'])
 
+    def test_unknown_ledger_disposition_retries_once_then_holds(self):
+        self._check_invalid_disposition_retry('F999')
+
+    def test_duplicate_ledger_disposition_retries_once_then_holds(self):
+        self._check_invalid_disposition_retry('F001')
+
+    def _check_invalid_disposition_retry(self, invalid_id):
+        for valid_retry in (True, False):
+            with self.subTest(valid_retry=valid_retry):
+                self.run_dir = self.root / f'retry-{valid_retry}'
+                co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+                co.state.update(phase='EXEC', next='reviewer', exec_rounds=1)
+                co.record_findings('persistent-reviewer', 'EXEC', 1, [
+                    {'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'First review finding'}])
+                [finding] = co.state['finding_ledger']
+                snapshot = rc.git_snapshot(self.workspace)[0]
+                fixed = {'id': finding['id'], 'disposition': 'fixed', 'evidence': 'verified fix'}
+                invalid = [fixed, {**fixed, 'id': invalid_id}]
+                command = co.args.test_command
+
+                def result(sequence, rows):
+                    answer = {'status': 'APPROVE', 'reviewed_snapshot': snapshot, 'full_review': [],
+                              'prior_findings': rows, 'self_run_evidence': [{'command': command}],
+                              'observed_commands': [{'command': command, 'exit_code': 0, 'error': False,
+                                                     'output': 'Ran 1 test successfully'}]}
+                    return {'answer': answer, 'snapshot': snapshot, 'sequence': sequence, 'role': 'reviewer',
+                            'open_finding_ids': [finding['id']]}
+
+                with patch.object(co, 'invoke', side_effect=[
+                        result(2, invalid), result(3, [fixed] if valid_retry else invalid)]) as invoke:
+                    co.reviewer_turn()
+                self.assertEqual(invoke.call_count, 2)
+                self.assertIn(f'duplicate or unknown id: {invalid_id}', invoke.call_args.args[2])
+                self.assertIn('one allowed protocol retry', invoke.call_args.args[2])
+                if valid_retry:
+                    self.assertEqual(co.state['status'], 'DONE')
+                    self.assertEqual(finding['status'], 'fixed')
+                    self.assertEqual([row['round'] for row in finding['status_history']], [1, 3])
+                else:
+                    self.assertEqual(co.state['status'], 'HOLD')
+                    self.assertIn('reviewer invalid finding dispositions after retry', co.state['hold_reason'])
+                    self.assertIn(invalid_id, co.state['hold_reason'])
+                    self.assertEqual(finding['status'], 'open')
+                    self.assertEqual(len(finding['status_history']), 1)
+
     def test_ledger_comparison_and_per_turn_usage_are_terminal_artifacts(self):
         # V319-HOLD R2: the repaired tree is gated again, so the gate blocks once (an always-blocking gate holds at the limit)
         result = self.run_coordinator('--exercise-revisions', env={'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-blocked')})
@@ -5192,6 +5239,49 @@ sys.exit(result.returncode)
         self.assertEqual(gate['answer']['verdict'], 'FAIL')
         row = next(r for r in co.state['finding_ledger'] if r['id'] == item['id'])
         self.assertEqual(row['status'], 'fixed')
+
+    def test_post_gate_review_ignores_already_fixed_disposition(self):
+        co = self.coordinator('--shadow', 'off', '--polish-round', 'off')
+        co.state.update(phase='EXEC', next='gate', exec_rounds=1, sequence=2)
+        co.state['config']['lifecycle_mode'] = 'on'
+        co.record_findings('persistent-reviewer', 'EXEC', 1, [
+            {'severity': 'MAJOR', 'file': 'tracked.txt', 'summary': 'First review finding'}])
+        [closed] = co.state['finding_ledger']
+        fixed = {'id': closed['id'], 'disposition': 'fixed', 'evidence': 'verified in the first round'}
+        co.apply_dispositions([fixed], 2, [closed['id']], 'persistent-reviewer')
+        before = copy.deepcopy(closed)
+        invoke = co.invoke
+
+        def add_stale_disposition(*args, **kwargs):
+            result = invoke(*args, **kwargs)
+            self.assertEqual(result['open_finding_ids'], ['F002'])
+            result['answer'] = {**result['answer'], 'prior_findings': [*result['answer']['prior_findings'], fixed]}
+            return result
+
+        with patch.object(co, '_author_tmp_isolated', return_value=True):
+            co._freeze_role_dispatch()
+            with patch.dict(os.environ, {'FAKE_GATE_BLOCK_ONCE': str(self.root / 'gate-blocked')}):
+                co.gate_turn()
+            self.assertEqual(co.state['next'], 'author')
+            co.author_turn()
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), patch.object(co, 'invoke', side_effect=add_stale_disposition) as reviewer, \
+                 patch.object(co, 'render', wraps=co.render) as render:
+                co.reviewer_turn()
+        self.assertEqual(reviewer.call_count, 1)
+        notes = [line for line in stdout.getvalue().splitlines() if 'ignored dispositions for closed findings' in line]
+        self.assertEqual(notes, ['NOTE: ignored dispositions for closed findings: F001'])
+        processed = render.call_args.args[0]
+        self.assertEqual([row['id'] for row in processed['answer']['prior_findings']], ['F002'])
+        self.assertEqual(closed, before)
+        gate = co.state['finding_ledger'][1]
+        self.assertEqual((gate['id'], gate['status']), ('F002', 'fixed'))
+        self.assertEqual(co.state['gate_fail_round']['closed_at'], processed['sequence'])
+        self.assertNotEqual(co.state['status'], 'HOLD')
+        history = copy.deepcopy(gate['status_history'])
+        self.assertEqual(co.apply_dispositions(processed['answer']['prior_findings'], processed['sequence'],
+                                               ['F002'], 'persistent-reviewer'), [])
+        self.assertEqual(gate['status_history'], history)
 
     def test_specialist_blocker_can_only_be_disposed_by_its_owner(self):
         co = self.coordinator()

@@ -370,6 +370,10 @@ class RunLeaseError(RuntimeError):
     pass
 
 
+class InvalidDispositionIDs(RuntimeError):
+    """A disposition answer contains duplicate or unknown ledger IDs."""
+
+
 class WorktreeDeliveryHold(RuntimeError):
     """An auto_commit that cannot move HEAD as journaled; the accept HOLDs and a replay with the same --expect finishes."""
 
@@ -4012,21 +4016,33 @@ class Coordinator:
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
                            owner_role: Optional[str] = None, *, validate_only=False) -> list[str]:
+        """Validate and apply dispositions, removing ignored rows from the working answer."""
         open_by_id = {finding['id']: finding for finding in self.open_findings()}
         all_by_id = {finding['id']: finding for finding in self.state['finding_ledger']}
-        # The coordinator reconciles its test-failure findings from observed evidence.
-        dispositions = [{**row, 'disposition': 'still_open'} if all_by_id.get(row.get('id'), {}).get('source') == 'test-failure'
-                        else row for row in dispositions]
-        supplied = [row.get('id') for row in dispositions]
         expected = set(expected_ids) if expected_ids is not None else set(open_by_id)
-        missing = sorted(expected - set(supplied))
-        if len(supplied) != len(set(supplied)):
-            raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
+        supplied, invalid = set(), set()
+        ignored = set()
+        for row in dispositions:
+            finding_id = row.get('id')
+            if finding_id in supplied or finding_id not in all_by_id:
+                invalid.add(finding_id)
+            elif (finding_id not in open_by_id and finding_id not in expected and
+                  row['disposition'] in ('fixed', 'withdrawn')):
+                ignored.add(finding_id)
+            supplied.add(finding_id)
+        if invalid:
+            raise InvalidDispositionIDs('invalid finding dispositions: duplicate or unknown id: ' +
+                                        ', '.join(sorted(map(str, invalid))))
+        missing = sorted(expected - supplied)
         if missing:
             return missing
-        for row in dispositions:
-            finding = all_by_id.get(row['id'])
-            if finding is None or row['id'] not in expected:
+        applicable = [row for row in dispositions if row['id'] not in ignored]
+        # The coordinator reconciles its test-failure findings from observed evidence.
+        normalized = [{**row, 'disposition': 'still_open'} if all_by_id[row['id']].get('source') == 'test-failure'
+                      else row for row in applicable]
+        for row in normalized:
+            finding = all_by_id[row['id']]
+            if row['id'] not in expected:
                 raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
             if ('owner_role' in finding and finding['owner_role'] != owner_role and
                     row['disposition'] in ('fixed', 'withdrawn')):
@@ -4042,8 +4058,11 @@ class Coordinator:
                 raise RuntimeError('non_blocking disposition requires a shadow finding to confirm')
         if validate_only:
             return []
+        if ignored:
+            dispositions[:] = applicable
+            print('NOTE: ignored dispositions for closed findings: ' + ', '.join(sorted(ignored)))
         changed = False
-        for row in dispositions:
+        for row in normalized:
             finding = all_by_id[row['id']]
             disposition = row['disposition']
             if any(item.get('round') == origin_round and item.get('status') == disposition
@@ -9464,27 +9483,10 @@ class Coordinator:
             self.materialize_review_context()
             snapshot, _ = git_snapshot(self.workspace)
             result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), schema)
-        result['answer'] = copy.deepcopy(result['answer'])
         self.state['pending_reviewer_result_sequence'] = result['sequence']
         self.save()
         snapshot = result['snapshot']
-        answer = result['answer']
-        self._ignore_operator_dispositions(result)
-        self._refuse_gate_item_withdrawals(answer)
-        try:
-            missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                               result.get('open_finding_ids'), 'persistent-reviewer')
-        except RuntimeError as exc:
-            self._discard_reviewer_result(result, 'invalid finding dispositions')
-            self.state['pending_reviewer_result_sequence'] = None
-            self.hold('reviewer invalid finding dispositions: ' + str(exc))
-            return
-        if missing:
-            self._discard_reviewer_result(result, 'missing finding dispositions')
-            retry_prompt = (self._review_prompt('reviewer', snapshot) +
-                            '\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
-                            '. This is the one allowed protocol retry; include every open id.')
-            result = self.invoke('reviewer', phase, retry_prompt, schema)
+        for attempt in range(2):
             result['answer'] = copy.deepcopy(result['answer'])
             answer = result['answer']
             self._ignore_operator_dispositions(result)
@@ -9492,16 +9494,31 @@ class Coordinator:
             try:
                 missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                   result.get('open_finding_ids'), 'persistent-reviewer')
+            except InvalidDispositionIDs as exc:
+                reason = 'invalid finding dispositions'
+                feedback = 'contained ' + str(exc)
+                hold_reason = 'reviewer invalid finding dispositions after retry: ' + str(exc)
             except RuntimeError as exc:
                 self._discard_reviewer_result(result, 'invalid finding dispositions')
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold('reviewer invalid finding dispositions after retry: ' + str(exc))
+                suffix = ' after retry' if attempt else ''
+                self.hold(f'reviewer invalid finding dispositions{suffix}: ' + str(exc))
                 return
-            if missing:
-                self._discard_reviewer_result(result, 'missing finding dispositions')
+            else:
+                if not missing:
+                    break
+                reason = 'missing finding dispositions'
+                feedback = 'omitted dispositions for: ' + ', '.join(missing)
+                hold_reason = 'reviewer omitted open finding dispositions after retry: ' + ', '.join(missing)
+            self._discard_reviewer_result(result, reason)
+            if attempt:
                 self.state['pending_reviewer_result_sequence'] = None
-                self.hold('reviewer omitted open finding dispositions after retry: ' + ', '.join(missing))
+                self.hold(hold_reason)
                 return
+            retry_prompt = (self._review_prompt('reviewer', snapshot) +
+                            '\nYour rejected response ' + feedback +
+                            '. This is the one allowed protocol retry; include every open id.')
+            result = self.invoke('reviewer', phase, retry_prompt, schema)
         reviewer_raw_verdict = answer['status']
         post_gate = self._post_gate_review(phase, result['sequence'])
         if post_gate:   # R2 / owner 2026-11-20: after the gate only the gate items and regressions of the fix block
