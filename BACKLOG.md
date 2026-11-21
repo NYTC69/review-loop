@@ -12,7 +12,6 @@
   - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6.
   - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status`.
   - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21).
-- Field (v3.10.1 real run): a reviewer answer that adds a disposition for an already-closed finding (here F001, fixed a round earlier, next to the open gate item F002) HOLDs at once with "invalid finding dispositions: duplicate or unknown id", without the one protocol retry; ignore (or note) dispositions for closed ids outside `open_finding_ids`, or give that error the existing retry. Resume continued the run to ACCEPTED. (added 2026-11-21)
 - Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-4: allow skipping PLAN review for small work items that already list their files and acceptance criteria. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
@@ -21,6 +20,9 @@
 
 ## P2 — normal
 
+- v3.11.1 follow-up (Opus, WI-DISPFIX): a still_open row for a closed unexpected id, or an open id the reviewer was not asked about, still HOLDs at once without the protocol retry; make it InvalidDispositionIDs if it shows up in the field. (added 2026-11-22)
+- v3.11.1 follow-up (Opus, WI-DISPFIX): record ignored dispositions in the receipt (ignored_prior_findings) for audit, like _ignore_operator_dispositions. (added 2026-11-22)
+- v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (added 2026-11-22)
 - v3.11.0 follow-up (Sol merge review): if a saved quota wait is stopped and resumed during a reviewer disposition retry, the retry instruction is lost and the reviewer gets the ordinary prompt (an extra protocol retry at most). (added 2026-11-22)
 - v3.11.0 follow-up (Opus, WI-TESTEVID): reverting the change that caused a coordinator test-failure finding leaves that row open until the next reviewer disposition. (added 2026-11-22)
 - v3.11.0 follow-up (Opus, WI-TESTEVID): add a test that a confirmation review reuses the passing test result of the same tree. (added 2026-11-22)
@@ -55,6 +57,7 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Field (v3.10.1 real run): a reviewer answer that adds a disposition for an already-closed finding (here F001, fixed a round earlier, next to the open gate item F002) HOLDs at once with "invalid finding dispositions: duplicate or unknown id", without the one protocol retry; ignore (or note) dispositions for closed ids outside `open_finding_ids`, or give that error the existing retry. Resume continued the run to ACCEPTED.~~ (added 2026-11-21) (closed 2026-11-22, see v3.11.1 WI-DISPFIX)
 - ~~Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.11.0 WI-TESTEVID)
 - ~~Gate-survey follow-up GR-5: on a provider rate limit, wait and retry automatically instead of HOLD. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.11.0 WI-TURNFAIL)
 - ~~Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line.~~ (added 2026-11-09) (closed 2026-11-22, see v3.11.0 WI-TESTEVID)
