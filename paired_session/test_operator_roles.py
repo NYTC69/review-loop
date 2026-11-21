@@ -430,6 +430,8 @@ class RoleModelTests(unittest.TestCase):
             self.assertEqual((a.gate_model, a.reviewer_model), ('gpt-6.1-sol', 'claude-sonnet-5-5'))
         override = self.restored('--gate-model', 'gpt-6-sol', action='resume', explicit={'gate_model'})
         self.assertEqual(override.gate_model, 'gpt-6-sol')
+        with self.assertRaisesRegex(ValueError, 'gate_model claude-opus-5-5 does not belong to the saved codex vendor'):
+            self.restored('--gate-model', 'claude-opus-5-5', action='resume', explicit={'gate_model'})
         # An allowlist naming only the saved models must not trip over the CLI defaults on a plain resume.
         self.h.run_dir = self.h.root / 'allow-resume'
         policy = self.allowlist_run({'codex': ['gpt-6.1-sol'], 'claude': ['claude-sonnet-5-5']}, '--author-model',

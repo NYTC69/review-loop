@@ -629,7 +629,9 @@ A continuing `resume` can change any of `--author-model`, `--reviewer-model`, `-
 `--author-effort`, `--reviewer-effort`, and `--gate-effort`. Both `--flag value` and
 `--flag=value` work. Omitted model and effort flags inherit the saved values on every action
 that restores the run, even when the current profile supplies different defaults. The saved
-vendors and `allowed_models` policy apply. Other actions refuse explicit changes.
+vendors and `allowed_models` policy apply. Other actions refuse explicit changes. Explicit flags win on
+every `resume`: a caller that re-sends its original role flags undoes an earlier override (with a NOTE), and a
+model revert opens another session.
 
 A model change starts a new persistent session for the affected author or reviewer. An
 effort-only change keeps the session. A replacement author receives the saved approved plan
