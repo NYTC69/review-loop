@@ -2,14 +2,14 @@
 
 usage: python3 .github/paired-session-run-group.py '<json list of {"module", "shard", "of"}>' <workers>
 Each part runs in a fresh interpreter (modules can disturb each other in one process), and its output is printed as
-one block when it finishes, so the "FAIL: test (module)" lines stay intact for ci_wait.sh. Exit 1 if any part fails.
+one block as soon as it finishes, so the "FAIL: test (module)" lines stay intact for ci_wait.sh. Exit 1 if any part fails.
 """
 import json
 import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PART = r'''
 import os, sys, unittest
@@ -36,7 +36,8 @@ def run(part):
     env = dict(os.environ, MODULE=part['module'], SHARD=str(part['shard']), OF=str(part['of']))
     start = time.monotonic()
     proc = subprocess.run([os.environ.get('PY', sys.executable), '-c', PART], env=env,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          encoding='utf-8', errors='replace')
     return part, proc.returncode, proc.stdout, time.monotonic() - start
 
 
@@ -44,7 +45,9 @@ def main():
     parts, workers = json.loads(sys.argv[1]), int(sys.argv[2])
     failed = []
     with open('test.log', 'w') as log, ThreadPoolExecutor(max_workers=workers) as pool:
-        for part, code, out, seconds in pool.map(run, parts):
+        # Print each block as soon as its part ends, so a hanging part cannot hold back a finished part's failures.
+        for future in as_completed([pool.submit(run, part) for part in parts]):
+            part, code, out, seconds = future.result()
             name = f"{part['module']} {part['shard']}/{part['of']}"
             block = f'===== {name}: exit {code}, {seconds:.0f} s =====\n{out}\n'
             sys.stdout.write(block)
