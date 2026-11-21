@@ -1,5 +1,10 @@
 # Changelog
 
+### Unreleased (WI-DISPFIX)
+
+- 门审修复后的复审可以继续处理尚未关闭的发现。对于已关闭且本轮无需回复的发现，多报的 `fixed` 或 `withdrawn` 会被忽略，终端以一条 `NOTE` 列出相关编号，台账保持原样。
+- 持久 reviewer 回复中的未知或重复发现编号会随错误提示返回，允许重试一次；重试仍无效才进入 HOLD。同轮回放和专项审查员的处置权限照常校验。
+
 ### v3.11.0：只读角色复用同一棵树上的测试结果；配额拒绝自动等待重试（WI-TESTEVID + WI-TURNFAIL）
 
 #### WI-TESTEVID
