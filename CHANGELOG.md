@@ -1,5 +1,14 @@
 # Changelog
 
+### Unreleased (WI-NOTE)
+
+- 持久 EXEC reviewer 可用 `REVISE_NEEDS_OPERATOR` 在修复回合前暂停，并显示需要操作者裁定的问题。用 `note --text` 或 `note --file` 记录裁定后，`resume` 将裁定连同评审意见交给修复作者。轮次上限、停止规则和结构性 HOLD 保留原原因，另以一条 NOTE 显示问题。
+- `status` 在 stderr 显示待交付的备注编号、接收方和创建时间，stdout 保持原样。`status --brief` 在 stdout 显示同一摘要。到达 DONE 时，`accept` 和普通 `resume` 不会交付备注；按意图确认的范围内 `reject` 会把排队的备注连同拒绝反馈交给下一位 EXEC 作者。
+
+**按意图更新的测试断言**
+
+- `test_v318cap.test_default_review_dispatch_bytes_match_release_except_for_review_rules_and_exec_author_grows` 的持久 EXEC reviewer 提示字节比较纳入请求操作者裁定的句子。
+
 ### Unreleased (WI-RESUME)
 
 - 移动 review-loop 安装后，若角色指令、门审提示和其他冻结输入一致，下次派发会更新安装路径、保留原会话，并记录一次 `NOTE`。自定义门审提示需保留原路径和内容，内置门审提示仍可按版本更新。
