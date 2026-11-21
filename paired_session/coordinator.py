@@ -11,11 +11,13 @@ import argparse
 import calendar
 import copy
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import errno
 import itertools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -32,6 +34,7 @@ import time
 import traceback
 import uuid
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
@@ -172,6 +175,9 @@ def note_strict_removed(args, *modes) -> None:
     print(STRICT_REMOVED_NOTE, file=sys.stderr if getattr(args, 'action', None) == 'status' or getattr(args, 'intent_only', False) else sys.stdout)
 MAX_EXEC_TURN_TIMEOUT_SECONDS = 14400
 DEFAULT_TIMEOUT_SECONDS = 2700
+DEFAULT_MAX_RATE_LIMIT_WAIT = 21600
+RATE_LIMIT_BACKOFF = (30, 60, 120, 240)
+RATE_LIMIT_WAIT_ERROR = '--max-rate-limit-wait must be a nonnegative integer in seconds'
 LONG_COMMAND_TIMEOUT_MS = 3600000
 MAX_TIMEOUT_SECONDS = 86400   # timeoutcap: one day per non-EXEC turn or coordinator test run (an existing run starts with --timeout 20000)
 MAX_RESUME_TIMEOUT_SECONDS = MAX_TIMEOUT_SECONDS
@@ -182,6 +188,12 @@ def resolve_exec_turn_timeout(value, general_timeout):
     timeout = value if value is not None else min(max(DEFAULT_EXEC_TURN_TIMEOUT_SECONDS, general_timeout), MAX_EXEC_TURN_TIMEOUT_SECONDS)
     if not 1 <= timeout <= MAX_EXEC_TURN_TIMEOUT_SECONDS: raise ValueError(f'--exec-turn-timeout must be between 1 and {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds')
     return timeout
+
+
+def resolve_max_rate_limit_wait(value):
+    if type(value) is not int or value < 0:
+        raise ValueError(RATE_LIMIT_WAIT_ERROR)
+    return value
 DEFAULT_MAX_REJECTIONS = 2
 # WI-GATE1 S4 (research-rc R1-R6, owner-approved 2026-11-19): the EXEC round rules; each HOLD names its rule (a NOTE line).
 POST_GATE_FIX_ROUNDS = 2   # R2: after a gate FAIL, one automatic fix round and at most one more
@@ -387,6 +399,16 @@ class RateLimitedTurn(RuntimeError):
     rate-limit hold; an error that wraps it (a W writer's git guard) is a different hold and needs its own repair."""
 
 
+class RateLimitDeadline(RuntimeError):
+    """The work-item deadline passed before a quota retry could dispatch."""
+
+
+def sleep_rate_limit(seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(remaining)
+
+
 def retry_killpg_eperm(pid: int, clock=None, sleep=None) -> None:
     clock = time.monotonic if clock is None else clock
     sleep = time.sleep if sleep is None else sleep
@@ -414,10 +436,164 @@ def probe_group(pid: int, job: Optional[str] = None) -> None:
     retry_killpg_eperm(pid)
 
 
-def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') -> Optional[dict]:
-    """Classify only explicit provider quota/rate-limit failures; other CLI errors stay billable."""
-    if returncode == 0:
+_RESET_CUE = re.compile(r'try again (?:at|in)|resets?(?: time| at)?(?=\s|:)|available (?:again )?at|retry[ _-]after', re.I)
+_RETRY_AFTER = re.compile(r'retry[ _-]after\s*:\s*(.+)', re.I)
+_DURATION_PART = re.compile(r'(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)', re.I)
+_MONTH_RESET = re.compile(
+    r'(?P<month>[a-z]{3,9})\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?'
+    r'(?:,?\s+(?P<year>\d{4}))?,?\s+(?:at\s+)?'
+    r'(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)'
+    r'(?:\s*(?:\((?P<zone>[^()]+)\)|(?P<bare_zone>\S+)))?', re.I)
+_ISO_RESET = re.compile(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?[0-5]\d)?', re.I)
+_MONTHS = {name.lower(): number for number, name in enumerate((
+    '', 'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December')) if number}
+_MONTHS.update({name[:3]: number for name, number in tuple(_MONTHS.items())})
+
+
+def reset_epoch(value) -> Optional[float]:
+    try:
+        if type(value) not in (int, float, str):
+            return None
+        epoch = float(value)
+        if epoch > 0:
+            datetime.fromtimestamp(epoch, timezone.utc)   # also rejects overflow, non-finite values and millisecond epochs
+            return epoch
+    except (ValueError, OverflowError, OSError):
+        pass
+    return None
+
+
+def reset_delay(value) -> Optional[float]:
+    if isinstance(value, dict):
+        seconds, nanos = value.get('seconds', 0), value.get('nanos', 0)
+        if ('seconds' in value or 'nanos' in value) and str(seconds).isdigit() and type(nanos) is int and 0 <= nanos < 10**9:
+            value = f'{seconds}.{nanos:09d}'
+    if type(value) in (int, float, str):
+        value = str(value).strip().lower()
+        try:
+            delay = float(value.removesuffix('s'))
+            if math.isfinite(delay) and delay >= 0:
+                return delay
+        except ValueError:
+            pass
+    return None
+
+
+def _unambiguous_timestamp(when: datetime) -> Optional[float]:
+    first = when.replace(fold=0).timestamp()
+    return reset_epoch(first) if first == when.replace(fold=1).timestamp() else None
+
+
+def _absolute_reset(text: str, now: float) -> Optional[float]:
+    text = text.strip().rstrip('.')
+    try:
+        if _ISO_RESET.fullmatch(text):
+            iso = re.sub(r'([+-]\d{2})(\d{2})$', r'\1:\2', text.upper().replace('Z', '+00:00'))
+            return _unambiguous_timestamp(datetime.fromisoformat(iso))
+        match = _MONTH_RESET.fullmatch(text)
+        if not match:
+            return None
+        fields = match.groupdict()
+        month = _MONTHS.get(fields['month'].lower())
+        hour = int(fields['hour'])
+        if month is None or not 1 <= hour <= 12:
+            return None
+        name = fields['zone'] or fields['bare_zone']
+        zone = None
+        if name:
+            if name.upper() in ('UTC', 'GMT', 'Z'):
+                zone = timezone.utc
+            elif name.upper() == 'JST':
+                zone = timezone(timedelta(hours=9))
+            elif re.fullmatch(r'[+-]\d{2}:?\d{2}', name):
+                offset = name.replace(':', '')
+                minutes = int(offset[3:])
+                if minutes >= 60:
+                    return None
+                delta = timedelta(hours=int(offset[1:3]), minutes=minutes)
+                zone = timezone(delta if offset[0] == '+' else -delta)
+            elif '/' in name:
+                zone = ZoneInfo(name)
+            else:
+                return None
+        year = datetime.fromtimestamp(now, zone).year
+        when = datetime(int(fields['year'] or year), month, int(fields['day']),
+                        hour % 12 + (12 if fields['ampm'].lower() == 'pm' else 0),
+                        int(fields['minute'] or 0), tzinfo=zone)
+        epoch = _unambiguous_timestamp(when)
+        if epoch is not None and not fields['year'] and abs(epoch - now) > 183 * 86400:
+            return _unambiguous_timestamp(when.replace(year=year + (1 if epoch < now else -1)))
+        return epoch
+    except (ValueError, OverflowError, OSError, ZoneInfoNotFoundError):
         return None
+
+
+def _retry_after(value, now: float) -> Optional[float]:
+    if (delay := reset_delay(value)) is not None:
+        return reset_epoch(now + delay)
+    if isinstance(value, str):
+        try:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is not None:
+                return reset_epoch(when.timestamp())
+        except (ValueError, OverflowError, OSError):
+            pass
+    return None
+
+
+def _structured_reset(row: dict, now: float) -> Optional[float]:
+    for key, value in row.items():
+        name = key.lower().replace('_', '').replace('-', '')
+        if name == 'retryafter':
+            epoch = _retry_after(value, now)
+        elif name in ('retrydelay', 'retryafterseconds', 'retrydelayseconds'):
+            delay = reset_delay(value)
+            epoch = reset_epoch(now + delay) if delay is not None else None
+        elif name in ('resetsat', 'resetat', 'resettime', 'ratelimitreset'):
+            epoch = reset_epoch(value) or (_absolute_reset(value, now) if isinstance(value, str) else None)
+        elif name in ('error', 'details', 'headers'):
+            rows = value if isinstance(value, list) else [value]
+            epoch = next((candidate for child in rows if isinstance(child, dict)
+                          and (candidate := _structured_reset(child, now)) is not None), None)
+        else:
+            continue
+        if epoch is not None:
+            return epoch
+    return None
+
+
+def _text_reset(hint: str, now: float) -> Optional[float]:
+    if (header := _RETRY_AFTER.fullmatch(hint)):
+        return _retry_after(header[1].rstrip('.'), now)
+    cue = _RESET_CUE.match(hint)
+    if not cue:
+        return None
+    value = hint[cue.end():].lstrip(' :').rstrip('.')
+    if cue[0].lower().endswith(' in') or value.lower().startswith('in '):
+        if value.lower().startswith('in '):
+            value = value[3:]
+        parts = list(_DURATION_PART.finditer(value))
+        if parts and not _DURATION_PART.sub('', value).strip():
+            units = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
+            order = [units[part[2][0].lower()] for part in parts]
+            if all(a > b for a, b in zip(order, order[1:])):
+                return reset_epoch(now + sum(float(part[1]) * unit for part, unit in zip(parts, order)))
+        return None
+    return _absolute_reset(value, now)
+
+
+def _agy_result(rows) -> Optional[dict]:
+    return next((row['result'] for row in reversed(rows)
+                 if row.get('event') == 'result' and isinstance(row.get('result'), dict)), None)
+
+
+def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '', *,
+                                vendor: Optional[str] = None, agy_result: Optional[dict] = None) -> Optional[dict]:
+    """Classify only explicit provider quota/rate-limit failures; other CLI errors stay billable."""
+    if returncode < 0 or (returncode == 0 and vendor != 'gemini'):
+        return None
+    now = time.time()
     reset_sources = []
     strong_message = re.compile(
         r'(?i)(?:\bHTTP\s*/?\d*(?:\.\d+)?\s*429\b|\b429\s+(?:too many requests|rate limit)\b|'
@@ -427,29 +603,39 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
         r"\byou(?:['\u2019]| ha)?ve hit (?:your )?(?:(?:usage|weekly|daily|monthly|session|opus|sonnet|\d+-hour|five-hour|"
         r"seven-day|7-day) )?limit\b|\binsufficient_quota\b)"
     )
-    confirmed = bool(strong_message.search(stderr))
-    if confirmed:
-        reset_sources.append(stderr)
-    known_codes = {'rate_limit', 'rate_limit_error', 'rate_limit_exceeded',
-                   'insufficient_quota', 'usage_limit_exceeded', 'quota_exceeded'}
-    epoch_hint, last_window = None, None
+    rows = []
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(event, dict):
-            continue
+        if isinstance(event, dict):
+            rows.append(event)
+    if vendor == 'gemini':
+        terminal = (_agy_result(rows) or {}) if agy_result is None else agy_result
+        if not terminal and returncode > 0:
+            vendor = None   # agy can fail before emitting a result
+        elif terminal.get('status') != 'ERROR' or terminal.get('denied_actions'):
+            return None
+        else:
+            rows = [terminal]
+    confirmed = vendor != 'gemini' and bool(strong_message.search(stderr))
+    if confirmed:
+        reset_sources.append(stderr)
+    known_codes = {'429', 'rate_limit', 'rate_limit_error', 'rate_limit_exceeded',
+                   'insufficient_quota', 'usage_limit_exceeded', 'quota_exceeded'}
+    epoch_hint, epoch, last_window = None, None, None
+    structured, claude_sources = [], []
+    for event in rows:
         info = event.get('rate_limit_info')   # RL-WEEKLY: Claude stream-json announces its limit window state
         if event.get('type') == 'rate_limit_event' and isinstance(info, dict):
             last_window = info   # only the LAST event counts: a later allowed/allowed_warning cancels an earlier rejection
             continue
         if event.get('is_api_error_message') is True and str(event.get('error', '')).strip().lower() in known_codes:
-            confirmed = True   # the synthetic assistant message that carries the limit text
             content = (event.get('message') or {}).get('content') if isinstance(event.get('message'), dict) else None
-            reset_sources += [str(part.get('text', '')) for part in content or [] if isinstance(part, dict)]
+            claude_sources.append((event, [str(part.get('text', '')) for part in content or [] if isinstance(part, dict)]))
             continue
-        is_error = event.get('type') in ('error', 'turn.failed') or event.get('is_error') is True
+        is_error = vendor == 'gemini' or event.get('type') in ('error', 'turn.failed') or event.get('is_error') is True
         if not is_error:
             continue
         error = event.get('error')
@@ -459,38 +645,57 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '') 
         if isinstance(error, dict) and error.get('type') not in (None, ''):
             codes.add(str(error['type']).strip().lower())
         statuses = [obj.get(key) for obj in objects for key in ('status', 'status_code', 'http_status', 'api_error_status')]
-        message = error.get('message', '') if isinstance(error, dict) else event.get('message', '') or event.get('result', '')
+        message = (error.get('message', '') if isinstance(error, dict) else error if isinstance(error, str)
+                   else event.get('message', '') or event.get('result', ''))
         message = str(message)
-        if (codes & known_codes or any(str(value) == '429' for value in statuses)
+        agy_quota = vendor == 'gemini' and (
+            '429' in codes or any(str(value).upper() == 'RESOURCE_EXHAUSTED' for value in [*codes, *statuses])
+            or re.search(r'(?:^|[\[(:])\s*429\b|\bRESOURCE_EXHAUSTED\b|\bHTTP\s+429\b', message, re.I))
+        if (agy_quota or codes & known_codes or any(str(value) == '429' for value in statuses)
                 or (not codes and strong_message.search(message))):
-            confirmed = True
-            reset_sources += [message, json.dumps(event, ensure_ascii=False)]   # the plain text first, for a clean hint
-    if (last_window and last_window.get('status') == 'rejected' and last_window.get('isUsingOverage') is not True
-            and last_window.get('overageStatus') not in ('allowed', 'allowed_warning')):   # gate B1: overage keeps running
+            if event.get('type') == 'result':
+                claude_sources.append((event, [message]))
+            else:
+                confirmed = True
+                structured.append(event)
+                reset_sources.append(message)
+    rejected = (last_window and last_window.get('status') == 'rejected' and last_window.get('isUsingOverage') is not True
+                and last_window.get('overageStatus') not in ('allowed', 'allowed_warning'))
+    if last_window is None or rejected:
+        confirmed |= bool(claude_sources)
+        for event, messages in claude_sources:
+            structured.append(event)
+            reset_sources.extend(messages)
+    if rejected:
         confirmed = True
-        if isinstance(last_window.get('resetsAt'), (int, float)) and last_window['resetsAt'] > 0:
-            epoch_hint = ('resets at ' + time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(last_window['resetsAt'])) +
+        structured.insert(0, last_window)
+        if (epoch := reset_epoch(last_window.get('resetsAt'))) is not None:
+            epoch_hint = ('resets at ' + time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(epoch)) +
                           f" ({last_window.get('rateLimitType') or 'limit'} window)")
     if not confirmed:
         return None
-    reset_hint = epoch_hint   # an exact resetsAt beats a parsed phrase
-    reset_cues = ('try again at', 'try again in', 'reset at', 'resets at', 'resets ', 'reset time',
-                  'available again at', 'available at', 'retry after', 'retry-after', 'retry_after')
+    epoch = epoch or next((parsed for event in structured if (parsed := _structured_reset(event, now)) is not None), None)
+    reset_hint = epoch_hint
     fallback_hint = None
-    for source in ([] if reset_hint else reset_sources):
+    text_epoch = header_epoch = None
+    for source in ([] if epoch_hint else [*reset_sources, stderr]):
         for line in source.splitlines():
             lowered = line.lower()
             if fallback_hint is None and 'try again later' in lowered:
                 start = lowered.find('try again later')
                 fallback_hint = line[start:start + 240].strip()
-            positions = [lowered.find(cue) for cue in reset_cues if lowered.find(cue) >= 0]
-            if positions:
-                start = min(positions)
-                reset_hint = line[start:start + 240].strip()
-                break
-        if reset_hint:
-            break
-    return {'kind': 'rate_limited', 'reset_hint': reset_hint or fallback_hint}
+            if cue := _RESET_CUE.search(line):
+                hint = line[cue.start():cue.start() + 240].strip()
+                reset_hint = reset_hint or hint
+                if _RETRY_AFTER.fullmatch(hint):
+                    header_epoch = header_epoch or _text_reset(hint, now)
+                else:
+                    text_epoch = text_epoch or _text_reset(hint, now)
+    epoch = epoch or header_epoch or text_epoch
+    if reset_hint is None and epoch is not None:
+        reset_hint = 'resets at ' + datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    return {'kind': 'rate_limited', 'reset_hint': reset_hint or fallback_hint,
+            **({'reset_at': epoch} if epoch is not None else {})}
 
 
 def _global_file_snapshot(path: Path, parser=None) -> dict:
@@ -1500,8 +1705,8 @@ def detach(raw_argv: list, run_dir: str) -> int:
     try:
         code = main(argv)
     except DetachStop:
-        print('STOPPED: `stop` ended this detached command; a turn it interrupted stays active: check its process group, then '
-              'resume --retry-uncertain or abort')
+        print('STOPPED: `stop` ended this detached command; use resume to continue a quota wait. If a turn was interrupted, '
+              'check its process group, then resume --retry-uncertain or abort')
         code = 130
     except BaseException:
         traceback.print_exc()
@@ -2741,6 +2946,7 @@ class Coordinator:
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
+        resolve_max_rate_limit_wait(self.args.max_rate_limit_wait)
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding='utf-8'))
             # test_a_filter_driver_name_git_cannot_pass_safely_fails_closed: validate git config on load.
@@ -2769,6 +2975,11 @@ class Coordinator:
                         self.state.get('item_blockers_complete') != spec.get('item_blockers_complete')):
                     raise ValueError('saved successor item identity or blockers differ')
             self._review_only_args(self.state['config'])
+            saved_wait = resolve_max_rate_limit_wait(self.state['config'].get(
+                'max_rate_limit_wait', DEFAULT_MAX_RATE_LIMIT_WAIT))
+            if self.args.max_rate_limit_wait_explicit and self.args.max_rate_limit_wait != saved_wait:
+                raise ValueError('resume configuration differs: max_rate_limit_wait')
+            self.args.max_rate_limit_wait = saved_wait
             if self.args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
                 if Path(self.state['workspace']) != self.workspace or Path(self.state['workitem']) != self.workitem:
                     raise ValueError('accept/reject workspace/workitem differs from state')
@@ -3017,7 +3228,7 @@ class Coordinator:
         keys = ('author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
                 'reviewer_model', 'reviewer_effort', 'shadow', 'adversarial_gate',
                 'gate_vendor', 'gate_vendor_source', 'gate_model', 'gate_effort', 'max_plan_rounds', 'max_exec_rounds',
-                'timeout', 'exec_turn_timeout', 'max_invocations', 'exercise_revisions', 'test_command',
+                'timeout', 'exec_turn_timeout', 'max_rate_limit_wait', 'max_invocations', 'exercise_revisions', 'test_command',
                 'gate_prompt', 'reviewer_command', 'codex_bin', 'claude_bin',
                 'author_subagents', 'lifecycle_mode', 'docs_file', 'docs_allowlist',
                 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
@@ -4055,6 +4266,8 @@ class Coordinator:
             self.state['uncertain_active'] = self.state['active']
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
+        self.state.pop('rate_limit_wait', None)
+        self._reconcile_polish_reservation()
         last = next((row for row in reversed(self.state.get('turns', [])) if row.get('error_kind') == 'rate_limited'), {})
         if rate_limited and last:   # ratelimit: the drive passes it for a RateLimitedTurn only
             self.state['hold_kind'] = 'rate_limited'
@@ -4215,6 +4428,8 @@ class Coordinator:
                 self.state['review_only']['history_mirror'] = str(history)
         self.state.update(status='ABORTED', abort_kind='scope-change',
                           successor_spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest())
+        self.state.pop('rate_limit_wait', None)
+        self._reconcile_polish_reservation()
         self.save(); self.write_comparison(); self.write_open_findings(); self.write_usage()
         self._cleanup_scratch()
         return command()
@@ -6620,6 +6835,50 @@ class Coordinator:
         if failed and not turns and (self.state.get('active') or self.state.get('uncertain_active')):
             opv.void_stale(self, None, atomic_json)
 
+    def _schedule_rate_limit(self, dispatch: dict, rejection: dict, retry: dict) -> None:
+        now = time.time()
+        waited = self.state.get('rate_limit_wait_used', 0)
+        budget = self.args.max_rate_limit_wait
+        count = (self.state.get('rate_limit_wait') or {}).get('backoff_count', 0)
+        reset = rejection.get('reset_at') or 0
+        reason = None
+        if budget == 0:
+            reason = 'automatic waiting is disabled (--max-rate-limit-wait 0)'
+        elif reset > now:
+            seconds = reset - now
+        elif count == len(RATE_LIMIT_BACKOFF):
+            reason = 'automatic retry backoff exhausted (30/60/120/240 s)'
+        else:
+            seconds = RATE_LIMIT_BACKOFF[count]
+            count += 1
+        if reason is None and waited + seconds > budget:
+            reason = f'next wait needs {seconds:g} s but only {budget - waited:g} s of the run-wide wait budget remain'
+        if reason:
+            self.progress('quota-wait-exhausted', dispatch=f"{dispatch['phase']} {dispatch['role']}",
+                          rejected_sequence=rejection['sequence'], reason=reason)
+            raise RateLimitedTurn(rejection['error'] + '; ' + reason + '; resume after the quota clears')
+        wait = {'dispatch': dispatch, 'rejected_sequence': rejection['sequence'],
+                'retry_at': datetime.fromtimestamp(now + seconds, timezone.utc).isoformat(),
+                'backoff_count': count, **retry}
+        self.state.update(rate_limit_wait=wait, rate_limit_wait_used=waited + seconds)
+        self.save()
+
+    def _await_rate_limit(self, wait: dict, writer_guard) -> None:
+        rejection = next(row for row in reversed(self.state['turns']) if row['sequence'] == wait['rejected_sequence'])
+        if writer_guard:
+            writer_guard(rejection['error'])
+        detail = {'dispatch': f"{wait['dispatch']['phase']} {wait['dispatch']['role']}",
+                  'rejected_sequence': wait['rejected_sequence'], 'retry_at': wait['retry_at']}
+        remaining = datetime.fromisoformat(wait['retry_at']).timestamp() - time.time()
+        if remaining > 0:
+            self.progress('quota-wait', **detail, seconds=round(remaining, 3))
+            sleep_rate_limit(remaining)
+        if writer_guard:
+            writer_guard(rejection['error'])
+        if issue := self._wi_deadline_issue(record=False):
+            raise RateLimitDeadline(issue)
+        self.progress('quota-retry', **detail)
+
     def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None, evidence_retry: bool = True) -> dict:
@@ -6630,14 +6889,44 @@ class Coordinator:
         if self._role_vendor(role) == 'gemini' and (role, phase) not in GEMINI_ROLE_PHASES:   # WI-GEM B2a, before any provider turn
             raise RuntimeError(f'{role} {phase} turns cannot run gemini (ADR-21 G2, G4); gemini runs the author with its '
                                'lifecycle writers, the reviewer with its stage reviews, the shadow and the EXEC gate')
-        redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
-        transient_retried = False                                        # V327-RETRY: one transient-provider retry per invoke
-        for attempt in range(2):
+        life = self.state.get('lifecycle') or {}
+        request = life.get('pending') or {}
+        reservation = self.state.get('polish_reservation') or {}
+        dispatch = {'next': self.state['next'], 'role': role, 'phase': phase, 'fresh': fresh,
+                    'vendor': self._role_vendor(role), 'request_id': request.get('request_id')}
+        if reservation.get('bucket') == 'specialist_counts':
+            dispatch.update(specialist=reservation['name'], tool_attempt=reservation['tool_attempt'])
+        writer_guard = None
+        if fresh and role == 'author' and phase == request.get('stage') and (base := life.get('writer_git')):
+            label = {'FINISH': 'finisher', 'DOCS': 'docs writer'}.get(phase, f"POLISH-Q {request.get('role')}")
+            writer_guard = lambda cause: self._check_lifecycle_writer_git(phase, base, label, cause)
+        pending = self.state.get('rate_limit_wait') or {}
+        if pending and pending['dispatch'] != dispatch:
+            raise RuntimeError('saved quota retry does not match the pending dispatch; inspect, then resume')
+        redispatched = pending.get('redispatched', False)                 # D-EFF category A: one re-dispatch per invoke
+        transient_retried = pending.get('transient_retried', False)        # V327-RETRY: one transient-provider retry per invoke
+        restored_note = pending.get('restored_note', '')
+        for attempt in range(pending.get('evidence_attempt', 0), 2):
             turn_prompt = prompt if attempt == 0 else (
                 prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
+            if pending:
+                turn_prompt += restored_note
+            else:
+                restored_note = ''
             seq0 = self.state['sequence']
             try:
                 while True:   # a void read-only turn whose change was undone is re-dispatched once, told why
+                    if wait := self.state.get('rate_limit_wait'):
+                        last = self.state['turns'][-1]
+                        if last.get('error_kind') == 'rate_limited' and last['sequence'] > wait['rejected_sequence']:
+                            if writer_guard:
+                                writer_guard(last['error'])
+                            self._schedule_rate_limit(dispatch, last, {
+                                'evidence_attempt': attempt, 'redispatched': redispatched,
+                                'transient_retried': transient_retried, 'restored_note': restored_note})
+                            wait = self.state['rate_limit_wait']
+                        self._await_rate_limit(wait, writer_guard)
+                        pending = {}
                     scratch = self._scratch_root(role)   # b295-f1: a fresh scratch root for each dispatch, re-dispatch included
                     overrides = ({**(env_overrides or {}), **{key: str(scratch) for key in ('TMPDIR', 'TMP', 'TEMP')},
                                   **winplat.role_env_extras()}
@@ -6650,7 +6939,16 @@ class Coordinator:
                             try:
                                 self._stop_turn_group(int(scratch.name.split('-', 1)[0]))
                                 self._drop_scratch(scratch)
-                            except RuntimeError: pass
+                            except RuntimeError as cleanup_error:
+                                if type(exc) is RateLimitedTurn:
+                                    raise RuntimeError(f'{cleanup_error} (the turn failed: {exc})') from cleanup_error
+                        if type(exc) is RateLimitedTurn:
+                            if writer_guard:
+                                writer_guard(exc)
+                            self._schedule_rate_limit(dispatch, self.state['turns'][-1], {
+                                'evidence_attempt': attempt, 'redispatched': redispatched,
+                                'transient_retried': transient_retried, 'restored_note': restored_note})
+                            continue
                         transient = exc.__cause__ if isinstance(exc, RuntimeError) else None
                         if isinstance(transient, TransientProviderError) and transient.retryable and not transient_retried:
                             transient_retried = True   # V327-RETRY: the failed attempt is refunded; its receipt stays
@@ -6664,9 +6962,10 @@ class Coordinator:
                                                             f'restored ({exc})') from exc
                         self._redispatch_budget(phase, exc)
                         redispatched = True
-                        turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
-                                        'answer was discarded and the workspace was restored. Review the current tree again without '
-                                        'creating, editing, staging, committing or deleting anything.')
+                        restored_note = ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
+                                         'answer was discarded and the workspace was restored. Review the current tree again without '
+                                         'creating, editing, staging, committing or deleting anything.')
+                        turn_prompt += restored_note
                         print(f'NOTE: {exc}; re-dispatching the {role} turn once')
                         continue
                     if scratch:   # an uncertain turn's root is dropped on archive or at the next dispatch
@@ -6743,8 +7042,8 @@ class Coordinator:
                           '\nDo not expand the review scope.\n' if self.state.get('review_only') else '\nDo not expand the approved plan.\n')
                        + note_bytes.decode('utf-8'))
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
-        timeout_seconds = (self.args.exec_turn_timeout if role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
-                           else self.args.timeout)
+        exec_author = role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
+        timeout_seconds = self.args.exec_turn_timeout if exec_author else self.args.timeout
         # Expand the shared rule only at dispatch, before scanning and recording the actual prompt.
         command_maximum = command_timeout_ms(timeout_seconds)
         command_rule = LONG_COMMAND_RULE.replace(
@@ -6769,7 +7068,8 @@ class Coordinator:
             limit = min(limit, self._report_budget())
         if self.state['invocations_used'] >= limit:
             raise RuntimeError('invocation limit reached' + (f' (report budget {limit})' if self.state['config'].get('review_report') else ''))
-        if issue := self._wi_deadline_issue(): raise RuntimeError(issue)
+        if issue := self._wi_deadline_issue():
+            raise (RateLimitDeadline if self.state.get('rate_limit_wait') else RuntimeError)(issue)
         self.state['sequence'] += 1
         seq = self.state['sequence']
         prefix = self.evidence / f'{seq:03d}-{phase.lower()}-{role}'
@@ -7040,23 +7340,34 @@ class Coordinator:
                     receipt['global_config_warning'] = warning
                     print('WARNING: ' + warning)
             completion_exit = receipt.get('exit_after_completion', {})
-            if process.returncode and not (completion_exit.get('killed') and
-                                           completion_exit.get('terminal_type') in ('turn.completed', 'result')):
-                error_text = read_text_tail(stderr_path)
-                output_text = read_text_tail(stdout_path)
-                limit = (None if process.returncode <= 0 or receipt.get('timed_out', False) else
-                         classify_rate_limit_failure(process.returncode, error_text, output_text))
+            cli_failed = process.returncode and not (completion_exit.get('killed') and
+                                                       completion_exit.get('terminal_type') in ('turn.completed', 'result'))
+            terminal = ((_agy_result(read_json_lines(stdout_path)) or {}) if receipt['vendor'] == 'gemini'
+                        and not receipt.get('timed_out') else {})
+            if cli_failed or terminal.get('status') == 'ERROR':
+                error_text, output_text = read_text_tail(stderr_path), read_text_tail(stdout_path)
+                limit = (None if (cli_failed and process.returncode < 0) or receipt.get('timed_out') else
+                         classify_rate_limit_failure(process.returncode if cli_failed else 0, error_text, output_text,
+                                                     vendor=receipt['vendor'], agy_result=terminal))
                 if limit:
                     self.state['invocations_used'] -= 1
                     receipt['invocation_budget_counted'] = False
                     receipt['error_kind'] = limit['kind']
                     receipt['reset_hint'] = limit['reset_hint']
+                    if 'reset_at' in limit:
+                        receipt['reset_at'] = limit['reset_at']
                     reset = limit['reset_hint'] or 'reset time unavailable'
                     raise RateLimitError('rate_limited: provider rejected the call; it did not consume the invocation budget; '
                                          + reset)
+            if cli_failed or receipt.get('timed_out'):
                 failure_prefix = f'CLI exit {process.returncode}'
                 if receipt.get('timed_out'):
-                    raise ValueError(failure_prefix + f' (timed out after {timeout_seconds:g} s)')
+                    message = failure_prefix + f' (timed out after {timeout_seconds:g} s)'
+                    if exec_author:
+                        message += (f'; resume --exec-turn-timeout {MAX_EXEC_TURN_TIMEOUT_SECONDS}'
+                                    if timeout_seconds < MAX_EXEC_TURN_TIMEOUT_SECONDS else
+                                    '; this is the maximum EXEC/FINISH/DOCS author timeout')
+                    raise ValueError(message)
                 message = cli_failure_reason(failure_prefix, output_text, error_text)
                 if receipt['vendor'] == 'codex' and CODEX_UNAUTHORIZED_RE.search(message + '\n' + error_text):   # V327-RETRY: no retry
                     raise ValueError(message + f"; the Codex login in {env['CODEX_HOME']} is missing or stale: refresh that home's "
@@ -7069,6 +7380,8 @@ class Coordinator:
                         receipt['error_kind'] = 'transient'
                     raise TransientProviderError(message + TRANSIENT_HOLD_HINT, message.partition(': ')[2], retryable)
                 raise ValueError(message)
+            if terminal.get('status') == 'ERROR':
+                _check_agy_result(terminal, output_text, error_text)
             answer, session, usage, requests, observed_commands, tool_calls = self._collect(receipt['vendor'], stdout_path, stderr_path)
             reported_model, model_source = reported_provider_model(receipt['vendor'], stdout_path)
             receipt['reported_model'] = reported_model
@@ -7148,14 +7461,17 @@ class Coordinator:
             self.state['turns'].append(receipt)
             self.state['last_end'][role] = receipt['end']
             self.state['active'] = None
+            quota_only = receipt.get('error_kind') == 'rate_limited' and voided is None
+            if not quota_only:
+                self.state.pop('rate_limit_wait', None)
             self.save()
-            raise (RateLimitedTurn if receipt.get('error_kind') == 'rate_limited' and voided is None else RuntimeError)(
-                receipt['error']) from exc
+            raise (RateLimitedTurn if quota_only else RuntimeError)(receipt['error']) from exc
         receipt['answer'] = answer
         atomic_json(prefix.with_suffix('.receipt.json'), receipt)
         self.state['turns'].append(receipt)
         self.state['last_end'][role] = receipt['end']
         self.state['active'] = None
+        self.state.pop('rate_limit_wait', None)
         if role == 'reviewer' and phase in ('PLAN', 'EXEC'):
             self.state['pending_reviewer_result_sequence'] = seq
         if operator_note and answer.get('status') == 'READY':
@@ -7302,6 +7618,15 @@ class Coordinator:
                      and not turn.get('discarded') and turn.get('sequence', 0) > base['sequence']
                      and isinstance(turn.get('answer'), dict)), None) if base else None
 
+    def _check_lifecycle_writer_git(self, phase: str, base: dict, label: str, cause=None) -> None:
+        if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
+            for turn in self.state['turns']:
+                if turn.get('phase') == phase and turn.get('sequence', 0) > base['sequence']:
+                    turn.setdefault('discarded', 'git guard')
+            self.save()
+            raise WriterGitGuard(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort'
+                                 + (f' (the turn failed: {cause})' if cause else ''))
+
     def _lifecycle_writer(self, request: dict, label: str, prompt) -> dict:
         """A fresh author session in the live worktree that must leave HEAD, its branch and the index unchanged
         (D8). The git baseline is persisted per attempt; a recorded turn since it is reused, never re-dispatched."""
@@ -7313,20 +7638,16 @@ class Coordinator:
         base = self.state['lifecycle'].get('writer_git')
         if not base:
             raise RuntimeError(f'{phase} request is in flight without a recorded git baseline; inspect, then abort')
-        def check_git(cause=None):   # a violation discards every turn of this stage since the baseline: none is ever reused
-            if self._writer_git_state() != {key: base[key] for key in ('head', 'branch', 'index')}:
-                for turn in self.state['turns']:
-                    if turn.get('phase') == phase and turn.get('sequence', 0) > base['sequence']:
-                        turn.setdefault('discarded', 'git guard')
-                self.save()
-                raise WriterGitGuard(f'{label} changed HEAD, refs or the index; restore the recorded baseline or abort'
-                                     + (f' (the turn failed: {cause})' if cause else ''))
+        def check_git(cause=None):
+            self._check_lifecycle_writer_git(phase, base, label, cause)
         check_git()   # also after a crash, an uncertain turn or a HOLD: the baseline is the persisted one
         recorded = self._recorded_lifecycle_writer(request)
         try:
             result = ({'answer': recorded['answer'], 'snapshot': recorded['snapshot_after'], 'sequence': recorded['sequence'],
                        'role': 'author'} if recorded else
                       self.invoke('author', phase, prompt(), author_schema(), fresh=True))
+        except WriterGitGuard:
+            raise
         except RuntimeError as exc:   # INT-2b: D-EFF's author HEAD guard (or any failure) first: the W writer guard still names a git
             check_git(exc)            # change, with the original error, and discards the turn; otherwise the original error stands
             raise
@@ -8416,27 +8737,17 @@ class Coordinator:
                         life.get('polish_calls', 0) + 1 > self._worktree_run_cap('POLISH-Q')):
                     state = 'exhausted'
                     break
-                counts[writer] = counts.get(writer, 0) + 1
-                life['polish_calls'] = life.get('polish_calls', 0) + 1   # §3: count only a new dispatch
-                leg['attempts'] += 1
-                self.save()
-            before = self.state['sequence']
             try:
-                result = self._lifecycle_writer(request, f'POLISH-Q {writer}', prompt)
-            except (RateLimitedTurn, WriterGitGuard):   # a rate limit and the HEAD/ref/index guard still HOLD
+                if reserved:
+                    with self._reserve_polish_dispatch('writer_counts', writer):
+                        result = self._lifecycle_writer(request, f'POLISH-Q {writer}', prompt)
+                else:
+                    result = self._lifecycle_writer(request, f'POLISH-Q {writer}', prompt)
+            except (RateLimitedTurn, RateLimitDeadline, WriterGitGuard):
                 raise
             except RuntimeError as exc:   # any other failure is a failed attempt
                 self.progress('quality-writer', writer=writer, state='failed attempt', detail=brief_reason(str(exc)))
                 state = 'exhausted'
-            finally:   # reconcile as _specialist_turn: a refunded (rate-limited) or reused launch gives its count back
-                life = self.state['lifecycle']
-                refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
-                               if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
-                if delta := self.state['sequence'] - before - refunded - int(reserved):
-                    life['writer_counts'][writer] += delta
-                    life['polish_calls'] += delta
-                    leg['attempts'] += delta
-                    self.save()
             if state:
                 break
             turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
@@ -8782,7 +9093,44 @@ class Coordinator:
         return sorted({row['owner_role'].split(':', 1)[1] for row in self.blocking_open_findings()
                        if row.get('owner_role', '').startswith('specialist:')})
 
-    def _specialist_budget(self, name: str) -> dict:
+    @contextmanager
+    def _reserve_polish_dispatch(self, bucket: str, name: str, tool_attempt: int = 1):
+        life = self.state['lifecycle']
+        self.state['polish_reservation'] = {'bucket': bucket, 'name': name, 'before': self.state['sequence'],
+                                           'tool_attempt': tool_attempt}
+        counts = life[bucket]
+        counts[name] = counts.get(name, 0) + 1
+        life['polish_calls'] = life.get('polish_calls', 0) + 1
+        if bucket == 'writer_counts':
+            life['writer_leg']['attempts'] += 1
+        self.save()
+        try:
+            yield
+        finally:
+            if self._reconcile_polish_reservation():
+                self.save()
+
+    def _reconcile_polish_reservation(self) -> bool:
+        """Settle an interrupted dispatch from the same receipts used on normal return."""
+        reservation = self.state.pop('polish_reservation', None)
+        if reservation is None:
+            return False
+        bucket, name, before = (reservation[key] for key in ('bucket', 'name', 'before'))
+        life = self.state['lifecycle']
+        sequence = self.state['sequence']
+        if bucket == 'specialist_counts' and self.state['config'].get('review_report'):
+            life.setdefault('specialist_sequences', {}).update(
+                {str(seq): name for seq in range(before + 1, sequence + 1)})
+        refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
+                       if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
+        delta = sequence - before - refunded - 1
+        life[bucket][name] += delta
+        life['polish_calls'] += delta
+        if bucket == 'writer_counts':
+            life['writer_leg']['attempts'] += delta
+        return True
+
+    def _specialist_budget(self, name: str) -> None:
         """Room for two dispatches (invoke may retry) per epoch."""
         life, caps = self.state['lifecycle'], budget_policy.BUDGET_CAPS
         if life.setdefault('counts_epoch', life['epoch']) != life['epoch']:
@@ -8790,7 +9138,6 @@ class Coordinator:
         counts = life.setdefault('specialist_counts', {})
         if life.get('polish_calls', 0) + 2 > self._worktree_run_cap('POLISH-Q') or counts.get(name, 0) + 2 > caps['specialist'][0]:
             raise RuntimeError('POLISH-Q specialist budget exhausted: ' + name)
-        return counts
 
     def _out_of_delta(self, file, delta: list[str]) -> bool:
         """v3.8.1: a finding's file outside the pass's delta; an empty file is in it. The value may name several paths
@@ -8832,24 +9179,12 @@ class Coordinator:
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
                                                        protocol, self._change_noun()) +
                   self._guidance(QUALITY_GUIDANCE) + self._specialist_operator_evidence(tree))
-        for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
-            counts = self._specialist_budget(name)
-            counts[name] = counts.get(name, 0) + 1
-            life['polish_calls'] = life.get('polish_calls', 0) + 1
-            self.save()
-            before = self.state['sequence']
-            try:
+        pending = (self.state.get('rate_limit_wait') or {}).get('dispatch', {})
+        first_attempt = pending.get('tool_attempt', 1) if pending.get('specialist') == name else 1
+        for attempt in range(first_attempt, 3):   # a turn without tool calls is discarded and retried once
+            self._specialist_budget(name)
+            with self._reserve_polish_dispatch('specialist_counts', name, attempt):
                 result = self.invoke('reviewer', 'POLISH-Q', prompt, review_schema(), fresh=True)
-            finally:   # reconcile the reservation: protocol retries add, refused or refunded launches give back
-                if self.state['config'].get('review_report'):   # LG2-b1: every sequence of this dispatch is this specialist's
-                    life.setdefault('specialist_sequences', {}).update(
-                        {str(seq): name for seq in range(before + 1, self.state['sequence'] + 1)})
-                refunded = sum(1 for row in [*self.state['turns'], *self.state.get('spawn_failures', [])]
-                               if row.get('sequence', 0) > before and row.get('invocation_budget_counted') is False)
-                if delta := self.state['sequence'] - before - refunded - 1:
-                    counts[name] += delta
-                    life['polish_calls'] += delta
-                    self.save()
             turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
             if turn.get('snapshot_before') != tree:
                 raise RuntimeError(f'specialist {name} reviewed a tree other than the one under review')
@@ -9742,6 +10077,8 @@ class Coordinator:
         if self.state['active']:
             self.state['uncertain_active'] = self.state['active']
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
+        if self._reconcile_polish_reservation():
+            self.save()
         while self.state['status'] == 'ACTIVE':
             if self.state['config'].get('review_report'):
                 record = self.state.get('review_only') or {}   # no writer: the frozen tree holds before EVERY dispatch
@@ -9820,7 +10157,7 @@ class Coordinator:
             return 'DONE'
         self._settle_saved_gate()   # WI-GATE1: a state an earlier version saved never gates a second time
         self._settle_saved_rounds()   # S3 R2 F5: and its EXEC rounds are counted by R1-R5
-        if not (self.state.get('active') or self.state.get('uncertain_active')):
+        if not (self.state.get('active') or self.state.get('uncertain_active') or self.state.get('rate_limit_wait')):
             self._refuse_past_deadline('resume')   # F2b: before any state change, so the HOLD (and RLO) survives
         past_deadline = self._wi_deadline_issue(record=False)   # with an uncertain turn: settle it below, then HOLD instead of a dispatch
         reason = self.state.get('hold_reason', '')
@@ -9872,10 +10209,11 @@ class Coordinator:
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
-        resume_config_changed = any(self.state['config'][key] != getattr(self.args, key)
-                                    for key in ('timeout', 'exec_turn_timeout', 'max_invocations'))
+        resume_config_changed = any(self.state['config'].get(key) != getattr(self.args, key)
+                                    for key in ('timeout', 'exec_turn_timeout', 'max_invocations', 'max_rate_limit_wait'))
         self.state['config']['timeout'] = self.args.timeout
         self.state['config']['exec_turn_timeout'] = self.args.exec_turn_timeout
+        self.state['config']['max_rate_limit_wait'] = self.args.max_rate_limit_wait
         old_cap = self.state['config']['max_invocations']
         if self.args.max_invocations > old_cap:
             cap_raise = {'old': old_cap, 'new': self.args.max_invocations,
@@ -10127,6 +10465,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
                    help=f'EXEC/FINISH/DOCS author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
                         f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
+    p.set_defaults(max_rate_limit_wait_explicit=False)
+    p.add_argument('--max-rate-limit-wait', type=int, default=DEFAULT_MAX_RATE_LIMIT_WAIT, action=StoreExplicitInteger,
+                   metavar='SECONDS', help=f'run-wide auto-wait budget for quota rejections '
+                   f'(default {DEFAULT_MAX_RATE_LIMIT_WAIT} seconds; 0 holds immediately); fixed at run start')
     p.add_argument('--add-rounds', type=int, choices=range(1, 11), metavar='N', default=None,
                    help='resume only, at a PLAN or EXEC round-limit HOLD: N (1-10) more rounds of that phase; the saved cap stays (L100)')
     p.add_argument('--resume-timeout', type=int, default=None,
@@ -10192,7 +10534,7 @@ CONFIGURABLE_DESTS = {
     'author_vendor', 'author_model', 'author_effort', 'reviewer_vendor',
     'reviewer_model', 'reviewer_effort', 'gate_vendor', 'gate_model', 'gate_effort', 'shadow',
     'allowed_models', 'adversarial_gate', 'polish_round', 'gate_prompt', 'max_plan_rounds',
-    'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'test_command',
+    'max_exec_rounds', 'max_invocations', 'timeout', 'exec_turn_timeout', 'max_rate_limit_wait', 'test_command',
     'reviewer_command', 'codex_bin', 'claude_bin', 'gemini_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_quality_polish', 'auto_commit', 'external_delivery',
     'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
@@ -10242,18 +10584,20 @@ def gemini_stdin(prompt: str) -> bytes:
     return (json.dumps({'event': 'user', 'message': {'content': prompt}}) + '\n').encode()
 
 
-def gemini_turn(rows: list, stdout: str, stderr: str) -> tuple[dict, Optional[str], list[dict]]:
-    """ADR-21 G6, G7: the answer, conversation id and usage of an agy stream-json turn. It succeeds only with status SUCCESS,
-    no denied action and a structured_output (else a non-empty JSON response); otherwise it fails with the reason named."""
-    results = [row['result'] for row in rows if row.get('event') == 'result' and isinstance(row.get('result'), dict)]
-    if not results:
+def _check_agy_result(result: Optional[dict], stdout: str, stderr: str) -> None:
+    if result is None:
         raise ValueError(cli_failure_reason('agy emitted no result', stdout, stderr))
-    result = results[-1]
     if denied := result.get('denied_actions'):   # a denial ends the agy turn with SUCCESS and an empty response
         names = ', '.join(str(row.get('action', row)) if isinstance(row, dict) else str(row) for row in denied)
         raise ValueError(f'agy denied {names}; a denied permission ends the turn (ADR-21 G6)')
     if result.get('status') != 'SUCCESS':
         raise ValueError(cli_failure_reason(f"agy turn status {result.get('status')}", stdout, stderr))
+
+
+def gemini_turn(rows: list, stdout: str, stderr: str) -> tuple[dict, Optional[str], list[dict]]:
+    """ADR-21 G6, G7: the answer, conversation id and usage of an agy stream-json turn."""
+    result = _agy_result(rows)
+    _check_agy_result(result, stdout, stderr)
     answer = result.get('structured_output')
     if not isinstance(answer, dict):
         response = result.get('response')
@@ -10579,8 +10923,13 @@ def status_brief(run_dir: Path, count: int) -> int:
         try: print(progress_line(json.loads(line))); shown += 1
         except (ValueError, KeyError, TypeError): continue
     if not shown: print('no progress events yet')
-    try: written = json.loads((run_dir / 'state.json').read_text(encoding='utf-8')).get('ignored_config_written')
-    except (OSError, ValueError, AttributeError): written = None
+    try: state = json.loads((run_dir / 'state.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError): state = {}
+    if not isinstance(state, dict): state = {}
+    wait = state.get('rate_limit_wait')
+    if isinstance(wait, dict) and wait.get('retry_at'):
+        print(f"Quota retry pending at {wait['retry_at']} (after turn {wait.get('rejected_sequence', '?')})")
+    written = state.get('ignored_config_written')
     if written:   # F3
         print('WARNING: ignored executable-config files written by the author: ' + ', '.join(written))
     return 0
@@ -10726,6 +11075,9 @@ def main(argv=None) -> int:
         return 2
     if not 1 <= args.timeout <= MAX_TIMEOUT_SECONDS:   # timeoutcap: before any lease, run dir or detached child
         print('REFUSED: ' + TIMEOUT_RANGE_ERROR)
+        return 2
+    if args.max_rate_limit_wait < 0:
+        print('REFUSED: ' + RATE_LIMIT_WAIT_ERROR)
         return 2
     args.test_command_given = bool(args.no_test_command) or any(   # v3.7.2: resume without it uses the saved command
         a == '--test-command' or a.startswith('--test-command=') for a in raw_argv)

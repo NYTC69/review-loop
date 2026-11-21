@@ -5,6 +5,7 @@ import json
 import os
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +19,8 @@ CODEX_LIMIT = ('You\u2019ve hit your usage limit. Visit https://chatgpt.com/code
                'or try again at Oct 18th, 2026 12:57 PM.')   # V315: what codex-cli 0.160.0 printed, U+2019 included
 CODEX_EVENTS = ('{"type":"error","message":"%s"}' % CODEX_LIMIT, '{"type":"turn.failed","error":{"message":"%s"}}' % CODEX_LIMIT)
 CODEX_STDERR = 'ERROR codex_core::session: failed to record rollout items: thread 0199f3a1 not found\n'   # unrelated
-CODEX_LIMITED = {'kind': 'rate_limited', 'reset_hint': 'try again at Oct 18th, 2026 12:57 PM.'}
+CODEX_LIMITED = {'kind': 'rate_limited', 'reset_hint': 'try again at Oct 18th, 2026 12:57 PM.',
+                 'reset_at': datetime.fromisoformat('2026-10-18T12:57:00+09:00').timestamp()}
 
 
 class ClassifierTests(unittest.TestCase):
@@ -28,16 +30,22 @@ class ClassifierTests(unittest.TestCase):
         tz.start()
         time.tzset()
         self.addCleanup(lambda: (tz.stop(), time.tzset()))
+        self.now = datetime.fromisoformat('2026-10-09T12:00:00+00:00').timestamp()
+        clock = patch.object(rc.time, 'time', side_effect=lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def test_the_real_weekly_limit_tail_is_rate_limited_with_the_exact_reset(self):
         self.assertEqual(rc.classify_rate_limit_failure(1, '', '\n'.join(self.lines)),
-                         {'kind': 'rate_limited', 'reset_hint': 'resets at 2026-10-10 15:00 JST (seven_day window)'})
+                         {'kind': 'rate_limited', 'reset_hint': 'resets at 2026-10-10 15:00 JST (seven_day window)',
+                          'reset_at': 1791612000})
 
     def test_each_signal_alone_is_enough(self):
         for line in self.lines[1:]:   # the assistant error message, then the result event
             with self.subTest(type=json.loads(line)['type']):
                 self.assertEqual(rc.classify_rate_limit_failure(1, '', line),
-                                 {'kind': 'rate_limited', 'reset_hint': 'resets Oct 10 at 3pm (Asia/Tokyo)'})
+                                 {'kind': 'rate_limited', 'reset_hint': 'resets Oct 10 at 3pm (Asia/Tokyo)',
+                                  'reset_at': 1791612000})
         self.assertEqual(rc.classify_rate_limit_failure(1, '', self.lines[0])['kind'], 'rate_limited')
 
     def test_limit_wordings(self):
@@ -76,13 +84,16 @@ class ClassifierTests(unittest.TestCase):
                 self.assertIsNone(rc.classify_rate_limit_failure(1, message + '\n'))
                 self.assertIsNone(rc.classify_rate_limit_failure(1, '', json.dumps({'type': 'error', 'message': message})))
 
-    def test_try_again_in_and_try_again_later_are_reset_hints(self):   # V316 (v3.1.5 gate note): the hint only
+    def test_try_again_in_and_try_again_later_are_reset_hints(self):
         for hint in ('Try again in 3 days 2 hours 5 minutes.', 'Try again later.'):
             message = 'You’ve hit your usage limit. ' + hint
             for case, (stderr, stdout) in {'stderr': (message + '\n', ''),
                                            'event': ('', json.dumps({'type': 'error', 'message': message}))}.items():
                 with self.subTest(hint=hint, case=case):
-                    self.assertEqual(rc.classify_rate_limit_failure(1, stderr, stdout), {'kind': 'rate_limited', 'reset_hint': hint})
+                    expected = {'kind': 'rate_limited', 'reset_hint': hint}
+                    if hint.startswith('Try again in'):
+                        expected['reset_at'] = self.now + 266700
+                    self.assertEqual(rc.classify_rate_limit_failure(1, stderr, stdout), expected)
         for message in ('The tool crashed; try again later.', 'Network error. Try again in 5 minutes.'):   # a cue is not a limit
             with self.subTest(message=message):
                 self.assertIsNone(rc.classify_rate_limit_failure(1, message + '\n'))
@@ -96,8 +107,10 @@ class ClassifierTests(unittest.TestCase):
                                    ('', json.dumps({'type': 'error', 'message': generic + '\n' + hint})),
                                    (generic, event)):
                 with self.subTest(hint=hint, stderr=stderr):
-                    self.assertEqual(rc.classify_rate_limit_failure(1, stderr, stdout),
-                                     {'kind': 'rate_limited', 'reset_hint': hint})
+                    expected = {'kind': 'rate_limited', 'reset_hint': hint}
+                    if '120' in hint:
+                        expected['reset_at'] = self.now + 120
+                    self.assertEqual(rc.classify_rate_limit_failure(1, stderr, stdout), expected)
         self.assertEqual(rc.classify_rate_limit_failure(1, generic)['reset_hint'], 'Try again later.')
 
     def test_ordinary_errors_stay_billable(self):
@@ -120,6 +133,46 @@ class ClassifierTests(unittest.TestCase):
         rejected_last = [event(status='allowed'), event(status='rejected', isUsingOverage=False, resetsAt=1791612000)]
         self.assertEqual(rc.classify_rate_limit_failure(1, '', '\n'.join([*rejected_last, ordinary]))['kind'], 'rate_limited')
 
+    def test_provider_reset_values(self):
+        for hint, epoch in (
+            ('Try again in 2h 3m 4s.', self.now + 7384),
+            ('resets in 5 minutes', self.now + 300),
+            ('available again at 2026-10-09T12:09:00Z.', self.now + 540),
+            ('resets at 2026-10-09T21:09:00+0900', self.now + 540),
+            ('Retry-After: Fri, 09 Oct 2026 12:10:00 GMT', self.now + 600),
+            ('resets Oct 9 at 8pm (Asia/Tokyo)', self.now - 3600),
+            ('try again at Oct 9th 10:00 PM', self.now + 3600),
+            ('resets at 5pm', None),
+            ('try again at Oct 9th 10:00 PM (CST)', None),
+            ('resets at 2026-52-99T00:00:00Z', None),
+            ('resets at 2026-10-09T12:09:00+05:60', None),
+            ('try again in 2m 3m', None),
+        ):
+            with self.subTest(hint=hint):
+                limit = rc.classify_rate_limit_failure(1, 'HTTP 429 Too Many Requests\n' + hint)
+                self.assertEqual(limit.get('reset_at'), epoch)
+                self.assertEqual(limit['reset_hint'], hint)
+        event = lambda **error: json.dumps({'type': 'error', 'error': {'code': 'quota_exceeded', **error}})
+        self.assertEqual(rc.classify_rate_limit_failure(1, '', event(
+            retry_delay={'seconds': 20, 'nanos': 500_000_000}, message='try again in 60 seconds'))['reset_at'],
+            self.now + 20.5)
+        self.assertEqual(rc.classify_rate_limit_failure(1, '', event(
+            resetsAt='2026-10-09T12:00:30+00:00'))['reset_at'], self.now + 30)
+        window = json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {
+            'status': 'rejected', 'resetsAt': 'invalid', 'retry_after': 15}})
+        self.assertEqual(rc.classify_rate_limit_failure(1, '', window)['reset_at'], self.now + 15)
+        self.assertIsNone(rc.classify_rate_limit_failure(1, 'unauthorized\nRetry-After: 900',
+                                                        json.dumps({'event': 'note', 'retryDelay': '2s'})))
+        self.now = datetime.fromisoformat('2026-12-31T14:50:00+00:00').timestamp()
+        self.assertEqual(rc.classify_rate_limit_failure(1, "You've hit your usage limit. Try again at Jan 1 at 12am.")[
+            'reset_at'], self.now + 600)
+        self.now = datetime.fromisoformat('2026-12-31T15:10:00+00:00').timestamp()
+        self.assertEqual(rc.classify_rate_limit_failure(1, "You've hit your usage limit. Try again at Dec 31 at 11:59pm.")[
+            'reset_at'], self.now - 660)
+        for status in ('allowed', 'allowed_warning'):
+            tail = '\n'.join([*self.lines, json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': status}})])
+            self.assertIsNone(rc.classify_rate_limit_failure(1, '', tail))
+
 
 class WeeklyLimitTurnTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in HELPERS})
@@ -138,7 +191,8 @@ class WeeklyLimitTurnTests(unittest.TestCase):
         self.assertEqual(json.loads(co.state_path.read_text())['invocations_used'], 0)
 
     def test_a_codex_author_turn_that_hits_the_usage_limit_holds_as_rate_limited(self):   # V315
-        held = self.run_coordinator('--max-invocations', '1', env={'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_CODEX_USAGE': '1'})
+        held = self.run_coordinator('--max-invocations', '1', '--max-rate-limit-wait', '0',
+                                    env={'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_CODEX_USAGE': '1'})
         self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual((state['status'], state.get('hold_kind')), ('HOLD', 'rate_limited'), state['hold_reason'])

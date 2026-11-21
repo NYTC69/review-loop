@@ -1,5 +1,20 @@
 # Changelog
 
+### Unreleased (WI-TURNFAIL)
+
+**改动**
+
+- Codex、Claude 和 Gemini 的明确配额拒绝会保留回执、退回调用额度，并在预算内重试同一个回合。能解析的重置时间写入回执。优先等到重置，重置时间不可用时按 30、60、120、240 秒退避，耗尽后进入带原因的 `rate_limited` HOLD。
+- `--max-rate-limit-wait` / `max_rate_limit_wait` 是整个 run 的累计等待预算，默认 21600 秒，设为 0 则立即 HOLD。等待时 `status --brief` 显示 UTC 重试时间；`stop` 或 Ctrl-C 中断后可用普通 `resume` 继续，已安排的等待只计费一次。
+- EXEC、FINISH 和 DOCS 的作者超时时，HOLD 写明实际使用的秒数。低于上限时提示 `resume --exec-turn-timeout 14400`，到达上限时说明这是最大值。
+
+**按意图更新的测试断言**
+
+- `test_ratelimit` 的各角色和阶段用例改为断言默认自动重试后完成，并与基线核对成功回合和计数。
+- `test_rl_weekly` 的精确回执断言增加可解析的 `reset_at`，保留原有的显示提示断言。
+- `test_progress` 在被拒绝的派发结束事件之后增加等待耗尽事件的断言。
+- `test_ratelimit`、`test_rl_weekly`、`test_real_coordinator`、`test_gate_once`、`test_d09_c1b1`、`test_progress` 和 `test_readonly_scratch` 中专门检查 HOLD 的用例显式选择 0 秒预算。
+
 ### v3.10.0：gemini（Antigravity CLI `agy`）可以当作者
 
 Yuan 2026-11-19 解除 ADR-21 的 G2 限制，2026-11-21 定为 v3.10.0，在 v3.9.0 之后发布，用来在真实项目的小 work item 上试用 gemini 作者。

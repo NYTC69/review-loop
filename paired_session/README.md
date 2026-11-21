@@ -41,9 +41,10 @@ modifying the product workspace, so an operator can abort a stale run while a
 different run holds the workspace lease. Fresh-shadow CRITICALs enter the
 findings ledger and follow the author repair path even when the persistent
 reviewer approves.
-Explicit subscription/rate-limit rejections are held with any reported reset
-hint and do not consume the invocation budget; their failed attempts remain in
-the turn receipt.
+Explicit subscription or quota rejections from Codex, Claude or Gemini retry the
+same turn within the run-wide wait budget. Every rejection retains its own
+receipt and refunds the invocation. Receipts keep the provider's reset hint and
+include a numeric reset timestamp when it can be parsed.
 A turn that fails at once with a transient provider error ("Selected model is
 at capacity", Anthropic's overloaded error) before any tool call is retried
 once after 60 seconds without consuming the budget; a second such failure holds
@@ -558,9 +559,16 @@ Two HOLDs apply in both safety modes: a reviewer, gate or shadow turn that
 changes the workspace is void (the workspace is restored and the turn
 re-dispatched once; a second change or a failed restore holds), and an author
 turn that changes HEAD or the branch holds.
-A rate-limit HOLD includes a reset hint when the provider supplies one. Resume
-with the same workspace, work item, run directory, author/reviewer settings,
-and test command:
+`--max-rate-limit-wait SECONDS` (`max_rate_limit_wait` in the JSON profile) is
+a nonnegative integer fixed at run start. The default is 21600 seconds (6 hours),
+including for older supported runs. Scheduled waits share this budget across
+every role and stage. A full wait to a usable reset must fit the remaining
+budget. Without a usable reset, the coordinator tries delays of 30, 60, 120 and
+240 seconds for consecutive quota rejections. A wait to a known reset uses
+none of these four attempts. Set the budget to 0 to HOLD immediately. A quota
+HOLD shows the reset hint when available and explains why automatic retries
+stopped. After quota clears, use plain `resume` with the same workspace, work
+item, run directory, role settings and test command.
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every turn except author turns in EXEC,
@@ -576,6 +584,9 @@ not count as an explicit raise. The value is saved for later turns and
 resumes. An already-running turn keeps the timeout it received when it
 started. The existing `resume --resume-timeout N` option raises the general
 per-turn timeout up to 86400 seconds for phases that use `--timeout`.
+An EXEC, FINISH or DOCS author timeout reports the selected seconds and suggests
+`resume --exec-turn-timeout 14400` when the saved timeout is below the cap.
+At 14400 seconds, the HOLD identifies it as the maximum author timeout.
 
 An explicit CLI `resume --max-invocations N` may raise the saved invocation cap;
 a lower value is refused and the same value is accepted. Profile/project defaults
@@ -844,11 +855,13 @@ bin/paired-session resume \
 
 `run`, `resume` and `reject` support `--detach`: the caller
 returns after launch, and the coordinator continues with a separate log. `stop`
-sends SIGTERM to that detached coordinator and stops its active CLI child;
-inspect the interrupted turn before retrying. See [detached commands](docs/detach.md).
+sends SIGTERM to that detached coordinator. Inspect any interrupted CLI turn
+before retrying. If stopped during a quota wait, plain `resume` honors the saved
+UTC retry time and keeps the original budget charge. See [detached commands](docs/detach.md).
 Plain `status` reads state under the run lease; while a coordinator owns it,
 it prints `HOLD: another coordinator currently owns this run` and exits 2.
-Use lease-free `status --brief [N]` (default 20 events) during a run.
+Use lease-free `status --brief [N]` (default 20 events) during a run. It shows the
+pending quota retry time along with progress events for waits, retries and exhausted budgets.
 Progress is saved to `RUN_DIR/progress.jsonl`; `--quiet-progress` suppresses
 live event lines while keeping that file and the final status line.
 

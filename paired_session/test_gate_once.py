@@ -222,7 +222,7 @@ class GateOnceTests(unittest.TestCase):
                 self.run_dir = self.root / ('note-' + mode[1])
                 limited = {**FAIL, 'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_MATCH': '"source": "adversarial-gate"',
                            'FAKE_RATE_LIMIT_ONCE': str(self.run_dir) + '.limited'}
-                held = self.run_coordinator(*mode, env=limited)
+                held = self.run_coordinator(*mode, '--max-rate-limit-wait', '0', env=limited)
                 self.assertIn('HOLD:', held.stdout, held.stdout + held.stderr)
                 self.assertEqual(self.state()['next'], 'author')
                 noted = self.run_operator_action('note', *mode, '--text', 'Keep the TypeError message.', env=FAIL)

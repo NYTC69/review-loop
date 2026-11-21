@@ -4,6 +4,7 @@ failed attempt, and the zero-tool retry. The replay (C1-b2) and the local check 
 write was rolled back as `rolled-back:pending-replay`; C1-b3 replaced it: a write that fails the local run is
 `rolled-back:tests`, a reserved-docs write `rolled-back:boundary`. Nothing unreviewed reaches DOCS."""
 import json
+import os
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -29,10 +30,10 @@ class D09C1b1Tests(unittest.TestCase):
         (self.workspace / 'tests' / 'test_new_code.py').write_text('import new_code\n')
         (self.workspace / 'test.py').write_text(SMOKE)   # C1-b3: a green baseline on any Python (not a test path)
 
-    def run_writers(self, **env):
+    def run_writers(self, *extra, **env):
         self.eligible_change()
         before = rc.git_snapshot(self.workspace)[0]
-        done = self.run_coordinator(*RUN, env=env)
+        done = self.run_coordinator(*RUN, *extra, env=env)
         state = self.state()
         return done, state, before
 
@@ -118,7 +119,7 @@ class D09C1b1Tests(unittest.TestCase):
         env = {'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_MATCH': 'Role: simplifier, fresh.',
                'FAKE_RATE_LIMIT_ONCE': str(self.root / 'limited-once'), 'FAKE_WRITER_NO_TOOLS_ONCE': str(self.root / 'no-tools')}
         (self.root / 'no-tools').write_text('not yet\n')   # the zero-tool answer comes after the resume
-        held, state, _ = self.run_writers(**env)
+        held, state, _ = self.run_writers('--max-rate-limit-wait', '0', **env)
         self.assertEqual((state['status'], state.get('hold_kind')), ('HOLD', 'rate_limited'), held.stdout)
         self.assertEqual((state['lifecycle']['writer_counts'], state['lifecycle']['writer_leg']['attempts']), ({'simplifier': 0}, 0))
         (self.root / 'no-tools').unlink()
@@ -130,6 +131,34 @@ class D09C1b1Tests(unittest.TestCase):
         self.assertEqual(state['lifecycle']['writer_counts'], {'simplifier': 2, 'test-writer': 1})
         self.assertEqual(state['lifecycle']['polish_calls'],
                          len([t for t in state['turns'] if t['phase'] == 'POLISH-Q' and t.get('error_kind') != 'rate_limited']))
+
+    def test_polish_writers_retry_at_the_reset_without_spending_stage_budget(self):
+        self.eligible_change()
+        baseline = self.run_coordinator(*RUN)
+        self.assertIn(DONE, baseline.stdout, baseline.stdout + baseline.stderr)
+        baseline = self.state()
+        self.run_dir = self.root / 'retry-writers'
+        now, waits = int(rc.time.time()), []
+
+        def advance(seconds):
+            waits.append(seconds)
+            if len(waits) == 1:
+                os.environ.update(FAKE_RATE_LIMIT_MATCH='Role: test consolidator, fresh.',
+                                  FAKE_RATE_LIMIT_ONCE=str(self.root / 'once-test-writer'))
+
+        with mock.patch.object(rc.time, 'time', side_effect=lambda: now + sum(waits)), \
+                mock.patch.object(rc, 'sleep_rate_limit', side_effect=advance), mock.patch.dict(os.environ, {
+                    'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_RETRY_AFTER': '30',
+                    'FAKE_RATE_LIMIT_MATCH': 'Role: simplifier, fresh.',
+                    'FAKE_RATE_LIMIT_ONCE': str(self.root / 'once-simplifier')}):
+            self.assertEqual(rc.main(self.command(*RUN, '--skip-probe')[2:]), 0)
+        self.assertEqual(waits, [30, 30])
+        state = self.state()
+        self.assertEqual([(turn['role'], turn['phase']) for turn in state['turns'] if turn.get('error')],
+                         [('author', 'POLISH-Q'), ('author', 'POLISH-Q')])
+        self.assertEqual(state['invocations_used'], baseline['invocations_used'])
+        for key in ('writer_counts', 'polish_calls'):
+            self.assertEqual(state['lifecycle'][key], baseline['lifecycle'][key])
 
     def test_two_turns_without_tool_calls_exhaust_the_writer(self):
         done, state, _ = self.run_writers(FAKE_WRITER_NO_TOOLS='simplifier')

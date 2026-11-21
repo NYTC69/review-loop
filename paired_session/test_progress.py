@@ -116,12 +116,13 @@ class ProgressTests(unittest.TestCase):
         output.assert_called_once_with('no progress events yet')
 
     def test_dispatch_outcomes_name_rate_limits(self):
-        co = self.coordinator()
+        co = self.coordinator('--max-rate-limit-wait', '0')
         with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}):
             with self.assertRaisesRegex(RuntimeError, 'rate_limited'):
                 co.invoke('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {})
-        end = self.rows()[-1]
+        end, exhausted = self.rows()[-2:]
         self.assertEqual((end['kind'], end['step'], end['outcome']), ('dispatch', 'end', 'rate-limited'))
+        self.assertEqual(exhausted['kind'], 'quota-wait-exhausted')
 
     def test_an_rf5_conversion_is_named_in_the_verdict_event(self):
         use_lifecycle_on(self, self)

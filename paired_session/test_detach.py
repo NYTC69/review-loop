@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import time
 import unittest
+from datetime import datetime
+from unittest.mock import patch
 
 from paired_session import coordinator as rc
 from paired_session import test_real_coordinator as trc
@@ -164,6 +166,51 @@ class DetachTests(unittest.TestCase):
         self.assertTrue(self.wait(lambda: not alive(turn_pid), 10))          # the coordinator killed the turn's group first
         self.assertEqual(self.state()['active']['pid'], turn_pid)          # the interrupted turn stays active: uncertain on resume
         self.assertIn('NOTE: no detached command is running', self.call(action='stop').stdout)
+
+    def test_wait_budget_and_lease(self):
+        quota = {'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_UNKNOWN': '1'}
+        result = self.call('--detach', '--max-rate-limit-wait', '30',
+                           env={**quota, 'FAKE_RATE_LIMIT_MATCH': 'plan author. Phase: PLAN.'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        try:
+            self.assertTrue(self.wait(lambda: self.state().get('rate_limit_wait')), self.state())
+            saved = self.state()
+            wait = saved['rate_limit_wait']
+            brief = self.call('--brief', action='status')
+            self.assertEqual(brief.returncode, 0, brief.stdout + brief.stderr)
+            self.assertIn('Quota retry pending at ' + wait['retry_at'], brief.stdout)
+            self.assertIn('quota-wait', brief.stdout)
+            competing = self.call(action='resume')
+            self.assertEqual(competing.returncode, 2, competing.stdout + competing.stderr)
+            self.assertRegex(competing.stdout, 'lease|another coordinator|still running')
+        finally:
+            started = time.monotonic()
+            stopped = self.call(action='stop')
+        self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+        self.assertLess(time.monotonic() - started, tsc.scaled(5))
+        self.assertEqual(self.record()['exit_code'], 130)
+        stopped_state = self.state()
+        self.assertEqual(stopped_state['rate_limit_wait'], wait)
+        self.assertIsNone(stopped_state['active'])
+        self.assertIsNone(stopped_state.get('uncertain_active'))
+        self.assertEqual(stopped_state['rate_limit_wait_used'], 30)
+        retry_at = datetime.fromisoformat(wait['retry_at']).timestamp()
+        waits = []
+        command = self.h.command('--shadow', 'off', '--adversarial-gate', 'off', '--skip-probe')
+        command[2] = 'resume'
+        with patch.object(rc.time, 'time', side_effect=lambda: retry_at - 7 + sum(waits)), \
+                patch.object(rc, 'sleep_rate_limit', side_effect=waits.append), \
+                patch.dict(os.environ, {**quota, 'FAKE_RATE_LIMIT_MATCH': 'persistent plan-only reviewer. Phase: PLAN.'}):
+            self.assertEqual(rc.main(command[2:]), 2)
+        final = self.state()
+        self.assertEqual(waits, [7])
+        self.assertEqual(final['rate_limit_wait_used'], 30)
+        self.assertEqual(final['hold_kind'], 'rate_limited')
+        self.assertIn('only 0 s of the run-wide wait budget remain', final['hold_reason'])
+        self.assertEqual([(r['role'], r.get('error_kind')) for r in final['turns']],
+                         [('author', 'rate_limited'), ('author', None), ('reviewer', 'rate_limited')])
+        self.assertIsNone(final.get('uncertain_active'))
+        self.assertNotIn('rate_limit_wait', final)
 
     def test_two_simultaneous_detaches_start_exactly_one(self):
         env = {**os.environ, 'FAKE_STREAM_TWO_USAGE_THEN_HANG': '1'}
