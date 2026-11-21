@@ -1027,6 +1027,46 @@ sys.exit(result.returncode)
         self.assertEqual(saved['config']['exec_turn_timeout'], rc.MAX_EXEC_TURN_TIMEOUT_SECONDS)
         self.assertEqual(json.loads(receipt_path.read_text())['timeout_seconds'], 7200)
 
+    def test_author_timeout_resume_hint(self):
+        original_wait = rc.wait_role_turn
+
+        def shorten_wait(process, prompt, path, timeout, receipt, job):
+            original_wait(process, prompt, path, 0.2, receipt, job)
+
+        stop = self.run_coordinator('--stop-after-plan', '--exec-turn-timeout', '31')
+        self.assertEqual(stop.returncode, 2, stop.stdout + stop.stderr)
+        command = self.command('--skip-probe')
+        command[2] = 'resume'
+        with patch.object(rc, 'wait_role_turn', side_effect=shorten_wait), \
+                patch.dict(os.environ, {'FAKE_STREAM_TWO_USAGE_THEN_HANG': '1'}):
+            self.assertEqual(rc.main(command[2:]), 2)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        receipt = state['turns'][-1]
+        self.assertTrue(receipt['timed_out'])
+        self.assertEqual((receipt['role'], receipt['phase'], receipt['timeout_seconds']), ('author', 'EXEC', 31))
+        hint = 'resume --exec-turn-timeout 14400'
+        self.assertIn(hint, state['hold_reason'])
+        self.assertIn(hint, receipt['error'])
+        resumed = self.run_operator_action(*hint.split())
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertEqual(state['turns'][receipt['sequence']]['timeout_seconds'], 14400)
+        for role, phase, timeout in (('author', 'FINISH', 32), ('author', 'DOCS', 32),
+                                     ('author', 'EXEC', 14400), ('reviewer', 'EXEC', 33)):
+            with self.subTest(role=role, phase=phase, timeout=timeout):
+                self.run_dir = self.root / f'timeout-{role}-{phase}'
+                co = self.coordinator('--gate-vendor', 'claude', '--timeout', '33', '--exec-turn-timeout', str(timeout))
+                with patch.object(rc, 'wait_role_turn', side_effect=shorten_wait), \
+                        patch.dict(os.environ, {'FAKE_STREAM_TWO_USAGE_THEN_HANG': '1',
+                                                'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'}), \
+                        self.assertRaisesRegex(RuntimeError, f'timed out after {timeout} s'):
+                    co._invoke_once(role, phase, f'Role: persistent. Phase: {phase}.', {}, fresh=True)
+                [receipt] = co.state['turns']
+                self.assertTrue(receipt['timed_out'])
+                self.assertEqual(receipt['timeout_seconds'], timeout)
+                self.assertEqual(hint in receipt['error'], phase in ('FINISH', 'DOCS'))
+                self.assertEqual('maximum EXEC/FINISH/DOCS author timeout' in receipt['error'], timeout == 14400)
+
     def test_exec_timeout_above_cap_is_rejected(self):
         use_lifecycle_on(self, self)
         args = rc.parser().parse_args(['run', '--workspace', str(self.workspace),
@@ -1957,7 +1997,7 @@ sys.exit(result.returncode)
         self.assertNotIn('operator_notes', json.loads(co.state_path.read_text()))
 
     def test_hold_note_failed_author_turn_remains_pending(self):
-        stopped = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
+        stopped = self.run_coordinator('--stop-after-plan', '--polish-round', 'off', '--max-rate-limit-wait', '0')
         self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
         added = self.run_operator_action('note', '--text', 'Check signed boundary.')
         self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
@@ -2131,7 +2171,7 @@ sys.exit(result.returncode)
         self.assertEqual(len(final['rejections']), 1)
 
     def test_rejection_feedback_survives_rate_limit_and_resume(self):
-        completed = self.run_coordinator('--polish-round', 'off')
+        completed = self.run_coordinator('--polish-round', 'off', '--max-rate-limit-wait', '0')
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         feedback = 'OPERATOR_REJECTION_RETRY_5c09'
         reject_cmd = self.command('--text', feedback, '--polish-round', 'off')
@@ -2636,7 +2676,7 @@ sys.exit(result.returncode)
         self.assertEqual(rc.codex_rollout_attempts('test-session', start, start + 2)[0], [])
 
     def test_rate_limit_rejection_is_logged_without_spending_invocation_budget(self):
-        rejected = self.run_coordinator('--max-invocations', '1',
+        rejected = self.run_coordinator('--max-invocations', '1', '--max-rate-limit-wait', '0',
                                         env={'FAKE_RATE_LIMIT': '1'})
         self.assertEqual(rejected.returncode, 2)
         self.assertIn('rate_limited', rejected.stdout)
@@ -2682,6 +2722,42 @@ sys.exit(result.returncode)
         retry_after = rc.classify_rate_limit_failure(
             1, 'HTTP 429 Too Many Requests\nRetry-After: 32\n', '')
         self.assertEqual(retry_after['reset_hint'], 'Retry-After: 32')
+
+    def test_legacy_wait_config_and_agy_terminal_status(self):
+        args = self.command('--author-vendor', 'gemini', '--author-model', 'gemini-3.8-flash',
+                            '--gemini-bin', str(self.fake_gemini_cli()), '--gate-vendor', 'claude',
+                            '--shadow', 'off')[2:]
+        co = rc.Coordinator(rc.parser().parse_args(args))
+        self.assertEqual(co.state['config'].pop('max_rate_limit_wait'), 21600)
+        co._refresh_resumed_config_digest()
+        co.save()
+        args[0] = 'resume'
+        resumed = rc.Coordinator(rc.parser().parse_args(args))
+        self.assertEqual(resumed.args.max_rate_limit_wait, 21600)
+        now, waits = int(rc.time.time()), []
+        env = {'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_RETRY_AFTER': '12',
+               'FAKE_RATE_LIMIT_MATCH': 'plan author. Phase: PLAN.',
+               'FAKE_RATE_LIMIT_ONCE': str(self.root / 'agy-quota')}
+        with patch.object(rc.time, 'time', side_effect=lambda: now + sum(waits)), \
+                patch.object(rc, 'sleep_rate_limit', side_effect=waits.append), patch.dict(os.environ, env):
+            self.assertEqual(resumed.resume(), 'DONE', resumed.state.get('hold_reason'))
+        saved = json.loads(resumed.state_path.read_text())
+        self.assertEqual((saved['config']['max_rate_limit_wait'], waits), (21600, [30]))
+        rejected, success = saved['turns'][:2]
+        self.assertEqual((rejected['vendor'], rejected['error_kind'], rejected['invocation_budget_counted']),
+                         ('gemini', 'rate_limited', False))
+        self.assertAlmostEqual(rejected['reset_at'], now + 12, places=5)
+        self.assertEqual(success['role'], 'author')
+        self.assertNotIn('error', success)
+        for kind, hint in (('denied', 'agy denied write_file'), ('error', 'agy turn status ERROR')):
+            with self.subTest(kind=kind), patch.dict(os.environ, {
+                    'FAKE_GEMINI_FAIL': kind, 'FAKE_GEMINI_FAIL_EXIT': '0',
+                    'FAKE_GEMINI_ERROR': 'Unauthorized (401). Retry-After: 10'}):
+                with self.assertRaisesRegex(RuntimeError, hint):
+                    resumed.invoke('author', 'PLAN', 'Role: persistent. Phase: PLAN.', {}, fresh=True)
+                receipt = resumed.state['turns'][-1]
+                self.assertTrue(receipt['invocation_budget_counted'])
+                self.assertNotIn('error_kind', receipt)
 
     def test_codex_readonly_roles_do_not_inherit_execpolicy_bypass_grants(self):
         use_lifecycle_on(self, self)

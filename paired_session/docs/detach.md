@@ -45,8 +45,10 @@ recorded as `active`, kills the turn's process group and waits for it.
 ## What stays the same
 The detached grandchild is an ordinary coordinator process: run lease, workspace lease, `active` and
 `uncertain_active`, per-turn process-group cleanup (start, timeout, failure, stop), every Category A/B guard and the exit codes.
-After `stop` the next command sees the interrupted turn as uncertain, as after Ctrl-C today: check the process group, then
-`resume --retry-uncertain` or `abort`. Progress: `RUN_DIR/state.json`,
+If `stop` interrupts a CLI turn, resume treats the turn as uncertain, as after Ctrl-C. Check its process group, then use
+`resume --retry-uncertain` or `abort`.
+If `stop` interrupts a quota wait, use plain `resume` to continue at the saved retry time. The original wait budget charge
+still applies. Progress: `RUN_DIR/state.json`,
 `status --brief`, the log. Wait until the printed pid has exited (the printed record path then reads "exited"
 with the exit code), then read the last line of its log and `status --brief`. A report run ends in REPORTED. Without `--detach` nothing changes, including SIGTERM.
 

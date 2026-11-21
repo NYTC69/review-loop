@@ -16,6 +16,7 @@
   "max_plan_rounds": 3,
   "max_exec_rounds": 4,
   "max_invocations": 25,
+  "max_rate_limit_wait": 21600,
   "timeout": 2700,
   "test_command": "npm test"
 }

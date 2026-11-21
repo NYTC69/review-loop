@@ -341,7 +341,30 @@ def main():
             sys.stdout.buffer.write(''.join(json.dumps(event, ensure_ascii=False) + '\n' for event in events).encode())
             print('ERROR codex_core::session: failed to record rollout items: thread fake-codex-thread not found', file=sys.stderr)
             return 1
-        print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
+        reset = os.environ.get('FAKE_RATE_LIMIT_RESET_AT')
+        delay = os.environ.get('FAKE_RATE_LIMIT_RETRY_AFTER')
+        error = {'code': 'rate_limit_exceeded', 'message': 'HTTP 429 rate limit.'}
+        if reset is not None:
+            error['resetsAt'] = int(reset)
+        if delay is not None:
+            error['retryAfter'] = delay
+        if vendor == 'gemini':
+            error['code'] = 429
+            error['status'] = 'RESOURCE_EXHAUSTED'
+            if delay is not None:
+                del error['retryAfter']
+                error['details'] = [{'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': delay + 's'}]
+            print(json.dumps({'event': 'result', 'result': {'status': 'ERROR', 'error': error}}))
+            return 0
+        if vendor == 'claude' and reset is not None:
+            print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {
+                'status': 'rejected', 'resetsAt': int(reset), 'rateLimitType': 'seven_day'}}))
+        elif reset is not None or delay is not None:
+            print(json.dumps({'type': 'error', 'error': error}))
+        elif os.environ.get('FAKE_RATE_LIMIT_UNKNOWN'):
+            print(error['message'] + ' Try again later.', file=sys.stderr)
+        else:
+            print('HTTP 429 rate limit. Try again at Sep 26th 5:13 PM', file=sys.stderr)
         return 1
     fail = os.environ.get('FAKE_PROVIDER_FAIL')   # V327-RETRY: a failing CLI with this error text; _MATCH and _ONCE as above
     fail_match, fail_once = os.environ.get('FAKE_PROVIDER_FAIL_MATCH'), os.environ.get('FAKE_PROVIDER_FAIL_ONCE')

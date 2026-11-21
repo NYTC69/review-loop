@@ -14,6 +14,27 @@
 - `test_a_gemini_gate_approval_counts_the_test_run_from_a_tool_step` 在没有通过证据的新工作树检查缺少工具结果时的拒绝路径。
 - `test_winend2end.test_full_lifecycle_interrupt_resume_done_and_auto_commit_accepted`（Windows）改为断言门审复用 reviewer 在同一工作树上的测试通过（`reused_test_evidence`），不再在 bash.exe 里重跑配置的测试命令；同一个辅助断言里的 review-pr 报告 run 不复用证据，仍断言门审在 bash.exe 里跑了测试。fake 的门审和 EXEC reviewer 在 evidence-guard 与 shadow 确认场景里保留一次自愿重跑，用来继续覆盖原有路径。
 
+### Unreleased (WI-TURNFAIL)
+
+**改动**
+
+- Codex、Claude 和 Gemini 的明确配额拒绝会保留回执、退回调用额度，并在预算内重试同一个回合。能解析的重置时间写入回执。有效的重置时间不占退避次数，等待到重置时间且至少等 30 秒。只有未知或已过期的重置才使用 30、60、120、240 秒的退避。退避次数耗尽或下次等待超出剩余预算时，进入带原因的 `rate_limited` HOLD。
+- agy 错误里的文件行号 `:429` 不再被当作配额拒绝。Claude 的允许或超额事件只取消较早的 API 错误或结果中的限流信号。
+- Gemini 的 agy 回合以 `ERROR` 结束且消息包含 `quota reached` 或 `quota exceeded` 等明确措辞时，按配额拒绝处理。`Resets in 164h` 这样的相对重置时间会写入回执。所需等待超过剩余预算时，立即进入说明预算原因的 `rate_limited` HOLD。
+- `--max-rate-limit-wait` / `max_rate_limit_wait` 是整个 run 的累计等待预算，默认 21600 秒，设为 0 则立即 HOLD，恢复时不能提高预算。如果重试时间达到或超过 work item 截止时间，则立即按截止时间 HOLD。重试派发启动失败时清除已保存的等待记录。等待时 `status --brief` 显示 UTC 重试时间；`stop` 或 Ctrl-C 中断后可用普通 `resume` 继续，已安排的等待只计费一次。
+- EXEC、FINISH 和 DOCS 的作者超时时，HOLD 写明实际使用的秒数。低于上限时提示 `resume --exec-turn-timeout 14400`，到达上限时说明这是最大值。
+
+**按意图更新的测试断言**
+
+- `test_ratelimit` 的各角色和阶段用例改为断言默认自动重试后完成，并与基线核对成功回合和计数。
+- `test_rl_weekly` 的精确回执断言增加可解析的 `reset_at`，保留原有的显示提示断言。
+- `test_progress` 在被拒绝的派发结束事件之后增加等待耗尽事件的断言。
+- `test_ratelimit`、`test_rl_weekly`、`test_real_coordinator`、`test_gate_once`、`test_d09_c1b1`、`test_progress` 和 `test_readonly_scratch` 中专门检查 HOLD 的用例显式选择 0 秒预算。
+- `test_v317fd.test_recognized_limit_keeps_typed_hold` 显式选择 0 秒预算，继续断言立即进入 `rate_limited` HOLD；HOLD 原因现在总会写明自动等待为何停止（这里是“automatic waiting is disabled”），断言随之更新。
+- `test_ratelimit` 的截止时间断言改为在睡眠前 HOLD，等待时间和新增预算扣款均为 0；新增重试启动失败和恢复时禁止提高已耗尽预算的回归用例。
+- `test_ratelimit` 的短重置回归改名为 `test_repeated_short_known_resets_retry_until_the_next_wait_exceeds_budget`，断言连续五次等待 30 秒后因剩余预算不足而 HOLD。预算边界用例断言已知重置的有效等待恰好用完预算时仍重试。重试启动失败、恢复预算和 Gemini 的短重置等待断言同步更新为 30 秒。
+- `test_rl_weekly` 新增 agy 文件行号和 Claude 事件顺序断言。`test_detach` 额外核对 `stop` 后协调器退出，以及普通 `resume` 只对成功派发计数。
+
 ### v3.10.1：门审重派不再误判矩阵里的工具路径（WI-PATCH1）
 
 - 修复门审重派时把场景矩阵中合法的工具路径误判为审查历史而触发 HOLD 的问题。矩阵仍随完整提示发送并留证，重派说明仍接受独立性检查。

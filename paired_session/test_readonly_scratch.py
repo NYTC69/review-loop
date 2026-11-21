@@ -70,7 +70,7 @@ class ScratchRootTests(unittest.TestCase):
         self.assertEqual(list((scratch_base / 'role-tmp').iterdir()), [])                   # each one removed after its turn
 
     def test_the_scratch_is_removed_after_a_failing_and_an_uncertain_turn_and_a_hard_link_there_fails_the_turn(self):
-        co = self.coordinator(*CODEX_ROLES, '--quiet-progress')
+        co = self.coordinator(*CODEX_ROLES, '--quiet-progress', '--max-rate-limit-wait', '0')
         co.state['config']['workitem_reviewer_commands'] = []
         with patch.dict(os.environ, {'FAKE_RATE_LIMIT': '1'}), self.assertRaisesRegex(RuntimeError, 'rate_limited'):
             co.invoke('reviewer', 'PLAN', 'Role: reviewer, persistent. Phase: PLAN.', rc.review_schema())

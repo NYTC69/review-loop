@@ -476,6 +476,11 @@ review_style: "be terse, flag any unwrap() as CRITICAL"
 **Live progress** — The coordinator prints one line per event (the role, its verdict and the open finding ids)
 and logs it to `progress.jsonl` in the run directory; `status --brief` shows the latest.
 
+**Provider quota waits** — Codex, Claude and Gemini quota rejections retry the same turn at the reported reset
+when it fits the run-wide `--max-rate-limit-wait` budget (6 hours by default). Without a usable reset, the
+coordinator waits 30, 60, 120 and 240 seconds between retries, then HOLDs. Set the budget to 0 for immediate HOLD.
+`status --brief` shows the pending retry time, and plain `resume` continues a wait interrupted by `stop`.
+
 **Plan Conformance** — In EXEC the reviewer and the shadow review the change against the approved plan, and an
 EXEC approval needs their own run evidence (`self_run_evidence`; a review-pr report run without a test
 command may approve statically).
