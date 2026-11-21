@@ -1,6 +1,8 @@
 # Changelog
 
-### Unreleased (WI-TESTEVID)
+### v3.11.0：只读角色复用同一棵树上的测试结果；配额拒绝自动等待重试（WI-TESTEVID + WI-TURNFAIL）
+
+#### WI-TESTEVID
 
 - 只读审查角色可复用同一工作树上对同一配置命令的最新有效测试结果。较新的完整失败会使先前的通过结果失效。当前工作树上有效的主机通过记录仍可免去重复测试，并解决仅在沙箱内发生的失败。回执记录来源，持久 reviewer 仍须列出自己运行的检查。缺少主机验证记录不算审查发现。
 - DOCS writer 和 POLISH-Q 的代码简化、测试合并 writer 在派发时看到输入工作树的当前验证记录，提示中省略私人备注。
@@ -14,7 +16,7 @@
 - `test_a_gemini_gate_approval_counts_the_test_run_from_a_tool_step` 在没有通过证据的新工作树检查缺少工具结果时的拒绝路径。
 - `test_winend2end.test_full_lifecycle_interrupt_resume_done_and_auto_commit_accepted`（Windows）改为断言门审复用 reviewer 在同一工作树上的测试通过（`reused_test_evidence`），不再在 bash.exe 里重跑配置的测试命令；同一个辅助断言里的 review-pr 报告 run 不复用证据，仍断言门审在 bash.exe 里跑了测试。fake 的门审和 EXEC reviewer 在 evidence-guard 与 shadow 确认场景里保留一次自愿重跑，用来继续覆盖原有路径。
 
-### Unreleased (WI-TURNFAIL)
+#### WI-TURNFAIL
 
 **改动**
 

@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-21
+**Last updated**: 2026-11-22
 
 ## P0 — blocker / must-do-now
 
@@ -6,31 +6,34 @@
 
 - Execution plan (owner 2026-11-21, backlog audit .compass/results/backlog-audit-2026-11-21.md): do these merged work items in order after v3.10.0. (added 2026-11-21)
   - 1 patch pack: gate prompt removesuffix + test isolation — done in v3.10.1.
-  - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE).
-  - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried`.
+  - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE) — done in v3.11.0.
+  - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried` — done in v3.11.0.
   - 4 WI-SPEC: GR-3 + GR-2 + GR-7.
   - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6.
   - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status`.
   - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21).
 - Field (v3.10.1 real run): a reviewer answer that adds a disposition for an already-closed finding (here F001, fixed a round earlier, next to the open gate item F002) HOLDs at once with "invalid finding dispositions: duplicate or unknown id", without the one protocol retry; ignore (or note) dispositions for closed ids outside `open_finding_ids`, or give that error the existing retry. Resume continued the run to ACCEPTED. (added 2026-11-21)
-- Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-4: allow skipping PLAN review for small work items that already list their files and acceptance criteria. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
-- Gate-survey follow-up GR-5: on a provider rate limit, wait and retry automatically instead of HOLD. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-6: allow a role model change on resume. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 - Gate-survey follow-up GR-7: when quota is tight, cut the specialists first and keep the fresh shadow (poker-tools evidence: the shadow found the real defects). (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 
 ## P2 — normal
 
+- v3.11.0 follow-up (Sol merge review): if a saved quota wait is stopped and resumed during a reviewer disposition retry, the retry instruction is lost and the reviewer gets the ordinary prompt (an extra protocol retry at most). (added 2026-11-22)
+- v3.11.0 follow-up (Opus, WI-TESTEVID): reverting the change that caused a coordinator test-failure finding leaves that row open until the next reviewer disposition. (added 2026-11-22)
+- v3.11.0 follow-up (Opus, WI-TESTEVID): add a test that a confirmation review reuses the passing test result of the same tree. (added 2026-11-22)
+- v3.11.0 follow-up: the Windows end-to-end helper branches on review_report to pick its assertion; brittle if more report shapes appear. (added 2026-11-22)
+- v3.11.0 follow-up (WI-TURNFAIL): the unknown-reset backoff slot count is per run, not reset per invoke. (added 2026-11-22)
+- v3.11.0 follow-up (WI-TURNFAIL note 7): an agy exit > 0 without a quota line is a terminal ERROR; consider one retry. (added 2026-11-22)
+- Field (poker-tools gemini trial, 2026-11-21): the allowed_models refusal should name the profile key to edit. (added 2026-11-22)
+- Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 - v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (added 2026-11-21)
 - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (added 2026-11-21)
 - v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (added 2026-11-21)
 - v3.9.0 follow-up: scenario-matrix label detection only on headings, bold or numbered lines, so a short prose line such as "Dependency note: none" under another dimension does not switch the dimension (costs one PLAN round, never lets a bad plan through). (Opus review 2026-11-21) (added 2026-11-21)
-- Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line. (added 2026-11-09)
 - Gate note (v3.7.2 Opus gate): a note queued for a reused DOCS writer can reach DONE undelivered; `status` at DONE should list it ("undelivered note N001: use reject"). (added 2026-11-09)
-- Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1, the EXEC author since v3.8.3 (poker-tools run 9156fede); the POLISH-Q and DOCS writers still do not. (added 2026-11-08)
-- Supervisor note (WI-NOPROBE run, 2026-11-08): a large change needed more than the default 2-hour author turn (EXEC r1 timed out at 7200 s; resumed with `--exec-turn-timeout 14400`); consider a longer default or a hint in the timeout HOLD. (added 2026-11-09)
 - Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match. (added 2026-11-09)
 - Field (gg-pipeline WI-413, v3.8.3): an operator `note` is refused while a turn is in flight and at the "uncertain in-flight CLI turn" HOLD, and a reviewer REVISE auto-dispatches the next author turn, so a ruling the reviewer asked the operator for has no delivery window (the author burned a turn to HOLD for it). (added 2026-11-19)
 - Review note (v3.8.5 Opus R3): PLAN approval / plan restatement (`_plan_history_issue`) does not apply the plan branch of `_introduced_history_matches`, so shapes that stay caught (`/srv/codex/notes/`, `.codex/sessions/`, `Codex approved`) pass PLAN approval and hold only at the gate. Have the PLAN check use the same branch. (added 2026-11-19)
@@ -52,6 +55,11 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Gate-survey follow-up GR-1: reuse test results when the tree hash is unchanged; a host verification record bound to the tree satisfies the reviewer and the shadow as well as the specialists, and its absence is never raised as a finding. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.11.0 WI-TESTEVID)
+- ~~Gate-survey follow-up GR-5: on a provider rate limit, wait and retry automatically instead of HOLD. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.11.0 WI-TURNFAIL)
+- ~~Gate note (v3.7.2 Opus gate): acceptance hides a DOCS carry-over: `opv.current_for_acceptance` does not copy `carried`, and accept prints "VERIFICATION V001 current for the accepted tree" for a record the operator ran before the DOCS write; add `carried` and say so in the accept line.~~ (added 2026-11-09) (closed 2026-11-22, see v3.11.0 WI-TESTEVID)
+- ~~Field (poker-tools, v3.6.0): the author and other lifecycle writers do not see operator verification records (attach-verification); FINISH does since v3.7.1, the EXEC author since v3.8.3 (poker-tools run 9156fede); the POLISH-Q and DOCS writers still do not.~~ (added 2026-11-08) (closed 2026-11-22, see v3.11.0 WI-TESTEVID)
+- ~~Supervisor note (WI-NOPROBE run, 2026-11-08): a large change needed more than the default 2-hour author turn (EXEC r1 timed out at 7200 s; resumed with `--exec-turn-timeout 14400`); consider a longer default or a hint in the timeout HOLD.~~ (added 2026-11-09) (closed 2026-11-22, see v3.11.0 WI-TURNFAIL)
 - ~~v3.9.0 follow-up: the gate prompt independence scan strips the matrix excerpt with removesuffix, which assumes the excerpt is last; build the prompt with an explicit excluded part instead. (Opus review 2026-11-21)~~ (added 2026-11-21) (closed 2026-11-21, see v3.10.1 GatePromptParts)
 - ~~Test isolation: `test_v3a3.test_operator_profile_and_cli_on_start_a_run` fails (main returns 2) when run in one process after the scan modules (field11..v317fa), on main too; passes alone and in CI's per-module jobs.~~ (added 2026-11-19) (closed 2026-11-21, see v3.10.1 FIELD-29 cleanup order)
 - ~~CI: shard the macOS jobs into 5 groups (the free plan runs 5 macOS jobs at once; one job per module queued ~150 macOS jobs and took 40-45 min). Owner 2026-11-21: do it right after v3.10.0.~~ (added 2026-11-21) (closed 2026-11-21, see refs/ci/workflow-src-d13: 5 macOS groups x 3 processes, CI 35-45 min -> 15-18 min)
