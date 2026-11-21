@@ -817,6 +817,13 @@ def main():
                   'full_review': findings,
                   'self_run_evidence': ([{'command': check}]
                                         if phase in ('EXEC', 'SECURITY', 'Q', 'DOCS') else [])}
+        if (role == 'reviewer' and phase == 'EXEC' and (once := os.environ.get('FAKE_EXEC_RULING_ONCE'))
+                and not Path(once).exists()):
+            Path(once).touch()
+            answer.update(status='REVISE_NEEDS_OPERATOR',
+                          full_review=[{'severity': 'MAJOR', 'file': 'sum_ints.py',
+                                        'summary': '[class: input-validation] Should bool be rejected explicitly?',
+                                        'failure_scenario': 'bool is accepted as int'}])
         if (role == 'reviewer' and phase == 'EXEC' and prior is not None and (flag := os.environ.get('FAKE_EXEC_HOLD_IF_FILE'))
                 and Path(flag).exists()):   # D09 C1-b2: the persistent reviewer HOLDs on a writer replay
             answer['status'] = 'HOLD'

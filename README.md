@@ -293,6 +293,9 @@ A run ends at **DONE** (acceptance pending) or at a **HOLD** (it stopped and say
 The coordinator prints one progress line per event (the role, its verdict and the open finding ids) and logs it to
 `progress.jsonl` in the run directory. Ask the agent at any time:
 - for the run's status (`status --brief`: the latest progress lines, without disturbing the run);
+- to see a queued operator note's ID, recipient and creation time in either status mode;
+- to answer an EXEC reviewer's question at a ruling HOLD, queue the answer with `note --text` or
+  `note --file`, then `resume` to send it to the repair author;
 - to resume after a HOLD, once you have answered or fixed what it names; at a PLAN or EXEC round-limit HOLD,
   `resume --add-rounds N` (1-10) continues the same run with N more rounds of that phase;
 - to change a role on a continuing run, pass an explicit `--author-model`, `--reviewer-model`, `--gate-model` or
@@ -302,6 +305,10 @@ The coordinator prints one progress line per event (the role, its verdict and th
   An install move can continue with identical agent and gate prompt contents and the original custom prompt path.
   See [resume settings and relocation](paired_session/README.md#changing-role-settings-or-moving-an-install).
 - to abort the run (`abort`).
+
+At DONE, `accept` and plain `resume` leave a queued note undelivered. An in-scope `reject` reopens
+EXEC and delivers the queued note together with the rejection feedback to the next EXEC author.
+
 A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it;
 macOS only, refused on Windows).
 

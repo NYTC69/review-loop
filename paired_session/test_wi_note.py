@@ -1,0 +1,219 @@
+"""WI-NOTE: persistent EXEC ruling windows and queued note delivery."""
+from contextlib import contextmanager
+import json
+import os
+import subprocess
+import unittest
+from unittest.mock import patch
+
+from paired_session import test_real_coordinator as trc
+from paired_session import test_worktree_lifecycle as twl
+
+rc = trc.rc
+RULING = 'REVISE_NEEDS_OPERATOR'
+QUESTION = '[class: input-validation] Should bool be rejected explicitly?'
+RULING_NOTE = 'NOTE: the reviewer also requests an operator ruling: ' + QUESTION
+OFF = ('--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+ON = ('--lifecycle-mode', 'on', '--max-invocations', '60')
+
+
+class OperatorNoteTests(unittest.TestCase):
+    @contextmanager
+    def harness(self, lifecycle=False):
+        h = trc.RealCoordinatorTests()
+        try:
+            (twl.WorktreeLifecycleActivationTests.setUp if lifecycle else trc.RealCoordinatorTests.setUp)(h)
+            yield h
+        finally:
+            h.tearDown()
+            h.doCleanups()
+
+    def state(self, h):
+        return json.loads((h.run_dir / 'state.json').read_text())
+
+    def prompt(self, h, turn):
+        return (h.run_dir / 'evidence' /
+                f"{turn['sequence']:03d}-{turn['phase'].lower()}-{turn['role']}.prompt.txt").read_text()
+
+    def assert_result(self, result, code, line):
+        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+        self.assertIn(line, result.stdout, result.stdout + result.stderr)
+
+    def test_reviewer_ruling_window(self):
+        with self.harness() as h:
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling')}
+            held = h.run_coordinator(*OFF, env=env)
+            self.assert_result(held, 2, 'HOLD: reviewer requests an operator ruling: ' + QUESTION)
+            self.assertIn('note --text or note --file, then resume', held.stdout)
+            state = self.state(h)
+            review = state['turns'][-1]
+            self.assertEqual((review['role'], review['answer']['status']), ('reviewer', RULING))
+            self.assertIn(RULING, self.prompt(h, review))
+            self.assertEqual((state['next'], state['pending_reviewer_result_sequence']), ('author', None))
+            verdict = state['review_verdicts'][-1]
+            self.assertEqual((verdict['reviewer_raw_verdict'], verdict['effective_verdict']), (RULING, 'REVISE'))
+            self.assertEqual(state['exec_comparisons'][-1]['persistent']['verdict'], RULING)
+            self.assert_result(h.run_operator_action('note', *OFF, '--text', 'Original ruling.'), 0, 'N001 queued')
+            latest = 'Reject bool explicitly before the integer check.'
+            self.assert_result(h.run_operator_action('note', *OFF, '--text', latest), 0, 'N002 queued')
+            status = h.run_operator_action('status', *OFF, '--brief', '1')
+            self.assert_result(status, 0, 'Pending operator note N002')
+            self.assert_result(h.run_operator_action('resume', *OFF, env=env), 0, twl.DONE)
+            after = self.state(h)
+            first = after['turns'][len(state['turns'])]
+            self.assertEqual((first['role'], first['phase'], first['answer']['status'], first['operator_note_id']),
+                             ('author', 'EXEC', 'READY', 'N002'))
+            prompt = self.prompt(h, first)
+            self.assertIn(QUESTION, prompt)
+            self.assertIn(latest, prompt)
+            self.assertNotIn('Original ruling.', prompt)
+            self.assertNotIn('pending_operator_note_id', after)
+            self.assertEqual([n['status'] for n in after['operator_notes']], ['replaced', 'delivered'])
+            self.assertNotIn('Pending operator note', h.run_operator_action('status', *OFF).stderr)
+            self.assertNotIn('Pending operator note', h.run_operator_action('status', *OFF, '--brief').stdout)
+        with self.harness() as h:
+            self.assert_result(h.run_coordinator(*OFF, '--exercise-revisions'), 0, twl.DONE)
+            exec_turns = [row for row in self.state(h)['turns'] if row['phase'] == 'EXEC']
+            self.assertEqual([(t['role'], t['answer']['status']) for t in exec_turns[:3]],
+                             [('author', 'READY'), ('reviewer', 'REVISE'), ('author', 'READY')])
+
+        for kind in ('cap', 'cap extension', 'stop rule', 'structural'):
+            with self.subTest(kind=kind), self.harness() as h:
+                flags = OFF if kind == 'structural' else (*OFF, '--max-exec-rounds', '1')
+                self.assert_result(h.run_coordinator(*flags, '--stop-after-plan'), 2, 'HOLD: ' + rc.PLAN_STOP_REASON)
+                state = self.state(h)
+                if kind == 'stop rule':
+                    state['stop_rules'] = {'sequence': 0, 'still_open': [], 'new_blocking_streak': 1, 'approved': True}
+                if kind == 'structural':
+                    state['block_class_events'] = [
+                        {'sequence': n, 'source': 'reviewer', 'block': True,
+                         'classes': {'input-validation': [f'F{n:03d}']}} for n in (1, 2)]
+                rc.atomic_json(h.run_dir / 'state.json', state)
+                env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling')}
+                held = h.run_operator_action('resume', *flags, env=env)
+                self.assert_result(held, 2, RULING_NOTE)
+                self.assertEqual(held.stdout.splitlines().count(RULING_NOTE), 1)
+                state = self.state(h)
+                reason = state['hold_reason']
+                self.assertNotIn(QUESTION, reason)
+                if kind == 'structural':
+                    self.assertTrue(reason.startswith('structural fix / re-scope needed: finding class input-validation'))
+                    self.assertEqual(state['next'], 'author')
+                    self.assert_result(h.run_operator_action('resume', *flags, env=env), 0, twl.DONE)
+                else:
+                    self.assertEqual(state['round_limit_hold']['hold_reason'], reason)
+                    if kind in ('cap', 'cap extension'):
+                        self.assertEqual(reason, 'EXEC round limit reached')
+                        if kind == 'cap':
+                            self.assert_result(h.run_operator_action('resume', *flags, env=env), 0, twl.DONE)
+                            first = self.state(h)['turns'][len(state['turns'])]
+                            self.assertEqual((first['role'], first['snapshot_before']),
+                                             ('reviewer', state['round_limit_hold']['tree_sha256']))
+                            continue
+                    else:
+                        self.assertTrue(reason.startswith(rc.NEW_BLOCKERS_REASON + ':'))
+                        self.assert_result(h.run_operator_action('resume', *flags, env=env), 2, 'HOLD: ' + reason)
+                        self.assertEqual(self.state(h)['turns'], state['turns'])
+                    self.assert_result(h.run_operator_action('resume', *flags, '--add-rounds', '1', env=env), 0, twl.DONE)
+                self.assertEqual(self.state(h)['turns'][len(state['turns'])]['role'], 'author')
+
+    def test_recorded_ruling_receipt_parks_on_resume(self):
+        class SimulatedCrash(BaseException):
+            pass
+
+        with self.harness() as h:
+            self.assert_result(h.run_coordinator(*OFF, '--stop-after-plan'), 2, 'HOLD: ' + rc.PLAN_STOP_REASON)
+            argv = h.command(*OFF)[2:]
+            argv[0] = 'resume'
+            argv.append('--skip-probe')
+            args = rc.configure_parser(rc.parser(), argv).parse_args(argv)
+            co = rc.Coordinator(args)
+            with patch.dict(os.environ, {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling')}), \
+                    patch.object(co, 'hold', side_effect=SimulatedCrash) as hold, self.assertRaises(SimulatedCrash):
+                co.resume()
+            self.assertIn(QUESTION, hold.call_args.args[0])
+            interrupted = self.state(h)
+            review = interrupted['turns'][-1]
+            self.assertEqual(interrupted['pending_reviewer_result_sequence'], review['sequence'])
+            self.assertEqual(review['answer']['status'], RULING)
+            self.assert_result(h.run_operator_action('resume', *OFF), 2,
+                               'HOLD: reviewer requests an operator ruling: ' + QUESTION)
+            recovered = self.state(h)
+            self.assertEqual(recovered['turns'], interrupted['turns'])
+            self.assertEqual((recovered['next'], recovered['pending_reviewer_result_sequence']), ('author', None))
+            self.assertIn(QUESTION, recovered['delivered_review'])
+
+    def done_with_note(self, h):
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md', 'FAKE_DOCS_REVIEW_NO_TEST_ONCE': str(h.root / 'no-test')}
+        held = h.run_coordinator(*ON, env=env)
+        self.assert_result(held, 2, 'HOLD: DOCS reviewer did not observe a successful run')
+        note_text = 'Mention the migration in the changelog.'
+        self.assert_result(h.run_operator_action('note', *ON, '--text', note_text), 0, 'N001 queued')
+        self.assert_result(h.run_operator_action('resume', *ON, env=env), 0, twl.DONE)
+        state = self.state(h)
+        self.assertEqual(state['pending_operator_note_id'], 'N001')
+        self.assertEqual(sum(t['role'] == 'author' and t['phase'] == 'DOCS' for t in state['turns']), 1)
+        self.assertFalse(any(t.get('operator_note_id') for t in state['turns']))
+        return state, note_text, env
+
+    def test_done_note_status_after_reused_docs_writer(self):
+        with self.harness(lifecycle=True) as h:
+            done, note_text, env = self.done_with_note(h)
+            [note] = done['operator_notes']
+            state_path = h.run_dir / 'state.json'
+            saved = state_path.read_bytes()
+            status_cmd = h.command(*ON)
+            status_cmd[2] = 'status'
+            plain = subprocess.run(status_cmd, cwd=h.root, capture_output=True, check=True)
+            self.assertEqual(plain.stdout, saved + b'\n')
+            (h.run_dir / 'progress.jsonl').write_text('')
+            with rc.run_lease(h.run_dir):
+                brief = h.run_operator_action('status', *ON, '--brief', '1')
+            self.assert_result(brief, 0, 'no progress events yet')
+            for summary in (plain.stderr.decode(), brief.stdout):
+                for expected in ('Pending operator note N001', note['deliver_to'], note['timestamp'],
+                                 'accept and plain resume leave N001 undelivered',
+                                 'sends N001 together with the rejection to the next EXEC author',
+                                 'reject --intent-only --text "<rejection feedback>"',
+                                 'reject --expect <digest> --text "<rejection feedback>"'):
+                    self.assertIn(expected, summary)
+            self.assertEqual(state_path.read_bytes(), saved)
+            del note['timestamp'], note['deliver_to']
+            rc.atomic_json(state_path, done)
+            self.assertIn('recipient unknown; created unknown', h.run_operator_action('status', *ON).stderr)
+            self.assert_result(h.run_operator_action('status', *ON, '--brief'), 0, 'recipient unknown; created unknown')
+            state_path.write_bytes(saved)
+            done = self.state(h)
+
+            self.assert_result(h.run_operator_action('resume', *ON), 0, twl.DONE)
+            self.assertEqual(self.state(h)['turns'], done['turns'])
+            self.assertEqual(self.state(h)['pending_operator_note_id'], 'N001')
+            feedback = 'Also reject floating point inputs.'
+            issued = h.issue_operator_intent('reject', *ON, '--text', feedback)
+            self.assertEqual(issued.returncode, 0, issued.stdout + issued.stderr)
+            digest = json.loads(issued.stdout)['digest']
+            self.assertEqual(self.state(h)['turns'], done['turns'])
+            reject = h.command(*ON, '--text', feedback, '--expect', digest, '--skip-probe')
+            reject[2] = 'reject'
+            reopened = subprocess.run(reject, cwd=h.root, env={**os.environ, **env}, text=True, capture_output=True)
+            self.assert_result(reopened, 0, twl.DONE)
+            state = self.state(h)
+            author = state['turns'][len(done['turns'])]
+            self.assertEqual((author['phase'], author['role'], author['answer']['status']), ('EXEC', 'author', 'READY'))
+            self.assertEqual((author['rejection_id'], author['operator_note_id']), ('R001', 'N001'))
+            self.assertIn(feedback, self.prompt(h, author))
+            self.assertIn(note_text, self.prompt(h, author))
+            self.assertNotIn('pending_operator_note_id', state)
+            self.assertEqual(state['operator_notes'][0]['status'], 'delivered')
+
+        with self.harness(lifecycle=True) as h:
+            done, _, _ = self.done_with_note(h)
+            self.assert_result(h.run_operator_action('accept', *ON), 0, 'ACCEPTED')
+            accepted = self.state(h)
+            self.assertEqual(accepted['turns'], done['turns'])
+            self.assertEqual(accepted['pending_operator_note_id'], 'N001')
+            self.assertEqual(accepted['operator_notes'], done['operator_notes'])
+
+
+if __name__ == '__main__':
+    unittest.main()

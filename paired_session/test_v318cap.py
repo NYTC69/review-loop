@@ -112,6 +112,11 @@ class DispatchBudgetTests(unittest.TestCase):
                 'Do not report exit codes; the coordinator reads tool results directly.',
                 'Do not report exit codes; the coordinator reads tool results directly. ' + rc.MISSING_HOST_TEST_RULE)
             if role == 'reviewer':
+                baseline = baseline.replace(
+                    rc.REVIEW_HISTORY_GUIDANCE + '\n',
+                    rc.REVIEW_HISTORY_GUIDANCE + '\n'
+                    'If a blocking repair needs an in-scope operator ruling, return REVISE_NEEDS_OPERATOR '
+                    'and put a short, explicit question in the summary of the first new blocking finding.\n')
                 baseline = baseline.replace('APPROVE in EXEC requires non-empty self_run_evidence.',
                                             'APPROVE in EXEC requires non-empty self_run_evidence. '
                                             'List the commands you ran yourself; the reused test result need not be listed.')

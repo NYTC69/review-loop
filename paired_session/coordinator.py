@@ -5712,6 +5712,13 @@ class Coordinator:
                 'Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
             ]) + self._guidance(REVIEW_GUIDANCE) + inline
+        life = self.state.get('lifecycle') or {}
+        replay = life.get('writer_replay')
+        ruling_instruction = (
+            ['If a blocking repair needs an in-scope operator ruling, return REVISE_NEEDS_OPERATOR '
+             'and put a short, explicit question in the summary of the first new blocking finding.']
+            if role == 'reviewer' and phase == 'EXEC' and not self.state['config'].get('review_report')
+            and not (replay and replay['epoch'] == life.get('epoch')) else [])
         return '\n'.join([
             f'Role: {role}, read-only whole-delta reviewer. Phase: {phase}. {fresh_note}',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
@@ -5721,6 +5728,7 @@ class Coordinator:
             REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
             REVIEW_HISTORY_GUIDANCE,
+            *ruling_instruction,
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt() + self.gate_items_prompt() + self.post_gate_prompt() + self.rejection_notes_prompt(),
             self._test_instruction(snapshot),
@@ -8292,6 +8300,7 @@ class Coordinator:
                 if role == 'gate':
                     if gate_answer_error(answer):
                         continue
+                # Raw ruling receipts are ineligible for reuse; a blocking repair is reviewed on its resulting tree.
                 elif role not in ('reviewer', 'shadow') or answer.get('status') not in ('APPROVE', 'REVISE', 'HOLD'):
                     continue
             elif (role != 'reviewer' or phase not in ('POLISH-Q', 'DOCS', 'SECURITY')
@@ -9567,7 +9576,10 @@ class Coordinator:
         failed = (self.state.get('plan_history_rewrite') or {}) if phase == 'PLAN' else {}
         if failed.get('status') == 'failed':   # FIELD-11b: a resume does not draw a new reviewer to get past a failed rewrite
             return self.hold(failed['hold_reason'])
-        schema = review_schema(confirm_shadow=phase == 'EXEC' and any(
+        statuses = ('REVISE', 'APPROVE', 'HOLD')
+        if phase == 'EXEC' and not self.state['config'].get('review_report'):
+            statuses += ('REVISE_NEEDS_OPERATOR',)
+        schema = review_schema(statuses=statuses, confirm_shadow=phase == 'EXEC' and any(
             row.get('needs_confirmation') for row in self._reviewer_open_findings()))
         result = self._recorded_reviewer_result(phase)
         if result is None:
@@ -9613,6 +9625,9 @@ class Coordinator:
                             '. This is the one allowed protocol retry; include every open id.')
             result = self.invoke('reviewer', phase, retry_prompt, schema)
         reviewer_raw_verdict = answer['status']
+        ruling = answer['status'] == 'REVISE_NEEDS_OPERATOR'
+        if ruling:
+            answer['status'] = 'REVISE'
         post_gate = self._post_gate_review(phase, result['sequence'])
         if post_gate:   # R2 / owner 2026-11-20: after the gate only the gate items and regressions of the fix block
             self._mark_post_gate_findings(answer['full_review'], regression_marker=True)
@@ -9806,6 +9821,8 @@ class Coordinator:
                 if secrets:
                     self.hold(self._secret_scan_hold_reason())
                     return
+                if ruling:
+                    print(hold_explanation('NOTE: the reviewer also requests an operator ruling', new_blocking[:1], None))
                 self.round_limit_hold(self._exec_limit_reason() if phase == 'EXEC' else f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
@@ -9822,6 +9839,8 @@ class Coordinator:
                                     'evidence': row['evidence']} for row in answer['prior_findings']],
             }, ensure_ascii=False)
             self.state['next'] = 'author'
+            if ruling and (stop_rule or structural):
+                print(hold_explanation('NOTE: the reviewer also requests an operator ruling', new_blocking[:1], None))
             if stop_rule:   # R4b / R4c (before the cap: it names the cause); --add-rounds dispatches the author
                 self.state['pending_reviewer_result_sequence'] = None
                 self.round_limit_hold(stop_rule)
@@ -9829,6 +9848,12 @@ class Coordinator:
             if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence); resume routes to the author
                 self.state['pending_reviewer_result_sequence'] = None
                 self._structural_hold(structural)
+                return
+            if ruling:
+                self.state['pending_reviewer_result_sequence'] = None
+                reason = hold_explanation('reviewer requests an operator ruling', new_blocking,
+                                          answer.get('self_run_evidence'))
+                self.hold(reason + '; queue the ruling with note --text or note --file, then resume')
                 return
         elif plan_history:
             # FIELD-11: the fresh shadow and gate refuse review history in their inputs (assert_fresh_prompt, unchanged);
@@ -11248,6 +11273,22 @@ def normalize_cli_paths(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def pending_note_summary(state: dict) -> Optional[str]:
+    """Format saved pending-note metadata for either status mode."""
+    if not isinstance(state, dict) or not (note_id := state.get('pending_operator_note_id')):
+        return None
+    note = next((row for row in state.get('operator_notes', []) if row.get('id') == note_id), {})
+    summary = (f"Pending operator note {note_id}: recipient {note.get('deliver_to') or 'unknown'}; "
+               f"created {note.get('timestamp') or 'unknown'}")
+    if state.get('status') == 'DONE':
+        summary += (
+            f'\nAt DONE, accept and plain resume leave {note_id} undelivered. An in-scope reject reopens EXEC '
+            f'and sends {note_id} together with the rejection to the next EXEC author. '
+            'Use reject --intent-only --text "<rejection feedback>", then '
+            'reject --expect <digest> --text "<rejection feedback>".')
+    return summary
+
+
 def status_brief(run_dir: Path, count: int) -> int:
     """PL: the last `count` progress events as readable lines; read-only, so it works while a run holds the lease."""
     try:
@@ -11269,6 +11310,8 @@ def status_brief(run_dir: Path, count: int) -> int:
     written = state.get('ignored_config_written')
     if written:   # F3
         print('WARNING: ignored executable-config files written by the author: ' + ', '.join(written))
+    if summary := pending_note_summary(state):
+        print(summary)
     return 0
 
 
@@ -11276,7 +11319,13 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.scope_change and args.action not in ('note', 'reject'):
         raise ValueError('--scope-change requires note or reject')
     if args.action == 'status':
-        return print((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')) or 0
+        saved = (Path(args.run_dir) / 'state.json').read_text(encoding='utf-8')
+        print(saved)
+        try: state = json.loads(saved)
+        except ValueError: state = {}
+        if summary := pending_note_summary(state):
+            print(summary, file=sys.stderr)
+        return 0
     if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
         args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
     co = Coordinator(args)

@@ -813,6 +813,15 @@ Blocking findings without a label never HOLD; they are counted in
 `unlabeled_blocking_findings` (run total, and per reviewer/gate turn receipt) so a
 reviewer that never labels is visible.
 
+When a blocking repair needs an in-scope operator ruling, the persistent EXEC
+reviewer can return `REVISE_NEEDS_OPERATOR`. The run HOLDs with the question and
+the repair ready for the next author turn. Queue your answer with `note --text`
+or `note --file`, then `resume`. If a round cap, stop rule or structural HOLD
+takes precedence, the terminal shows the question in a separate NOTE and the
+existing continuation instructions apply. With sufficient test evidence,
+advisory-only findings still take the advisory approval path and the question
+goes to the BACKLOG with the advisory.
+
 An idle `HOLD` run accepts an in-scope clarification with `note --text '...'`
 or `note --file /path/to/note` when an author turn is available in PLAN or EXEC.
 An EXEC HOLD waiting for its reviewer also accepts a note for the next author
@@ -820,8 +829,8 @@ turn; review roles never receive it. A newer note replaces a pending one.
 Since v3.7.2 a note is also queued at a round-limit HOLD (it reaches the author turn after `resume --add-rounds N`)
 and, with lifecycle on, while the run waits for the gate, FINISH, DOCS or a POLISH-Q step: it reaches the next newly
 dispatched author-role turn (EXEC author, FINISH writer, DOCS writer or POLISH-Q writer). A recorded writer turn that
-resume reuses is not dispatched again and takes no note. `note` prints which turn will receive it, and `status` shows
-it while it is undelivered. Notes are refused while a turn is active or uncertain, when the invocation budget is
+resume reuses is not dispatched again and takes no note. `note` prints which turn will receive it. Notes are
+refused while a turn is active or uncertain, when the invocation budget is
 exhausted, at a PLAN-reviewer wait, at a SECURITY wait, at a gate wait with lifecycle off, and at DONE
 (use `reject`). A note file must be outside the workspace and run directory.
 The note cannot authorize new scope. For a scope
@@ -834,6 +843,12 @@ The old run cannot resume or be accepted; a second chained scope change is
 refused. A scope-change note requires the named existing run. Author-produced
 plan/code remains visible to reviewers, while the operator note itself is not
 forwarded to their prompts.
+
+If a note is still queued at DONE, `accept` and plain `resume` leave it undelivered.
+An in-scope rejection reopens EXEC, and the next EXEC author receives both the
+queued note and the rejection feedback. Preview with
+`reject --intent-only --text "<rejection feedback>"`, then use
+`reject --expect <digest> --text "<rejection feedback>"` with the same feedback.
 
 When the author's sandbox cannot run a check (for example xcodegen, XCTest or
 CoreSimulator under a Claude author), the operator can run it on the host and
@@ -911,6 +926,9 @@ Plain `status` reads state under the run lease; while a coordinator owns it,
 it prints `HOLD: another coordinator currently owns this run` and exits 2.
 Use lease-free `status --brief [N]` (default 20 events) during a run. It shows the
 pending quota retry time along with progress events for waits, retries and exhausted budgets.
+Both modes show a pending operator note's ID, recipient and creation time. Plain
+`status` prints the summary to stderr and keeps the saved JSON on stdout. Brief
+prints the saved summary to stdout even when there are no progress events.
 Progress is saved to `RUN_DIR/progress.jsonl`; `--quiet-progress` suppresses
 live event lines while keeping that file and the final status line.
 
