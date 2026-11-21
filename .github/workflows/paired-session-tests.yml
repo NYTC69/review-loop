@@ -1,7 +1,8 @@
 name: paired-session tests
 
 # Trial (owner 2026-10-04): move full paired_session suites off the CPU-bound dev Mac.
-# One job per test module (large modules split into shards by test id), on Linux and macOS, both on Python 3.9
+# Linux: one job per test module (large modules split into shards by test id). macOS: 5 group jobs, each running
+# several parts at once (free plan: 5 concurrent macOS jobs). Both on Python 3.9
 # (the dev Mac runs Xcode's 3.9). Shard counts: SHARDS below; tune from the job timings.
 on:
   push:
@@ -20,11 +21,17 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       list: ${{ steps.list.outputs.list }}
+      macos: ${{ steps.list.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
       - id: list
         env:
           SHARDS: '{"test_real_coordinator": 16, "test_operator_roles": 3}'
+          # macOS (free plan: 5 concurrent macOS jobs): 5 group jobs, each running WORKERS parts at once in separate
+          # processes; parts are packed by the measured seconds in .github/paired-session-macos-timings.json
+          # (unknown modules count 60 s). MAC_SHARDS splits modules that would otherwise set the wall time.
+          MAC_SHARDS: '{"test_worktree_lifecycle": 4, "test_gate_once": 2, "test_ratelimit": 2, "test_rounds_threshold": 2, "test_v319hold": 2}'
+          MAC_GROUPS: '5'
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import glob, json, os
@@ -35,6 +42,20 @@ jobs:
               n = shards.get(m, 1)
               out += [{'module': m, 'shard': i, 'of': n} for i in range(n)]
           print('list=' + json.dumps(out))
+          timings = json.load(open('.github/paired-session-macos-timings.json'))
+          mac_shards = {**shards, **json.loads(os.environ['MAC_SHARDS'])}
+          parts = []
+          for path in sorted(glob.glob('paired_session/test_*.py')):
+              m = os.path.basename(path)[:-3]
+              n = mac_shards.get(m, 1)
+              parts += [(timings.get(m, 60) / n, {'module': m, 'shard': i, 'of': n}) for i in range(n)]
+          groups = [[0, []] for _ in range(int(os.environ['MAC_GROUPS']))]
+          for cost, part in sorted(parts, key=lambda p: -p[0]):   # longest first into the lightest group
+              g = min(groups, key=lambda g: g[0])
+              g[0] += cost
+              g[1].append(part)
+          print('macos=' + json.dumps([{'group': k, 'seconds': round(g[0]), 'parts': json.dumps(g[1])}
+                                       for k, g in enumerate(groups)]))
           PY
 
   # One job per OS: a matrix holds at most 256 jobs, and modules x 2 OS passed that limit (2026-10-17).
@@ -106,11 +127,12 @@ jobs:
           retention-days: 14
 
   test-macos:
+    name: test-macos group ${{ matrix.group.group }}
     needs: modules
     strategy:
       fail-fast: false
       matrix:
-        part: ${{ fromJson(needs.modules.outputs.list) }}
+        group: ${{ fromJson(needs.modules.outputs.macos) }}
     runs-on: macos-latest
     timeout-minutes: 60
     env:
@@ -138,37 +160,18 @@ jobs:
           # Candidate test commands resolve bare python3; match the dev Mac (Xcode 3.9), not the image's Homebrew 3.14.
           if [ "$RUNNER_OS" = macOS ]; then ln -sf /usr/bin/python3 "$ci_bin/python3"; fi
           echo "$ci_bin" >> "$GITHUB_PATH"
-      - name: Run ${{ matrix.part.module }} ${{ matrix.part.shard }}/${{ matrix.part.of }}
+      - name: Run group ${{ matrix.group.group }} (~${{ matrix.group.seconds }} s of tests)
         env:
-          MODULE: ${{ matrix.part.module }}
-          SHARD: ${{ matrix.part.shard }}
-          OF: ${{ matrix.part.of }}
+          PARTS: ${{ matrix.group.parts }}
+          WORKERS: '3'
         run: |
-          $PY --version; command -v python3 codex claude; python3 --version
+          $PY --version; command -v python3 codex claude; python3 --version; sysctl -n hw.ncpu
           set -o pipefail
-          $PY - <<'PY' 2>&1 | tee test.log
-          import os, sys, unittest
-          def walk(suite):
-              for t in suite:
-                  if isinstance(t, unittest.TestSuite): yield from walk(t)
-                  else: yield t
-          loader = unittest.TestLoader()
-          ids = sorted(t.id() for t in walk(loader.loadTestsFromName('paired_session.' + os.environ['MODULE'])))
-          shard, of = int(os.environ['SHARD']), int(os.environ['OF'])
-          mine = [x for k, x in enumerate(ids) if k % of == shard]   # round-robin spreads the slow tests
-          if sys.platform != 'darwin':   # interim: the candidate-test sandbox is macOS-only by design
-              skip = {l.strip() for l in open('.github/paired-session-darwin-only.txt') if l.strip() and not l.startswith('#')}
-              dropped = [x for x in mine if x.rsplit('.', 1)[-1] in skip]
-              mine = [x for x in mine if x not in dropped]
-              print(f'skipped {len(dropped)} darwin-only tests', flush=True)
-          print(f'shard {shard}/{of}: {len(mine)} of {len(ids)} tests', flush=True)
-          result = unittest.TextTestRunner(verbosity=2, stream=sys.stdout).run(loader.loadTestsFromNames(mine))
-          sys.exit(0 if result.wasSuccessful() else 1)
-          PY
+          $PY .github/paired-session-run-group.py "$PARTS" "$WORKERS" 2>&1 | tee run.out
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: log-macos-latest-${{ matrix.part.module }}-${{ matrix.part.shard }}
+          name: log-macos-latest-group-${{ matrix.group.group }}
           path: test.log
           retention-days: 14
 
