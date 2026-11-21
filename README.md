@@ -507,10 +507,12 @@ reviews, or recommends splitting when two consecutive reviews after an approval 
 findings. Each such HOLD prints its round rule. Review findings block at CRITICAL, MAJOR or SECURITY
 severity in correctness, data-loss, security or money. Findings carry a reachability statement. An empty
 statement leaves an otherwise blocking finding blocking. With only non-blocking rows left and valid
-evidence, a REVISE becomes `APPROVE_WITH_ADVISORY`. EXEC requires a passing configured test, the reviewer’s
-own run evidence and the current tree. When test evidence is the only obstacle, the run HOLDs for
-`attach-verification` without using a round. Before dispatching
-the gate, the coordinator checks that any host verification the approval relied on is bound to the current tree.
+evidence, a REVISE becomes `APPROVE_WITH_ADVISORY`. EXEC requires a passing configured test on the current tree
+and the persistent reviewer's own evidence from checks they ran. Read-only roles can reuse the latest completed
+tool-observed pass for the exact command and tree. A newer eligible failure supersedes that pass. An intact,
+passing host record attached with `attach-verification` also supplies proof and still settles a sandbox-only
+failure. The roles review independently, and missing host verification is never a finding. When test evidence
+is the only obstacle, the run HOLDs without using a round. The coordinator rechecks reused proof before the gate.
 Open advisory rows go to the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md` (not when it is a symbolic link,
 not a regular file or ignored by git; then they stay in `backlog.md`). See
 [the advisory rules](paired_session/README.md#minor-only-review-revisions).

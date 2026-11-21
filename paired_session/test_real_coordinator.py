@@ -4222,6 +4222,12 @@ sys.exit(result.returncode)
                      t.get('answer', {}).get('status') == 'APPROVE']
         self.assertTrue(approvals)
         self.assertTrue(all(t['answer']['observed_commands'] for t in approvals))
+        for turn in (row for row in state['turns'] if row['role'] in ('shadow', 'gate')):
+            reviewer = next(row for row in reversed(state['turns']) if row['role'] == 'reviewer'
+                            and row['phase'] == 'EXEC' and row['sequence'] < turn['sequence'])
+            self.assertEqual(turn['reused_test_evidence'], reviewer['sequence'])
+            self.assertTrue(all(row['command'] == 'git status --short' for row in turn['observed_commands']))
+            self.assertTrue(turn['observed_commands'])
         round_text = '\n'.join(p.read_text() for p in (self.run_dir / 'rounds').glob('*.md'))
         self.assertIn('Observed Commands', round_text)
         self.assertIn('Claimed Self Run Evidence', round_text)

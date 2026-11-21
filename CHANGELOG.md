@@ -1,5 +1,18 @@
 # Changelog
 
+### Unreleased (WI-TESTEVID)
+
+- 只读审查角色可复用同一工作树上对同一配置命令的最新有效测试结果。较新的完整失败会使先前的通过结果失效。当前工作树上有效的主机通过记录仍可免去重复测试，并解决仅在沙箱内发生的失败。回执记录来源，持久 reviewer 仍须列出自己运行的检查。缺少主机验证记录不算审查发现。
+- DOCS writer 和 POLISH-Q 的代码简化、测试合并 writer 在派发时看到输入工作树的当前验证记录，提示中省略私人备注。
+- 验收 JSON 保留验证记录的转移历史，终端输出区分 DOCS writer 写入和 EXEC author 仅修改文档这两种转移。
+
+**按意图更新的测试断言**
+
+- `test_full_fake_run_forces_both_revisions_and_shadow` 检查 shadow 和 gate 复用同一工作树的 reviewer 结果，仍执行独立检查，回执引用原序号。
+- `test_a_no_op_worktree_run_goes_through_every_stage_and_reaches_done_only_after_security` 检查 POLISH-Q 专家复用结果并记录来源，保留其独立审查。
+- `test_default_review_dispatch_bytes_match_release_except_for_review_rules_and_exec_author_grows` 将缺少主机记录的规则、命令包装措辞及 reviewer 自跑证据说明纳入提示字节比较。
+- `test_a_gemini_gate_approval_counts_the_test_run_from_a_tool_step` 在没有通过证据的新工作树检查缺少工具结果时的拒绝路径。
+
 ### v3.10.1：门审重派不再误判矩阵里的工具路径（WI-PATCH1）
 
 - 修复门审重派时把场景矩阵中合法的工具路径误判为审查历史而触发 HOLD 的问题。矩阵仍随完整提示发送并留证，重派说明仍接受独立性检查。

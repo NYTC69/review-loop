@@ -269,6 +269,8 @@ def main():
     prompt = sys.stdin.read()
     if '--print=' in args:   # ADR-21: agy, the prompt in one stream-json user event
         prompt = gemini_prompt(prompt)
+    reused_test = next((line.removeprefix('The configured test passed on this tree: ') for line in prompt.splitlines()
+                        if line.startswith('The configured test passed on this tree: ')), '')
     append_commands = os.environ.get('FAKE_APPEND_REVIEWER_COMMAND')
     if append_commands and 'implementer. Phase: EXEC.' in prompt:
         with Path(os.environ['FAKE_APPEND_REVIEWER_COMMAND_FILE']).open('a') as target:
@@ -442,6 +444,9 @@ def main():
                                                      + 'Qm9kZ3hKc2lPa1pXN2VyYm5' + 'aZ3kQ9mP2xL7vN4bR8tY6wC1' + '"\n')
             body = 'Implemented sum_ints and ran fake checks.'
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
+        if 'Phase: EXEC' in prompt and (author_test := os.environ.get('FAKE_AUTHOR_OBSERVED_TEST')):
+            command_events = [{'command': author_test, 'exit_code': 0, 'output': 'OK'}]
+            extra_observed_commands = [{'command': author_test}]
         if 'Advisory fix round' in prompt and (mark := os.environ.get('FAKE_AUTHOR_ADVISORY_TOUCH')):   # ADVFIX
             Path(mark).write_text('advisory round ran\n')
         if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
@@ -593,6 +598,8 @@ def main():
         configured_test = ('Run this test command exactly as written in one Bash call: '
                            in prompt and prompt.split(
                                'Run this test command exactly as written in one Bash call: ', 1)[1].splitlines()[0])
+        if reused_test and role == 'reviewer' and phase == 'EXEC' and os.environ.get('FAKE_REVIEW_TEST_FAILURE'):
+            configured_test = reused_test   # a voluntary rerun in the sandbox
         if 'No test command is configured for this review' in prompt:   # LG2-b2: a read command, no test
             configured_test = 'git status --short'
         open_ids = []
@@ -779,9 +786,10 @@ def main():
                      for finding_id in open_ids]
         if 'Role: shadow,' in prompt or 'Role: shadow,' in prompt.replace('fresh isolated ', ''):
             prior = None
+        check = configured_test or ('git status --short' if reused_test else 'python3 -m unittest')
         answer = {'status': 'REVISE' if revise else 'APPROVE',
                   'full_review': findings,
-                  'self_run_evidence': ([{'command': configured_test or 'python3 -m unittest'}]
+                  'self_run_evidence': ([{'command': check}]
                                         if phase in ('EXEC', 'SECURITY', 'Q', 'DOCS') else [])}
         if (role == 'reviewer' and phase == 'EXEC' and prior is not None and (flag := os.environ.get('FAKE_EXEC_HOLD_IF_FILE'))
                 and Path(flag).exists()):   # D09 C1-b2: the persistent reviewer HOLDs on a writer replay
@@ -796,7 +804,7 @@ def main():
             extra_observed_commands = [*answer['self_run_evidence'], *(extra_observed_commands or [])]
             answer['self_run_evidence'] = []
         if 'Phase: POLISH-Q' in prompt:
-            answer['self_run_evidence'] = [{'command': configured_test or 'python3 -m unittest'}]
+            answer['self_run_evidence'] = [{'command': check}]
             once = os.environ.get('FAKE_SPECIALIST_NO_TOOLS_ONCE')
             if specialist and (specialist in os.environ.get('FAKE_SPECIALIST_NO_TOOLS', '').split(',') or
                                (once and not Path(once).exists() and Path(once).write_text('no tools\n') > 0)):
@@ -832,6 +840,9 @@ def main():
         if (command_events is None and vendor == 'codex' and role == 'reviewer' and phase == 'EXEC' and configured_test
                 and os.environ.get('FAKE_CODEX_LONG')):   # FIELD-20: the configured test outlives the first yield
             command_events = long_command([{'command': configured_test, 'exit_code': 0, 'output': 'OK'}], configured_test)
+        if command_events is None and vendor == 'codex' and reused_test:
+            command_events = [{'command': row['command'], 'exit_code': 0, 'output': 'OK'}
+                              for row in [*answer['self_run_evidence'], *(extra_observed_commands or [])]]
     if (os.environ.get('FAKE_REVIEW_HOLD') and 'Role: reviewer,' in prompt and
             'Phase: PLAN' in prompt):
         answer = {'status': 'HOLD', 'prior_findings': [], 'full_review': [],   # W10: the reviewer's words, as in the field

@@ -65,11 +65,10 @@ commit when `auto_commit` makes one (the worktree file is written only after the
 otherwise in the working tree. A `BACKLOG.md` that is a symbolic link, not a regular file or ignored by git is
 never written: the rows stay in `backlog.md` and accept prints a NOTE.
 An EXEC advisory-only REVISE whose only gap is the test evidence HOLDs for `attach-verification` (no round).
-Before the gate, an EXEC approval that rested on an operator record HOLDs the same way when no record is bound to
-the current tree.
-EXEC still requires a successful configured test, no observed test failure, the reviewer's own run
-evidence, and the same snapshot. Blocking findings retain the normal repair
-loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
+Before the gate, the coordinator rechecks any test proof the EXEC approval reused.
+EXEC requires proof that the configured test passed on the reviewed tree and non-empty `self_run_evidence`
+from the persistent reviewer's own independent checks. The reused result need not appear among those commands.
+Blocking findings retain the normal repair loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
 round; its eligible advisory re-review exits immediately.
 Blocking means a CRITICAL, MAJOR or SECURITY finding whose category is correctness,
 data-loss, security or money. Findings carry a reachability statement, and an empty statement leaves an otherwise
@@ -785,39 +784,37 @@ bin/paired-session attach-verification --workspace "$WS" --workitem "$ITEM" --ru
   --log-sha256 "$(shasum -a 256 /tmp/xcodebuild.log | cut -d' ' -f1)" --note 'ran on the host simulator'
 ```
 
-The record (command, cwd inside the workspace, exit code, log sha256, time,
-operator UID and a non-empty note) is bound to the current workspace snapshot
-digest; the log, which must lie outside the workspace and run dir and match
-`--log-sha256`, is copied into `evidence/operator-verification-V<n>.log`. The
-EXEC reviewer, shadow and gate prompts show the command, cwd, exit
-code, log hash and the last 2,000 log characters (not the note) as
-operator-verified evidence for this exact tree. The POLISH-Q specialist prompts show them too, and since v3.8.4 add a rule not to report such a sandbox-only failure
-as a finding. The FINISH prompt shows the same records (v3.7.1) with a rule: a
-configured-test failure that only comes from the finisher's sandbox (a database that cannot start there) and that a
-record passed on this exact tree is settled, so the finisher does not HOLD for it. Since v3.8.3 the EXEC author prompt
-shows them with the same rule: an author whose sandbox cannot run that test returns READY without changes and names the
-record, and the next review settles the test-failure row from it (before, `resume` after an attach re-ran the author,
-which held again). A record is voided for good once the
-snapshot differs (an operator edit or an author turn in the workspace) or the
-log copy changes. Every tree the coordinator observes in an author turn counts,
-also when the turn fails: its start and end snapshots, and an unknown tree when
-the CLI ran but no end snapshot exists (also after the coordinator itself was
-killed during an author turn: the next command that finds the interrupted turn
-voids it). The snapshot covers tracked
-and untracked non-ignored files, so a change to an ignored file does not void it. The persistent reviewer, whose
-thread saw a record, is told in its next prompt that it was withdrawn (id and
-reason only). `accept` lists the records still current for the accepted tree in
-`acceptance.json` and on stdout. Attaching is refused while a turn is active, on
-ACCEPTED, or when the shown text would fail the fresh-role history scan. It is
-evidence only, with one exception: a current record for the exact reviewed tree
-whose command is the configured test command and whose exit code is 0 counts as
-a successful run of that command in EXEC and in the DOCS review, so an approval
-whose own sandboxed run of it failed is not sent back as a test failure or held
-(the turn receipt or DOCS review names the record in `operator_test_evidence`).
+The record (command, cwd inside the workspace, exit code, log SHA-256, time, operator UID and a non-empty note)
+binds to the current workspace snapshot digest. The log must lie outside the workspace and run directory and
+match `--log-sha256`. The coordinator copies it to `evidence/operator-verification-V<n>.log`.
 
-One change keeps a current record (v3.7.2): a DOCS writer change limited to DOCS allowlist paths re-binds it to the new
-tree; the record lists the carry-over in `carried`, the DOCS receipt in `opv_carried`, and its prompt entry says so.
-Any other change voids it.
+The EXEC reviewer, shadow, gate, POLISH-Q specialists, DOCS reviewer and SECURITY reviewer use the latest
+completed tool observation from a validated read-only turn on the same tree for the exact configured test command.
+An eligible failure supersedes an earlier observed pass. An intact host log with exit code 0 for that command
+and tree can waive the duplicate test and settle a sandbox-only failure. Missing host verification is never
+a finding. Each role still reviews independently, and the persistent reviewer lists the commands they ran
+in `self_run_evidence`. Receipts cite the source turn sequence in `reused_test_evidence` or the host record ID
+in `operator_test_evidence`. Changes to code or tests require proof for the resulting tree. POLISH-Q's coordinator-run
+baseline and post-write checks still run as before.
+
+The read-only roles, FINISH, the EXEC author, the DOCS writer, the POLISH-Q simplifier and the POLISH-Q test
+consolidator see current operator evidence in their prompts. The block shows the command, cwd, exit code, log hash
+and last 2,000 log characters. The operator note stays in the record. The writers see evidence for their live input
+tree. FINISH and the EXEC author can use a passing host record to proceed when the configured test fails solely
+because of their sandbox. The next review reconciles an open test-failure finding with a newer eligible pass
+or a valid host record.
+
+A changed tree or log copy voids a record. The snapshot covers tracked and untracked non-ignored files.
+Both the start and end snapshots of an author turn count, including failed turns. An interrupted author turn
+without an end snapshot leaves the tree unknown. The persistent reviewer is told when a record they saw was
+withdrawn, with its ID and reason. Attaching requires an idle ACTIVE, HOLD or DONE run and a log that passes
+the fresh-role input scan.
+
+Allowlisted DOCS writer changes and eligible EXEC author docs-only changes carry a current record to the new tree.
+The record includes the history in `carried`, and a DOCS writer receipt cites the carried IDs in `opv_carried`.
+`accept` keeps the carry-over history in `acceptance.json`. Its stdout identifies DOCS writer and EXEC author
+docs-only carry-over and includes the record ID, command, exit code and log hash. A direct record is shown as
+current for the accepted tree. A stale or damaged record is omitted.
 
 Each run records an item UUID. A scope-change successor inherits it and copies
 the parent's OPEN blocking findings into its protected successor spec and state,

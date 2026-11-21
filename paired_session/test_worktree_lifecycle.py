@@ -246,8 +246,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
             self.assertIn('Reserved for the DOCS stage; do not edit: CHANGELOG.md.', prompt)   # earlier writers know
         [polish] = [row for row in state['lifecycle']['receipts'] if row['stage'] == 'POLISH-Q']
         names = ['python-reviewer', 'code-reviewer', 'silent-failure-hunter', 'pr-test-analyzer']   # sum_ints.py is Python
-        self.assertEqual({row['observed_test'] for row in polish['specialist_turns']},
-                         {state['config']['test_command']})   # W2a-1 L-3: recorded, not enforced
+        [reviewer] = [row for row in state['turns'] if row['role'] == 'reviewer' and row['phase'] == 'EXEC']
+        self.assertEqual({row['observed_test'] for row in polish['specialist_turns']}, {None})
+        self.assertEqual({row['reused_test_evidence'] for row in polish['specialist_turns']}, {reviewer['sequence']})
         self.assertNotIn('review', [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS'][0])
         self.assertEqual((polish['status'], polish['specialists'], polish['skipped'], polish['output_oid']),
                          ('READY', names, False, tree))
@@ -271,6 +272,74 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn(DONE, again.stdout)
         self.assertEqual(len(json.loads((self.run_dir / 'state.json').read_text())['turns']), len(state['turns']))
+
+    def test_lifecycle_writers_see_current_operator_evidence(self):
+        (self.workspace / 'feature.py').write_text(''.join(f'VALUE_{i} = {i}\n' for i in range(30)))
+        (self.workspace / 'test_feature.py').write_text(
+            'import unittest\n\nclass Smoke(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n')
+        for kind in ('missing', 'current', 'stale', 'damaged'):
+            with self.subTest(kind=kind):
+                self.run_dir = self.root / f'writers-{kind}'
+                co = rc.Coordinator(self.args('--review-only', '--quality-writers', 'both', '--max-invocations', '80',
+                                              '--exec-turn-timeout', '10'))
+                tree = rc.git_snapshot(self.workspace)[0]
+                if kind != 'missing':
+                    log = self.root / 'host-verification.log'
+                    log.write_text('host tests passed\n')
+                    args = types.SimpleNamespace(command=co.args.test_command, exit_code=0, cwd=None, log=str(log),
+                                                 log_sha256=hashlib.sha256(log.read_bytes()).hexdigest(),
+                                                 note='private operator note')
+                    rc.opv.attach(co, args, 'older-tree' if kind == 'stale' else tree, rc.atomic_json)
+                    if kind == 'damaged':
+                        Path(co.state['operator_verifications'][0]['log_evidence']).write_text('damaged log\n')
+                dispatch = co._lifecycle_writer
+                seen = set()
+
+                def check_writer(request, label, prompt):
+                    if label == 'finisher':
+                        return dispatch(request, label, prompt)
+                    rulings = co.operator_rulings_prompt('author')
+                    if label == 'docs writer':
+                        expected = (wl.docs_prompt(co.state['config'].get('docs_file'), sorted(co._docs_allowlist()),
+                                                   co.run_dir.name, co.workitem.read_text(encoding='utf-8'))
+                                    + rulings + co._docs_feedback_prompt())
+                    else:
+                        writer = label.removeprefix('POLISH-Q ')
+                        paths = co._changed_paths()
+                        if writer == 'test-writer':
+                            paths = [path for path in paths if wl.is_test_path(path)]
+                        body = co._simplifier_body() if writer == 'simplifier' else ''
+                        expected = (wl.writer_prompt(writer, body, paths, co.args.test_command, co._docs_reserved_note())
+                                    + '\n' + rc.LONG_COMMAND_RULE + rulings)
+                    result = dispatch(request, label, prompt)
+                    filename = f"{result['sequence']:03d}-{request['stage'].lower()}-author.prompt.txt"
+                    actual = (co.evidence / filename).read_text()
+                    if kind == 'current':
+                        base, header, block = actual.partition('\n## Operator-verified evidence for this exact tree')
+                        self.assertTrue(header)
+                        self.assertEqual(base, expected)
+                        self.assertIn(tree, block)
+                        self.assertIn('host tests passed', block)
+                        self.assertNotIn('private operator note', block)
+                    else:
+                        self.assertEqual(actual, expected)
+                    seen.add(label)
+                    return result
+
+                with mock.patch.object(co, '_lifecycle_writer', side_effect=check_writer):
+                    self.assertEqual(co.drive(), 'DONE')
+                self.assertEqual(seen, {'POLISH-Q simplifier', 'POLISH-Q test-writer', 'docs writer'})
+                for phase in ('POLISH-Q', 'SECURITY'):
+                    for turn in (row for row in co.state['turns'] if row['role'] == 'reviewer' and row['phase'] == phase):
+                        prompt = (co.evidence / f"{turn['sequence']:03d}-{phase.lower()}-reviewer.prompt.txt").read_text()
+                        self.assertIn(rc.MISSING_HOST_TEST_RULE, prompt)
+                        if kind == 'current':
+                            self.assertEqual(turn['operator_test_evidence'], 'V001')
+                            self.assertIn('The configured test passed on this tree', prompt)
+                            self.assertFalse(any(rc.command_invokes_test(row['command'], co.args.test_command)
+                                                 for row in turn['observed_commands']))
+                self.assertFalse(co.open_findings())
+                self.assertTrue(co.state['lifecycle']['quality_writers']['baseline']['passed'])
 
     def test_a_finish_write_reopens_exec_review_without_a_second_gate_before_finishing_again(self):
         result = self.run_coordinator('--lifecycle-mode', 'on', env={'FAKE_FINISH_WRITE': '1'})

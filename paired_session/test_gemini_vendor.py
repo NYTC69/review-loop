@@ -360,6 +360,7 @@ class GeminiAdapterTests(unittest.TestCase):
         observed = self.receipt(co, 1, 'EXEC', 'gate')['observed_commands']
         self.assertEqual([(row['command'], row['exit_code'], row['source']) for row in observed], [('python3 -m unittest', 0, 'run_command')])
         self.assertNotIn('--conversation', self.calls()[0]['args'])
+        (co.workspace / 'tracked.txt').write_text('different tree without a test result\n')
         with patch.dict(os.environ, {'FAKE_MISSING_OBSERVED': '1'}), \
                 self.assertRaisesRegex(RuntimeError, 'gate EXEC approval lacks an observed successful configured test command'):
             co._invoke_once('gate', 'EXEC', GATE_PROMPT, rc.gate_schema(), fresh=True)

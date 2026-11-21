@@ -1,9 +1,11 @@
 """Batch OPV (v2.9.5): operator-run verification evidence bound to the exact workspace tree."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import types
 import unittest
+from unittest.mock import patch
 
 from paired_session import operator_verification as opv
 from paired_session import test_real_coordinator as trc
@@ -11,7 +13,7 @@ from paired_session import test_worktree_lifecycle as twl
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'fake_codex_cli',
-            'fake_claude_cli', 'command', 'run_operator_action', 'coordinator')
+            'fake_claude_cli', 'command', 'run_coordinator', 'run_operator_action', 'coordinator')
 HEADER = 'Operator-verified evidence for this exact tree'
 
 
@@ -141,6 +143,51 @@ class OperatorVerificationTests(unittest.TestCase):
         self.assertIsNone(find('0' * 64))                                    # another tree: nothing, and the records are voided
         self.assertEqual({row['status'] for row in co.state['operator_verifications']}, {'voided'})
 
+    def test_damaged_operator_log_cannot_supply_proof(self):
+        for damage in ('missing', 'modified'):
+            with self.subTest(damage=damage):
+                self.run_dir = self.root / f'damage-{damage}'
+                co = self.coordinator('--lifecycle-mode', 'off', '--test-command', 'python3 -m unittest',
+                                      '--shadow', 'off', '--adversarial-gate', 'off')
+                co.state.update(phase='EXEC', next='author')
+                co.author_turn()
+                self.attach(co, command=co.args.test_command)
+                [row] = co.state['operator_verifications']
+                copied = Path(row['log_evidence'])
+                if damage == 'missing':
+                    copied.unlink()
+                else:
+                    copied.write_text('modified copy\n')
+                with patch.dict(os.environ, {'FAKE_MISSING_OBSERVED': '1'}):
+                    self.assertEqual(co._drive_loop(), 'HOLD')
+                turn = co.state['turns'][-1]
+                self.assertNotIn('operator_test_evidence', turn)
+                self.assertIn('lacks an observed successful configured test command', co.state['hold_reason'])
+                co.state['status'] = 'ACTIVE'
+                self.assertEqual(co._drive_loop(), 'DONE')
+                accepted = self.run_operator_action('accept')
+                self.assertIn('ACCEPTED', accepted.stdout, accepted.stdout + accepted.stderr)
+                self.assertNotIn('VERIFICATION V001', accepted.stdout)
+                self.assertFalse(json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text()).get('operator_verifications'))
+
+    def test_legacy_test_evidence_and_direct_accept(self):
+        done = self.run_coordinator()
+        self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+        co = rc.Coordinator(rc.parser().parse_args(self.command()[2:]))
+        tree = rc.git_snapshot(self.workspace)[0]
+        passed = next(row for row in co.state['turns'] if row['role'] == 'reviewer' and row['phase'] == 'EXEC')
+        passed.pop('snapshot_after')   # old unbound evidence stays readable and supplies no proof
+        self.assertFalse(co._test_proof(tree))
+        co.save()
+        self.attach(co, command=co.args.test_command)
+        accepted = self.run_operator_action('accept')
+        row = co.state['operator_verifications'][0]
+        self.assertIn(f"VERIFICATION V001 current for the accepted tree: `{row['command']}` exit 0, log sha256 {row['log_sha256']}",
+                      accepted.stdout)
+        [record] = json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())['operator_verifications']
+        self.assertEqual(record['id'], 'V001')
+        self.assertNotIn('carried', record)
+
     def test_attach_is_refused_while_a_turn_is_active_in_done_and_without_a_run(self):
         self.assertIn('REFUSED: attach-verification requires an existing coordinator run', self.attach_cli().stdout)
         co = self.coordinator()
@@ -215,6 +262,48 @@ class DocsCarryOverTests(unittest.TestCase):
         prompt = (self.run_dir / 'evidence' / f"{docs['review']['sequence']:03d}-docs-reviewer.prompt.txt").read_text()
         self.assertIn(f'Carried over from tree {old[:12]}: only DOCS allowlist paths changed by the docs writer: CHANGELOG.md',
                       prompt)
+
+    def test_accept_reports_docs_carry_over(self):
+        old = self.held_at_docs_with_a_record()
+        done = self.run_operator_action('resume', '--lifecycle-mode', 'on',
+                                        env={'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'})
+        self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+        state = self.state()
+        [row] = state['operator_verifications']
+        docs = [item for item in state['lifecycle']['receipts'] if item['stage'] == 'DOCS'][-1]
+        sequence = docs['review']['sequence']
+        prompt = (self.run_dir / 'evidence' / f'{sequence:03d}-docs-reviewer.prompt.txt').read_text()
+        self.assertIn(rc.MISSING_HOST_TEST_RULE, prompt)
+        self.assertIn('The configured test passed on this tree: python3 -m unittest', prompt)
+        self.assertEqual(docs['review']['operator_test_evidence'], 'V001')
+        accepted = self.run_operator_action('accept', '--lifecycle-mode', 'on')
+        self.assertIn(f"VERIFICATION V001 was carried over a DOCS write: `python3 -m unittest` exit 0, log sha256 {row['log_sha256']}",
+                      accepted.stdout)
+        [record] = json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())['operator_verifications']
+        self.assertEqual(record['carried'], row['carried'])
+        self.assertEqual((record['carried'][0]['by'], record['carried'][0]['from_tree']), ('docs-writer', old))
+
+    @patch.dict(os.environ, {'FAKE_AUTHOR_REJECTION_DOCS': '1'})
+    def test_accept_reports_author_docs_only_carry_over(self):
+        run = ('--lifecycle-mode', 'on', '--max-invocations', '60')
+        env = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'}
+        done = self.run_coordinator(*run, env=env)
+        self.assertIn(twl.DONE, done.stdout, done.stdout + done.stderr)
+        log = self.root / 'host-test.log'
+        log.write_text('Ran 12 tests\nOK\n')
+        attached = self.run_operator_action('attach-verification', *run, '--command', 'python3 -m unittest',
+                                            '--exit-code', '0', '--log', str(log), '--log-sha256',
+                                            hashlib.sha256(log.read_bytes()).hexdigest(), '--note', 'ran on the host')
+        self.assertIn('VERIFICATION: V001 bound to tree', attached.stdout, attached.stdout + attached.stderr)
+        result = self.run_operator_action('reject', *run, '--text', 'Clarify the changelog entry.', env=env)
+        self.assertIn(twl.DONE, result.stdout, result.stdout + result.stderr)
+        [row] = self.state()['operator_verifications']
+        accepted = self.run_operator_action('accept', *run)
+        self.assertIn(f"VERIFICATION V001 was carried over an author docs-only write: `python3 -m unittest` exit 0, log sha256 {row['log_sha256']}",
+                      accepted.stdout)
+        [record] = json.loads((self.run_dir / 'evidence' / 'acceptance.json').read_text())['operator_verifications']
+        self.assertEqual(record['carried'], row['carried'])
+        self.assertEqual(record['carried'][0]['by'], 'author')
 
     def test_a_docs_finding_fixed_by_the_docs_writer_keeps_the_record_for_the_next_docs_review(self):
         # WI-GATE1: a docs review REVISE goes back to the docs writer (not the EXEC author); each writer attempt carries it

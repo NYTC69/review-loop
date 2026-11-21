@@ -108,6 +108,13 @@ class DispatchBudgetTests(unittest.TestCase):
                 baseline = baseline.replace(getattr(released, name), getattr(rc, name))                          # security rule text only
             if role == 'gate':   # WI-GATE1: the gate reports FAIL items, not class-labelled findings
                 baseline = baseline.replace('\n' + released.CLASS_LABEL_GUIDANCE.format(field='body'), '')
+            baseline = baseline.replace('to that Bash call.', 'to a Bash call.').replace(
+                'Do not report exit codes; the coordinator reads tool results directly.',
+                'Do not report exit codes; the coordinator reads tool results directly. ' + rc.MISSING_HOST_TEST_RULE)
+            if role == 'reviewer':
+                baseline = baseline.replace('APPROVE in EXEC requires non-empty self_run_evidence.',
+                                            'APPROVE in EXEC requires non-empty self_run_evidence. '
+                                            'List the commands you ran yourself; the reused test result need not be listed.')
             # S7 adds a matrix-specific suffix to each EXEC review role's existing prompt.
             heading = '\nScenario matrix audit applies.' if role == 'gate' else '\n\nScenario matrix review:'
             existing, separator, matrix_instructions = actual.partition(heading)

@@ -117,7 +117,8 @@ def prompt_block(co, tree_sha256: str, write_json, role: str = '') -> str:
 def current_for_acceptance(co, tree_sha256: str, write_json) -> list:
     """N4-e: the records still current for the accepted tree, as acceptance.json lists them."""
     void_stale(co, tree_sha256, write_json)
-    return [{key: row[key] for key in ('id', 'command', 'cwd', 'exit_code', 'log_sha256', 'log_evidence', 'note', 'time', 'tree_sha256')}
+    keys = ('id', 'command', 'cwd', 'exit_code', 'log_sha256', 'log_evidence', 'note', 'time', 'tree_sha256')
+    return [{**{key: row[key] for key in keys}, **({'carried': copy.deepcopy(row['carried'])} if 'carried' in row else {})}
             for row in co.state.get('operator_verifications', []) if row['status'] == 'current']
 
 

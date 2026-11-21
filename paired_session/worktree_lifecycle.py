@@ -286,8 +286,13 @@ def owned_ledger(owned):
             'findings in full_review.\n' + ''.join(f"- {row['id']}: [severity={row['severity']}] {row['summary']}\n" for row in owned))
 
 
-def specialist_prompt(name, body, test_command, owned, protocol, change='the uncommitted change in this worktree'):
+def specialist_prompt(name, body, test_command, owned, protocol, change='the uncommitted change in this worktree',
+                      *, test_instruction=None):
     ledger = owned_ledger(owned)
+    if test_instruction is None:
+        test_instruction = (f'Run this test command exactly as written in one Bash call: {test_command}' if test_command else
+                            'No test command is configured for this review: do not run tests; mark any claim that needs a test run as '
+                            'unverified.')
     return (body + '\n\n'
             f'Role: specialist {name}, fresh. Phase: POLISH-Q.\n'
             'You are a report-only quality specialist. Review only the changed paths of '
@@ -299,9 +304,7 @@ def specialist_prompt(name, body, test_command, owned, protocol, change='the unc
             'Read a long file in line ranges (a few hundred lines per read), the changed hunks of delta.patch first and '
             'then the code they depend on; when a tool output is truncated, read the remaining range instead of '
             'stopping or answering HOLD.\n' + protocol + '\n' +
-            (f'Run this test command exactly as written in one Bash call: {test_command}\n' if test_command else
-             'No test command is configured for this review: do not run tests; mark any claim that needs a test run as '
-             'unverified.\n') + ledger +
+            test_instruction + '\n' + ledger +
             'Return only JSON matching the supplied schema.')
 
 

@@ -152,6 +152,7 @@ EXEC_AUTHOR_OPERATOR_TEST_RULE = ('If a delivered finding is only that the confi
                                   'reason (for example a database or service that cannot start there) and a record above passed '
                                   'it on this exact tree, that record settles it: do not change files or HOLD for it; return READY '
                                   'and name the record in body. Fix every other delivered finding as usual.')   # v3.8.3
+MISSING_HOST_TEST_RULE = 'Missing host verification is never a finding.'
 SPECIALIST_OPERATOR_TEST_RULE = ('If the configured test fails in your sandbox only for an environment reason (for example a '
                                  'database or service that cannot start there) and a record above passed it on this exact tree, '
                                  'that record settles the test: do not report that failure as a finding. Any other failure '
@@ -3794,9 +3795,12 @@ class Coordinator:
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
-                           owner_role: Optional[str] = None) -> list[str]:
+                           owner_role: Optional[str] = None, *, validate_only=False) -> list[str]:
         open_by_id = {finding['id']: finding for finding in self.open_findings()}
         all_by_id = {finding['id']: finding for finding in self.state['finding_ledger']}
+        # The coordinator reconciles its test-failure findings from observed evidence.
+        dispositions = [{**row, 'disposition': 'still_open'} if all_by_id.get(row.get('id'), {}).get('source') == 'test-failure'
+                        else row for row in dispositions]
         supplied = [row.get('id') for row in dispositions]
         expected = set(expected_ids) if expected_ids is not None else set(open_by_id)
         missing = sorted(expected - set(supplied))
@@ -3820,6 +3824,8 @@ class Coordinator:
             if (row['disposition'] == 'non_blocking' and
                     (owner_role != 'persistent-reviewer' or not (finding.get('needs_confirmation') or replayed))):
                 raise RuntimeError('non_blocking disposition requires a shadow finding to confirm')
+        if validate_only:
+            return []
         changed = False
         for row in dispositions:
             finding = all_by_id[row['id']]
@@ -5351,9 +5357,9 @@ class Coordinator:
                 self.inspection_prompt(role), self._docs_reserved_note('review'),
                 self.verified_claims_prompt(),
                 self.allowed_command_prompt(),
-                self._test_instruction(),
-                'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.',
-                'Do not report exit codes; the coordinator reads tool results directly.',
+                self._test_instruction(snapshot),
+                'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
+                'Do not report exit codes; the coordinator reads tool results directly. ' + MISSING_HOST_TEST_RULE,
                 'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
                 'Return only JSON matching the supplied schema.',
             ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json) + self._matrix_review_prompt()
@@ -5410,10 +5416,11 @@ class Coordinator:
             REVIEW_HISTORY_GUIDANCE,
             'Inspect the complete current delta, not only prior findings. Run relevant allowed checks yourself in EXEC.',
             self.allowed_command_prompt(), self.open_findings_prompt() + self.gate_items_prompt() + self.post_gate_prompt() + self.rejection_notes_prompt(),
-            self._test_instruction(),
-            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.',
-            'Do not report exit codes; the coordinator reads tool results directly.', exercise,
-            'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
+            self._test_instruction(snapshot),
+            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
+            'Do not report exit codes; the coordinator reads tool results directly. ' + MISSING_HOST_TEST_RULE, exercise,
+            'APPROVE in EXEC requires non-empty self_run_evidence. List the commands you ran yourself; '
+            'the reused test result need not be listed. Never edit files, commit, push, or load skills.',
             'Return only JSON matching the schema. Use stable ids in prior_findings evidence where applicable.',
         ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role) + self._matrix_review_prompt()
 
@@ -5436,13 +5443,13 @@ class Coordinator:
                             f'as the template says (checklist: {scenario_matrix.CHECKLIST}).')
             excerpt = self._matrix_plan_excerpt()
         return GatePromptParts(
-                filled + '\n' + self._docs_reserved_note('review') + '\n' + self._test_instruction() +
+                filled + '\n' + self._docs_reserved_note('review') + '\n' + self._test_instruction(snapshot) +
                 '\n' + self.allowed_command_prompt() +
                 '\nRead program-materialized delta.patch, delta.stat, status.txt, and optional delta-since-last-review.patch in: ' + str(self.context) +
                 '\n' + self.inspection_prompt('gate') +
                 '\n' + self.verified_claims_prompt() +
-                '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to that Bash call.' +
-                '\nDo not report exit codes; the coordinator reads tool results directly.' +
+                '\nDo not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.' +
+                '\nDo not report exit codes; the coordinator reads tool results directly. ' + MISSING_HOST_TEST_RULE +
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\n' + REVIEW_HISTORY_GUIDANCE +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
@@ -5874,7 +5881,22 @@ class Coordinator:
                                  'reviewer names unless the frozen work item is about those bare names; review '
                                  'attributions and other history markers remain forbidden')}])
 
-    def _test_failure_findings(self, answer: dict, sequence: int) -> list[dict]:
+    def _latest_test_observation(self, rows: list) -> Optional[dict]:
+        """The latest completed, classifiable observation of the configured test."""
+        for row in reversed(rows):
+            if row.get('evidence_kind', '').startswith('started') or type(row.get('exit_code')) is not int:
+                continue
+            if (observed_test_succeeded(row, self.args.test_command)
+                    or completed_test_failure([row], self.args.test_command)):
+                return row
+        return None
+
+    def _latest_completed_test_failure(self, rows: list) -> Optional[dict]:
+        row = self._latest_test_observation(rows)
+        return row if row and row['exit_code'] != 0 else None
+
+    def _test_failure_findings(self, result: dict) -> list[dict]:
+        answer, sequence = result['answer'], result['sequence']
         rows = answer.get('observed_commands', [])
         opened = [row for row in self.open_findings() if row['source'] == 'test-failure']
 
@@ -5887,11 +5909,14 @@ class Coordinator:
                 self.write_ledger()
             return []
 
-        if any(observed_test_succeeded(row, self.args.test_command) for row in rows):
-            return close('configured test command: observed successful run')
-        if (record := self._operator_test_record(answer.get('reviewed_snapshot'))) is not None:
-            return close(f"operator verification {record['id']}: configured test command exit 0 on this tree")
-        failed = completed_test_failure(rows, self.args.test_command)
+        proof = self._test_proof(answer.get('reviewed_snapshot'), result=result)
+        if record := proof.get('operator_test_evidence'):
+            return close(f"operator verification {record}: configured test command exit 0 on this tree")
+        if (source := proof.get('reused_test_evidence')) is not None:
+            if all(source > row['origin_round'] for row in opened):
+                return close('configured test command: observed successful run' if source == sequence else
+                             f'configured test command: observed successful run in receipt {source}')
+        failed = self._latest_completed_test_failure(rows)
         if answer['status'] != 'APPROVE' or failed is None:
             return []
         if opened:
@@ -6061,8 +6086,12 @@ class Coordinator:
         roles = (self.args.reviewer_vendor, self.args.gate_vendor)
         return roles if self.state['config'].get('review_report') else (self.args.author_vendor, *roles)
 
-    def _test_instruction(self) -> str:
-        """LG2-b2: the review prompt line for the configured test command, or the no-test line of a report run."""
+    def _test_instruction(self, tree: str, *, reuse_only=False) -> str:
+        """Use the same evidence decision in the prompt and in the configured-test checks."""
+        if self._test_proof(tree):
+            return f'The configured test passed on this tree: {self.args.test_command}'
+        if reuse_only:
+            return ''
         if self.args.test_command is None:
             return ('No test command is configured for this review: do not run tests; mark any claim that needs a test run '
                     'as unverified, and list the read commands you ran in self_run_evidence.')
@@ -7135,26 +7164,31 @@ class Coordinator:
             if receipt['model_identity'] == 'MISMATCH':
                 raise ValueError(f'model identity mismatch: {role} configured {receipt["model"]}, '
                                  f'CLI reported {reported_model}')
-            approves_exec = (phase == 'EXEC' and
-                             ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
-                              (role == 'gate' and answer.get('verdict') == 'PASS'   # R3 F9: only a valid PASS; a malformed
-                               and not gate_answer_error(answer) and not verified_claims_error(answer))))   # one is retried
-            if approves_exec and self.args.test_command is None and self.state['config'].get('review_report'):   # LG2-b2
-                receipt['static_untested_approval'] = True   # no test result is claimed; the report says tests did not run
-            elif approves_exec and not any(observed_test_succeeded(row, self.args.test_command)
-                                           for row in observed_commands):
-                if (record := self._operator_test_record(before)) is not None:   # the operator's passing run on this exact tree
-                    receipt['operator_test_evidence'] = record['id']
-                cause, unfinished = configured_test_shortfall(observed_commands, self.args.test_command)
-                # V324-TEST: a persistent reviewer's completed test failure goes to the author as a normal blocking review.
-                if record is None and not (role == 'reviewer' and not fresh and not self.state['config'].get('review_report')
-                        and completed_test_failure(observed_commands, self.args.test_command) is not None):
-                    raise TestEvidenceShortfall(f'{role} EXEC approval lacks an observed successful configured test command'
-                                     + (cause or ('; the configured test was not observed to completion (no exit status when '
-                                                    'the turn ended)' if unfinished else '')) + TEST_EVIDENCE_GUIDANCE)
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
+            approves_exec = (phase == 'EXEC' and not verified_claims_error(answer) and
+                             ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
+                              (role == 'gate' and answer.get('verdict') == 'PASS'
+                               and not gate_answer_error(answer))))
+            report_mode = self.state['config'].get('review_report')
+            proof = {}
+            if role in ('reviewer', 'shadow', 'gate') and phase in ('EXEC', 'DOCS', 'POLISH-Q', 'SECURITY'):
+                candidate = {**receipt, 'answer': answer}
+                proof = self._test_proof(before, candidate)
+                receipt.update(self._test_provenance(proof, seq))
+            if approves_exec and self.args.test_command is None and report_mode:   # LG2-b2
+                receipt['static_untested_approval'] = True
+            elif approves_exec and not (self.configured_test_succeeded(answer) if report_mode else proof):
+                cause, unfinished = configured_test_shortfall(observed_commands, self.args.test_command)
+                failed = self._latest_completed_test_failure(observed_commands)
+                if failed is None or not (role == 'reviewer' and not fresh and not report_mode):
+                    if failed is not None:
+                        # The test shortfall rejects approval, while the completed failure remains an observation.
+                        receipt.update(answer=answer, error_kind='test_evidence_shortfall')
+                    raise TestEvidenceShortfall(f'{role} EXEC approval lacks an observed successful configured test command'
+                                     + (cause or ('; the configured test was not observed to completion (no exit status when '
+                                                    'the turn ended)' if unfinished else '')) + TEST_EVIDENCE_GUIDANCE)
             if not fresh:
                 if session:
                     self.state['sessions'][role] = session
@@ -7441,8 +7475,10 @@ class Coordinator:
             raise RuntimeError('DOCS base manifest differs from the POLISH-Q-approved tree; abort')
         def writer_prompt():   # called only for a dispatch, never for a reused recorded turn
             self._docs_budget()
-            return worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
-                                                  self.run_dir.name, self.workitem.read_text(encoding='utf-8')) + self.operator_rulings_prompt('author') + self._docs_feedback_prompt()   # V317-B3
+            return (worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow),
+                                                   self.run_dir.name, self.workitem.read_text(encoding='utf-8'))
+                    + self.operator_rulings_prompt('author') + self._docs_feedback_prompt()
+                    + opv.prompt_block(self, git_snapshot(workspace)[0], atomic_json))
         result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
         self.render(result, 'docs-writer', 'DOCS')
         tree, manifest = git_snapshot(workspace)
@@ -7619,8 +7655,8 @@ class Coordinator:
                   'A document that states false behavior a user would act on is category correctness; wording, style, '
                   'completeness and changelog phrasing are category other: reported, never a blocker, kept for the BACKLOG. '
                   'Do not modify any file. Documentation written by the '
-                  'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n'
-                  f'Run this test command exactly as written in one Bash call: {self.args.test_command}\n' +
+                  'DOCS stage: ' + ', '.join(paths) + '\n' + self._review_protocol(self._changed_paths()) + '\n' +
+                  self._test_instruction(tree) + '\n' + MISSING_HOST_TEST_RULE + '\n' +
                   (worktree_lifecycle.owned_ledger(owned) + 'Close an open docs row as fixed only when the current tree '
                    'fixes it; a row the tree does not fix stays still_open.\n' if owned else '') +
                   'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
@@ -7638,29 +7674,30 @@ class Coordinator:
         backlog = [row for row in findings if row.get('file') and not self._doc_path(row['file'], manifest.get(row['file']))]
         findings = [row for row in findings if row not in backlog]
         blocking = [row for row in findings if blocks_by_severity(row)]   # v3.8.1: the security tag alone does not block
-        record = None if (observed := self._observed_test(answer)) else self._operator_test_record(tree)
-        if not observed and record is None:
-            cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
-            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
-                               + (cause or (' (the configured test was not observed to completion: no exit status when the '
-                                              'turn ended)' if unfinished else '')) + '; resume reviews again')
+        proof = self._test_proof(tree, turn, result=result)
         if owned:
             ledger = copy.deepcopy(self.state['finding_ledger'])
             try:
                 if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
-                                                      [row['id'] for row in owned], None):
+                                                      [row['id'] for row in owned], None, validate_only=not proof):
                     raise RuntimeError(', '.join(missing))
             except (RuntimeError, ValueError) as exc:
                 self.state['finding_ledger'] = ledger   # a malformed answer leaves no partial disposition
                 raise RuntimeError(f'docs reviewer omitted dispositions for open docs rows ({exc}); resume reviews again') from exc
+        self._save_test_evidence(turn, proof, validated=True)
+        if not proof:
+            cause, unfinished = configured_test_shortfall(answer.get('observed_commands', []), self.args.test_command)
+            raise RuntimeError('DOCS reviewer did not observe a successful run of the configured test command'
+                               + (cause or (' (the configured test was not observed to completion: no exit status when the '
+                                              'turn ended)' if unfinished else '')) + '; resume reviews again')
         self.record_findings('docs-reviewer', 'DOCS', result['sequence'], findings)   # the EXEC reviewer or the next docs review disposes them
         self.add_run_backlog('docs-reviewer', 'DOCS', result['sequence'], backlog)
         self.render(result, 'docs-reviewer', 'DOCS')
         still = [row for row in self.open_findings() if row['id'] in {item['id'] for item in owned} and blocks_by_severity(row)]
-        return {'sequence': result['sequence'], 'status': 'REVISE' if blocking or still else 'APPROVE', 'observed_test': observed,
+        return {'sequence': result['sequence'], 'status': 'REVISE' if blocking or still else 'APPROVE', 'observed_test': self._observed_test(answer),
                 'finding_ids': [row['id'] for row in self.state['finding_ledger']
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
-                **({'operator_test_evidence': record['id']} if record else {})}
+                **self._test_provenance(proof, result['sequence'])}
 
     def add_run_backlog(self, source: str, phase: str, sequence: int, rows: list[dict],
                         note: str = 'observation(s) on paths the stage cannot edit') -> None:
@@ -7790,18 +7827,80 @@ class Coordinator:
         if used + 1 > self._worktree_run_cap('DOCS'):
             raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
 
-    def _gate_lacks_host_record(self, reviewed: int) -> bool:
-        """S3 R2 F10 (field: poker-tools S1c): the EXEC approval of this tree rested on an operator verification record
-        (the role sandbox could not run the configured test), and no record is bound to the current tree."""
+    def _gate_lacks_test_proof(self, reviewed: int) -> bool:
+        """S3 R2 F10: before dispatch, recheck the evidence used by an EXEC approval that reused a test result."""
         receipt = next((turn for turn in self.state.get('turns', []) if turn.get('sequence') == reviewed), None)
-        return bool(self.args.test_command and receipt and receipt.get('operator_test_evidence')
-                    and self._operator_test_record(git_snapshot(self.workspace)[0]) is None)
+        return bool(self.args.test_command and receipt and (receipt.get('operator_test_evidence') or receipt.get('reused_test_evidence'))
+                    and not self._test_proof(git_snapshot(self.workspace)[0]))
 
     def _operator_test_record(self, tree):
         """The operator record that settles the EXEC configured-test check for this exact tree, or None (never in report mode)."""
         if self.state['config'].get('review_report') or not self.args.test_command:
             return None
         return opv.passing_test_record(self, tree, lambda command: command_invokes_test(command, self.args.test_command), atomic_json)
+
+    def _test_proof(self, tree: str, current: Optional[dict] = None, *, result: Optional[dict] = None) -> dict:
+        """Passing proof for the exact tree and configured command. Only tool observations count."""
+        command = self.args.test_command
+        if not tree or not command or self.state['config'].get('review_report'):
+            return {}
+        record = self._operator_test_record(tree)
+        turns = self.state['turns']
+        if current is not None and not any(turn is current for turn in turns):
+            turns = [*turns, current]
+        current_sequence = current['sequence'] if current is not None else None
+        observation, source = None, None
+        for turn in reversed(turns):
+            if (turn.get('snapshot_before') != tree or turn.get('snapshot_after') != tree
+                    or turn.get('discarded') or turn.get('verified_claims_error') or turn.get('gate_malformed')
+                    or (turn.get('error') and turn.get('error_kind') != 'test_evidence_shortfall')
+                    or not isinstance(answer := turn.get('answer'), dict)
+                    or type(turn.get('sequence')) is not int or verified_claims_error(answer)):
+                continue
+            role, phase = turn.get('role'), turn.get('phase')
+            if phase == 'EXEC':
+                if role == 'gate':
+                    if gate_answer_error(answer):
+                        continue
+                elif role not in ('reviewer', 'shadow') or answer.get('status') not in ('APPROVE', 'REVISE', 'HOLD'):
+                    continue
+            elif (role != 'reviewer' or phase not in ('POLISH-Q', 'DOCS', 'SECURITY')
+                  or not (turn is current or turn.get('test_evidence_validated'))):
+                continue
+            if observation := self._latest_test_observation(turn.get('observed_commands', [])):
+                source = turn['sequence']
+                break
+        # The current answer carries coordinator-observed commands even if the receipt has no matching observation.
+        if result is not None and result.get('snapshot', tree) == tree:
+            current_sequence = result['sequence']
+            if source is None or current_sequence >= source:
+                if row := self._latest_test_observation(result['answer'].get('observed_commands', [])):
+                    observation, source = row, current_sequence
+        if observation and observation['exit_code'] == 0 and (not record or source == current_sequence):
+            return {'reused_test_evidence': source}
+        return {'operator_test_evidence': record['id']} if record else {}
+
+    @staticmethod
+    def _test_provenance(proof: dict, sequence: int) -> dict:
+        return {} if proof.get('reused_test_evidence') == sequence else proof
+
+    def _discard_reviewer_result(self, result: dict, reason: str) -> None:
+        turn = next((row for row in self.state['turns'] if row['sequence'] == result['sequence']), None)
+        if turn is not None:
+            turn['discarded'] = reason
+            atomic_json(self.evidence / f"{turn['sequence']:03d}-{turn['phase'].lower()}-reviewer.receipt.json", turn)
+            self.save()
+
+    def _save_test_evidence(self, turn: dict, proof: dict, *, validated=False) -> None:
+        provenance = self._test_provenance(proof, turn['sequence'])
+        if validated:
+            provenance = {**provenance, 'test_evidence_validated': True}
+        if all(turn.get(key) == value for key, value in provenance.items()):
+            return
+        for key in ('operator_test_evidence', 'reused_test_evidence'):
+            turn.pop(key, None)
+        turn.update(provenance)
+        atomic_json(self.evidence / f"{turn['sequence']:03d}-{turn['phase'].lower()}-{turn['role']}.receipt.json", turn)
 
     def _observed_test(self, answer: dict):
         return next((row['command'] for row in answer.get('observed_commands', [])
@@ -8097,7 +8196,8 @@ class Coordinator:
                               'security concern as MINOR: it is listed in the delivery report but does not stop delivery. '
                               'A finding without a blocking category (threshold below) does not stop delivery either.\n' + self._security_scan_note_prompt() +
                               worktree_lifecycle.owned_ledger(owned) +
-                              self._review_protocol(self._changed_paths()) +
+                              self._review_protocol(self._changed_paths()) + '\n' + MISSING_HOST_TEST_RULE +
+                              (f'\n{test_instruction}' if (test_instruction := self._test_instruction(tree, reuse_only=True)) else '') +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json))
                 used = self._stage_calls('SECURITY')
                 if used + 1 > self._worktree_run_cap('SECURITY'):
@@ -8131,6 +8231,7 @@ class Coordinator:
         except (RuntimeError, ValueError) as exc:
             discard(turn, str(exc)[:200])   # resume dispatches a fresh review
             raise RuntimeError(f'{exc}; resume reviews again') from exc
+        self._save_test_evidence(turn, self._test_proof(tree, turn), validated=True)
         self.record_findings(owner, 'SECURITY', sequence, findings)
         self.render({'answer': answer, 'sequence': sequence, 'snapshot': turn.get('snapshot_after'), 'role': 'reviewer'},
                     owner, 'SECURITY')
@@ -8428,7 +8529,8 @@ class Coordinator:
         paths = paths if writer == 'simplifier' else [path for path in paths if worktree_lifecycle.is_test_path(path)]
         prompt = lambda: (worktree_lifecycle.writer_prompt(writer, self._simplifier_body() if writer == 'simplifier' else '',
                                                            paths, self.args.test_command, self._docs_reserved_note())
-                          + '\n' + LONG_COMMAND_RULE + self.operator_rulings_prompt('author'))   # V317-B3
+                          + '\n' + LONG_COMMAND_RULE + self.operator_rulings_prompt('author')
+                          + opv.prompt_block(self, git_snapshot(self.workspace)[0], atomic_json))
         result, state = None, None
         while state is None and result is None:
             life = self.state['lifecycle']   # lifecycle_spine.begin replaces the dict: count on the current one
@@ -8853,7 +8955,8 @@ class Coordinator:
             '\nOnly these paths changed since the last specialist pass; the rest of delta.patch was covered already: '
             'review these paths only.' if delta_paths is not None else '')
         prompt = (worktree_lifecycle.specialist_prompt(name, body, self.args.test_command, owned,
-                                                       protocol, self._change_noun()) +
+                                                       protocol + '\n' + MISSING_HOST_TEST_RULE, self._change_noun(),
+                                                       test_instruction=self._test_instruction(tree)) +
                   self._guidance(QUALITY_GUIDANCE) + self._specialist_operator_evidence(tree))
         for attempt in (1, 2):   # tool-use guard: a turn without tool calls is discarded and retried once
             counts = self._specialist_budget(name)
@@ -8890,6 +8993,8 @@ class Coordinator:
         if missing := self.apply_dispositions(answer.get('prior_findings') or [], result['sequence'],
                                               [row['id'] for row in owned], owner):
             raise RuntimeError(f'specialist {name} omitted dispositions for its findings: ' + ', '.join(missing))
+        proof = self._test_proof(tree, turn)
+        self._save_test_evidence(turn, proof, validated=True)
         self.record_findings(owner, 'POLISH-Q', result['sequence'], findings)
         if delta_paths is not None:   # v3.8.1: a new finding on a path this pass did not need to review is recorded as advisory
             marked = False
@@ -8905,7 +9010,8 @@ class Coordinator:
                 self.write_ledger()
         self.render(result, 'specialist-' + name, 'POLISH-Q')
         return {'name': name, 'sequence': result['sequence'], 'body_sha256': body_sha256, 'reviewed_snapshot': tree,
-                'observed_test': self._observed_test(answer), 'status': answer['status']}   # W2a-1 L-3: recorded, not enforced
+                'observed_test': self._observed_test(answer), 'status': answer['status'],
+                **self._test_provenance(proof, result['sequence'])}   # W2a-1 L-3: recorded, not enforced
 
     def _review_protocol(self, paths: list[str]) -> str:
         return '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
@@ -9016,10 +9122,12 @@ class Coordinator:
             missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                result.get('open_finding_ids'), 'persistent-reviewer')
         except RuntimeError as exc:
+            self._discard_reviewer_result(result, 'invalid finding dispositions')
             self.state['pending_reviewer_result_sequence'] = None
             self.hold('reviewer invalid finding dispositions: ' + str(exc))
             return
         if missing:
+            self._discard_reviewer_result(result, 'missing finding dispositions')
             retry_prompt = (self._review_prompt('reviewer', snapshot) +
                             '\nYour rejected response omitted dispositions for: ' + ', '.join(missing) +
                             '. This is the one allowed protocol retry; include every open id.')
@@ -9032,10 +9140,12 @@ class Coordinator:
                 missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
                                                   result.get('open_finding_ids'), 'persistent-reviewer')
             except RuntimeError as exc:
+                self._discard_reviewer_result(result, 'invalid finding dispositions')
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold('reviewer invalid finding dispositions after retry: ' + str(exc))
                 return
             if missing:
+                self._discard_reviewer_result(result, 'missing finding dispositions')
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold('reviewer omitted open finding dispositions after retry: ' + ', '.join(missing))
                 return
@@ -9057,7 +9167,7 @@ class Coordinator:
         shadow = None
         writer_replay = (self.state.get('lifecycle') or {}).get('writer_replay')   # D09 §2: the replay epoch, if any
         replaying = bool(writer_replay) and writer_replay['epoch'] == (self.state.get('lifecycle') or {}).get('epoch')
-        failures = (self._test_failure_findings(answer, result['sequence'])
+        failures = (self._test_failure_findings(result)
                     if phase == 'EXEC' and not self.state['config'].get('review_report') else [])
         if failures:
             answer['full_review'].extend(failures)
@@ -9122,10 +9232,11 @@ class Coordinator:
         matrix_findings = (self._plan_matrix_findings(result['sequence'], answer['status'] == 'APPROVE' or advisory_only)
                            if phase == 'PLAN' and answer['status'] != 'HOLD' else [])
         answer['full_review'].extend(matrix_findings)
-        observed_pass = self.configured_test_succeeded(answer) and not self.configured_test_failed(answer)
-        operator_record = (self._operator_test_record(answer.get('reviewed_snapshot'))
-                           if phase == 'EXEC' and advisory_only and not observed_pass else None)
-        tested = phase == 'PLAN' or ((observed_pass or operator_record is not None) and bool(answer.get('self_run_evidence')))
+        report_mode = self.state['config'].get('review_report')
+        proof = self._test_proof(answer.get('reviewed_snapshot'), result=result) if phase == 'EXEC' else {}
+        passing = (self.configured_test_succeeded(answer) and not self.configured_test_failed(answer)
+                   if report_mode else bool(proof))
+        tested = phase == 'PLAN' or (passing and bool(answer.get('self_run_evidence')))
         advisory_exit = advisory_only and tested and not self.blocking_open_findings()
         if (phase == 'EXEC' and advisory_only and not tested and not self.blocking_open_findings()
                 and not replaying and not self.state['config'].get('review_report')):
@@ -9133,7 +9244,7 @@ class Coordinator:
             self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
             self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
             reason = TEST_EVIDENCE_HOLD
-            if failure := completed_test_failure(answer.get('observed_commands', []), self.args.test_command):
+            if failure := self._latest_completed_test_failure(answer.get('observed_commands', [])):
                 reason += f". The configured test command failed (exit status {failure['exit_code']})."
                 output = ' '.join(str(failure.get('output') or '')[-2000:].split())
                 if output:
@@ -9141,11 +9252,10 @@ class Coordinator:
             self.hold(reason)
             return
         if advisory_exit:
-            if operator_record:
-                receipt = next((turn for turn in self.state.get('turns', []) if turn['sequence'] == result['sequence']), None)
-                if receipt is not None:
-                    receipt['operator_test_evidence'] = operator_record['id']
-                    atomic_json(self.evidence / f"{result['sequence']:03d}-exec-reviewer.receipt.json", receipt)
+            if phase == 'EXEC':
+                turn = next((row for row in self.state['turns'] if row['sequence'] == result['sequence']), None)
+                if turn is not None:
+                    self._save_test_evidence(turn, proof)
             self.mark_advisory_findings(answer['full_review'] + prior_open)
             answer['status'] = 'APPROVE'
         new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
@@ -9341,7 +9451,7 @@ class Coordinator:
             return None
         answer = receipt.get('answer')
         if (receipt.get('role') != 'reviewer' or receipt.get('phase') != phase or
-                not isinstance(answer, dict) or receipt.get('error') or
+                not isinstance(answer, dict) or receipt.get('error') or receipt.get('discarded') or
                 receipt.get('verified_claims_error')):
             return None
         effective = answer
@@ -9657,7 +9767,7 @@ class Coordinator:
             self.state['next'] = 'author'
             self.save()
             return
-        if not (verdict and verdict['sequence'] > reviewed) and self._gate_lacks_host_record(reviewed):
+        if not (verdict and verdict['sequence'] > reviewed) and self._gate_lacks_test_proof(reviewed):
             self.hold(TEST_EVIDENCE_HOLD)   # S3 R2 F10: the gate would end on the same missing record; it is not dispatched
             return
         result = self._gate_answer()
@@ -10665,7 +10775,11 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action == 'accept':
         status = co.accept()
         for row in (co.state.get('acceptance') or {}).get('operator_verifications', []):   # N4-e: the operator evidence this acceptance relies on
-            print(f"VERIFICATION {row['id']} current for the accepted tree: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
+            carried = row.get('carried', [])
+            details = ' and '.join(dict.fromkeys(
+                'was carried over an author docs-only write' if entry.get('by') == 'author' else 'was carried over a DOCS write'
+                for entry in carried)) or 'current for the accepted tree'
+            print(f"VERIFICATION {row['id']} {details}: `{row['command']}` exit {row['exit_code']}, log sha256 {row['log_sha256']}")
         if (delivery := (co.state.get('acceptance') or {}).get('delivery') or {}).get('commit'):   # FIELD-25 (a)
             print(f"COMMIT: {delivery['commit']} (auto_commit, parent {str(delivery.get('head'))[:12]}); not pushed"
                   + (f"; untracked files committed: {', '.join(delivery['committed_untracked'])}" if delivery.get('committed_untracked') else ''))

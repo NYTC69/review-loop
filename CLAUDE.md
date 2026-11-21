@@ -22,6 +22,14 @@ the protocol docs and a few other files.
 **Rule**: move needle and text together: when you change a pinned sentence, update its assertion or mapping in the
 same commit and name the change in the commit or report.
 
+### Configured-test evidence
+
+Read-only roles reuse a passing configured test from the latest eligible completed tool observation for the exact
+command and workspace snapshot. A later eligible failure supersedes that pass. A current, intact, passing
+`attach-verification` record also supplies proof and settles sandbox-only failures. The persistent EXEC reviewer
+still reports commands they ran themselves in `self_run_evidence`, including when approval uses a reused result.
+Independent reviews continue, and missing host verification is never a finding.
+
 ### This repository uses the paired-session entry
 
 `.review-loop/config.md` sets `entry: paired-session` (owner 2026-10-06). From 2026-10-03 until then it pinned `entry: legacy`, under the owner rule that review-loop itself was not developed through paired-session; that rule is lifted.

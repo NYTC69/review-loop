@@ -1,7 +1,9 @@
 """V324-TEST: a persistent EXEC approval over its own completed failing test; WI-GATE1 R5: it HOLDs for attach-verification
 without using an EXEC round (before: it returned to the author)."""
 import hashlib
+import json
 import os
+from pathlib import Path
 import types
 import unittest
 from unittest.mock import patch
@@ -288,6 +290,176 @@ class FailedTestApprovalTests(unittest.TestCase):
         self.assertNotIn('round_limit_hold', co.state)
         self.assertEqual(co.blocking_open_findings()[0]['source'], 'test-failure')
         self.assertFalse(co.at_round_limit_hold())
+
+    def prompt(self, co, turn):
+        return (co.evidence / f"{turn['sequence']:03d}-{turn['phase'].lower()}-{turn['role']}.prompt.txt").read_text()
+
+    def assert_reused(self, co, turn, field, source):
+        self.assertEqual(turn[field], source)
+        filename = f"{turn['sequence']:03d}-{turn['phase'].lower()}-{turn['role']}.receipt.json"
+        self.assertEqual(json.loads((co.evidence / filename).read_text())[field], source)
+        self.assertFalse(any(rc.command_invokes_test(row['command'], co.args.test_command)
+                             for row in turn['observed_commands']))
+        self.assertTrue(turn['observed_commands'])
+        prompt = self.prompt(co, turn)
+        self.assertIn(f'The configured test passed on this tree: {co.args.test_command}', prompt)
+        self.assertNotIn('Run this test command exactly as written', prompt)
+        self.assertIn(rc.MISSING_HOST_TEST_RULE, prompt)
+
+    def test_host_pass_waives_exec_rerun(self):
+        co = self.coordinator('--shadow', 'on', '--adversarial-gate', 'on')
+        self.attach(co)
+        with patch.dict(os.environ, {'FAKE_EXEC_MINOR_REVISE': '1'}):
+            self.assertEqual(co._drive_loop(), 'DONE')
+        for role in ('reviewer', 'shadow', 'gate'):
+            turn = self.receipt(co, role)
+            self.assert_reused(co, turn, 'operator_test_evidence', 'V001')
+            self.assertEqual(turn['answer']['self_run_evidence'], [{'command': 'git status --short'}])
+        self.assertIn('List the commands you ran yourself; the reused test result need not be listed.',
+                      self.prompt(co, self.receipt(co, 'reviewer')))
+        self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'APPROVE_WITH_ADVISORY')
+
+    def test_reuse_observed_pass_on_same_tree(self):
+        co = self.coordinator('--shadow', 'on', '--adversarial-gate', 'on')
+        self.assertEqual(co._drive_loop(), 'DONE')
+        reviewer = self.receipt(co, 'reviewer')
+        for role in ('shadow', 'gate'):
+            self.assert_reused(co, self.receipt(co, role), 'reused_test_evidence', reviewer['sequence'])
+        co.state.update(status='ACTIVE', next='reviewer')
+        with patch.dict(os.environ, {'FAKE_EXEC_NO_EVIDENCE': '1'}):
+            self.assertEqual(co._drive_loop(), 'HOLD')
+        self.assertEqual(co.state['hold_reason'], 'EXEC APPROVE rejected: empty self_run_evidence')
+        self.assert_reused(co, self.receipt(co, 'reviewer'), 'reused_test_evidence', reviewer['sequence'])
+
+    def test_invalid_or_missing_test_proof_keeps_fallback(self):
+        for kind in ('missing', 'wrong-command', 'failed-host', 'incomplete'):
+            with self.subTest(kind=kind):
+                co = self.coordinator('--max-exec-rounds', '1')
+                if kind == 'wrong-command':
+                    self.attach(co, command='python3 -m unittest different')
+                if kind == 'failed-host':
+                    self.attach(co, exit_code=1)
+                tree = rc.git_snapshot(self.workspace)[0]
+                for prompt in (co._review_prompt('reviewer', tree), co._review_prompt('shadow', tree), co._gate_prompt(tree)):
+                    self.assertIn(rc.MISSING_HOST_TEST_RULE, prompt)
+                    self.assertIn(f'Run this test command exactly as written in one Bash call: {co.args.test_command}', prompt)
+                    self.assertNotIn('The configured test passed on this tree', prompt)
+                env = {'FAKE_CODEX_LONG': 'started-only'} if kind == 'incomplete' else {'FAKE_MISSING_OBSERVED': '1'}
+                with patch.dict(os.environ, env):
+                    self.assertEqual(co._drive_loop(), 'HOLD')
+                self.assertIn(PREFIX, co.state['hold_reason'])
+                self.assertFalse(co.open_findings())
+                self.assertEqual(co.state['exec_rounds'], 1)
+                self.assertFalse(co.at_round_limit_hold())
+                self.assertFalse(co._test_proof(tree))
+
+    def test_later_completed_failure_blocks_same_tree_reuse(self):
+        for settlement in ('newer-pass', 'host'):
+            with self.subTest(settlement=settlement):
+                co = self.coordinator()
+                self.assertEqual(co._drive_loop(), 'DONE')
+                passed = self.receipt(co, 'reviewer')
+                tree = rc.git_snapshot(self.workspace)[0]
+                co.state.update(status='ACTIVE', next='reviewer')
+                self.failing_review(co)
+                failed = self.receipt(co, 'reviewer')
+                self.assertGreater(failed['sequence'], passed['sequence'])
+                self.assertEqual(failed['snapshot_before'], tree)
+                self.assertEqual(failed['observed_commands'][0]['exit_code'], 1)
+                [finding] = co.blocking_open_findings()
+                for prompt in (co._review_prompt('reviewer', tree), co._review_prompt('shadow', tree), co._gate_prompt(tree)):
+                    self.assertNotIn('The configured test passed on this tree', prompt)
+                self.assertFalse(co._test_proof(tree))
+
+                co.state.update(status='ACTIVE')
+                with patch.dict(os.environ, {'FAKE_EXEC_MINOR_REVISE': '1', 'FAKE_CODEX_LONG': 'started-only'}):
+                    co.reviewer_turn()   # the fake's model disposition alone cannot settle the program finding
+                self.assertEqual(finding['status'], 'open')
+                self.assertFalse(co._test_proof(tree))
+                co.state.update(status='ACTIVE', next='reviewer')
+                if settlement == 'host':
+                    self.attach(co)
+                self.assertEqual(co._drive_loop(), 'DONE')
+                self.assertEqual(finding['status'], 'fixed')
+                self.assertGreater(self.receipt(co, 'reviewer')['sequence'], failed['sequence'])
+
+    def test_changed_tree_requires_fresh_proof(self):
+        co = self.coordinator('--adversarial-gate', 'on')
+        co.reviewer_turn()
+        self.assertEqual(co.state['next'], 'gate')
+        original = self.receipt(co, 'reviewer')
+        self.assertEqual(co._test_proof(original['snapshot_after']), {'reused_test_evidence': original['sequence']})
+        co.args.test_command += ' other'
+        self.assertFalse(co._test_proof(original['snapshot_after']))
+        co.args.test_command = 'python3 -m unittest'
+        (self.workspace / 'new_feature.py').write_text('enabled = True\n')
+        tree = rc.git_snapshot(self.workspace)[0]
+        self.assertFalse(co._test_proof(tree))
+        co.state.update(status='ACTIVE', next='reviewer')
+        self.assertEqual(co._drive_loop(), 'DONE')
+        turn = self.receipt(co, 'reviewer')
+        self.assertEqual(turn['snapshot_before'], tree)
+        self.assertEqual(turn['observed_commands'][0]['command'], co.args.test_command)
+        self.assertNotIn('reused_test_evidence', turn)
+
+    def test_unchanged_author_pass_is_ineligible(self):
+        co = self.coordinator()
+        tree = rc.git_snapshot(self.workspace)[0]
+        with patch.dict(os.environ, {'FAKE_AUTHOR_NO_REJECTION_CHANGE': '1',
+                                     'FAKE_AUTHOR_OBSERVED_TEST': co.args.test_command}):
+            co.author_turn()
+        author = self.receipt(co, 'author')
+        self.assertEqual((author['snapshot_before'], author['snapshot_after']), (tree, tree))
+        self.assertTrue(any(rc.observed_test_succeeded(row, co.args.test_command) for row in author['observed_commands']))
+        self.assertFalse(co._test_proof(tree))
+        with patch.dict(os.environ, {'FAKE_MISSING_OBSERVED': '1'}):
+            self.assertEqual(co._drive_loop(), 'HOLD')
+        self.assertIn(PREFIX, co.state['hold_reason'])
+        self.assertNotIn('reused_test_evidence', self.receipt(co, 'reviewer'))
+
+    def test_resume_uses_existing_test_proof_checks(self):
+        for damaged in (True, False):
+            with self.subTest(damaged=damaged):
+                co = self.coordinator('--adversarial-gate', 'on')
+                self.attach(co)
+                tree = rc.git_snapshot(self.workspace)[0]
+                review = co.invoke('reviewer', 'EXEC', co._review_prompt('reviewer', tree), rc.review_schema())
+                co.state['status'] = 'HOLD'
+                co.save()
+                if damaged:
+                    Path(co.state['operator_verifications'][0]['log_evidence']).unlink()
+                    self.assertEqual(co.resume(), 'HOLD')
+                    self.assertEqual(co.state['hold_reason'], rc.TEST_EVIDENCE_HOLD)
+                    self.assertEqual(co.state['sequence'], review['sequence'])
+                    self.assertIsNone(co.state['pending_reviewer_result_sequence'])
+                    continue
+                co.state['status'] = 'ACTIVE'
+                co.reviewer_turn()
+                self.assertEqual(co.state['next'], 'gate')
+                gate = co._gate_answer()
+                self.assertEqual(gate['answer']['verdict'], 'PASS')
+                Path(co.state['operator_verifications'][0]['log_evidence']).unlink()
+                co.state['status'] = 'HOLD'
+                co.save()
+                self.assertEqual(co.resume(), 'DONE')
+                self.assertEqual([row['sequence'] for row in co._gate_turns()], [gate['sequence']])
+
+    def test_static_report_evidence_unchanged(self):
+        co = self.coordinator()
+        self.attach(co)
+        tree = rc.git_snapshot(self.workspace)[0]
+        co.state['config']['review_report'] = True
+        co.state['report_budget'] = co.args.max_invocations
+        co.args.test_command = None
+        prompt = co._review_prompt('reviewer', tree)
+        self.assertIn('No test command is configured for this review: do not run tests', prompt)
+        self.assertNotIn('The configured test passed on this tree', prompt)
+        result = co.invoke('reviewer', 'EXEC', prompt, rc.review_schema())
+        turn = self.receipt(co, 'reviewer')
+        self.assertEqual(result['answer']['status'], 'APPROVE')
+        self.assertTrue(turn['static_untested_approval'])
+        self.assertNotIn('operator_test_evidence', turn)
+        self.assertNotIn('reused_test_evidence', turn)
 
     def test_failure_detection_excludes_timeout_and_zero_exit_failure_text(self):
         command = 'python3 -m unittest'
