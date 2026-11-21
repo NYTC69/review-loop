@@ -32,15 +32,22 @@ class ResumeTests(unittest.TestCase):
     def state(self):
         return json.loads((self.h.run_dir / 'state.json').read_text())
 
+    def argv(self, *extra):
+        command = self.h.command(*extra)
+        index = command.index('--author-effort')
+        del command[index:index + 6]   # Exercise omitted efforts with the stock meaning of explicit flags.
+        return command[2:]
+
     def cli(self, action, *extra, drive=None):
-        command = self.h.command_without_default_efforts(*extra)
+        argv = self.argv(*extra)
+        argv[0] = action
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             if drive is None:
-                code = rc.main([action, *command[3:]])
+                code = rc.main(argv)
             else:
                 with patch.object(rc.Coordinator, 'drive', autospec=True, side_effect=drive):
-                    code = rc.main([action, *command[3:]])
+                    code = rc.main(argv)
         return code, out.getvalue()
 
     def dispatch(self, co):
@@ -146,8 +153,8 @@ class ResumeTests(unittest.TestCase):
                                            'author_model': 'gpt-6-sol'}))
             config_flags = ('--config', str(profile))
             with patch.object(rc, 'DEFAULT_GATE_PROMPT', prompt):
-                argv = self.h.command_without_default_efforts('--gate-prompt', str(prompt), *config_flags,
-                                                              '--author-effort', 'high', '--author-model', 'gpt-6.1-sol')[2:]
+                argv = self.argv('--gate-prompt', str(prompt), *config_flags,
+                                 '--author-effort', 'high', '--author-model', 'gpt-6.1-sol')
                 co = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
                 co.state['status'] = 'DONE'
                 co.save()
@@ -155,13 +162,30 @@ class ResumeTests(unittest.TestCase):
                 self.assertEqual(self.cli('resume', *blocked)[0], 0)
                 self.assertNotIn('role_resume_changes', self.state())
 
-                for action in ('run', 'accept', 'reject', 'note', 'withdraw-findings', 'status', 'abort'):
-                    for flag, reason in (('--author-effort=low', 'role policy is fixed'),
-                                         ('--author-model=gpt-6-sol', 'role models are fixed')):
-                        with self.subTest(action=action, flag=flag):
-                            code, output = self.cli(action, '--gate-prompt', str(prompt), *config_flags, flag)
+                def restore_only(args):
+                    restored = rc.Coordinator(args)
+                    for key in rc.ROLE_EFFORT_DESTS:
+                        self.assertEqual(getattr(restored.args, key), co.state['config'][key])
+                    return 0
+
+                for action, *options in (('run',), ('accept',), ('reject',), ('note',),
+                                         ('note', '--scope-change'), ('withdraw-findings',),
+                                         ('attach-verification',), ('abort',)):
+                    with self.subTest(action=action, options=options):
+                        flags = ('--gate-prompt', str(prompt), *config_flags, *options)
+                        with patch.object(rc, '_execute_locked', side_effect=restore_only) as execute:
+                            code, output = self.cli(action, *flags, '--author-effort=low',
+                                                    '--reviewer-effort=low', '--gate-effort=low')
+                        self.assertEqual(code, 0, output)
+                        execute.assert_called_once()
+                        for flag in ('--author-model=gpt-6-sol', '--author-vendor=claude'):
+                            code, output = self.cli(action, *flags, flag)
                             self.assertEqual(code, 2, output)
-                            self.assertIn(reason, output)
+                            self.assertIn('role models are fixed', output)
+                code, output = self.cli('status', '--gate-prompt', str(prompt), *config_flags,
+                                        '--author-effort=low', '--author-model=gpt-6-sol')
+                self.assertEqual(code, 0, output)
+                self.assertEqual(json.loads(output), self.state())
                 for flag, reason in (('--author-vendor=claude', 'role models are fixed'),
                                      ('--author-model=bad model', 'well-formed model id'),
                                      ('--author-model=gpt-6-luna', 'not in allowed_models'),

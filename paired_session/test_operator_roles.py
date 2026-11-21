@@ -176,7 +176,7 @@ class RoleModelTests(unittest.TestCase):
         path.write_text(json.dumps(values))
 
     def main(self, action, *extra):
-        command = self.h.command_without_default_efforts(*extra)
+        command = self.h.command(*extra)
         command[2] = action
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

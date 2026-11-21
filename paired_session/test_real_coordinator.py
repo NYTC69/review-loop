@@ -750,12 +750,6 @@ sys.exit(result.returncode)
                 '--test-command', 'python3 -m unittest',
                 *old_lifecycle_default(self.workspace, extra), *extra]
 
-    def command_without_default_efforts(self, *extra):
-        command = self.command(*extra)
-        index = command.index('--author-effort')
-        del command[index:index + 6]   # remove the harness defaults, keeping any explicit options in extra
-        return command
-
     def run_coordinator(self, *extra, env=None, skip_probe=True):
         merged = os.environ.copy()
         if env:
@@ -767,7 +761,7 @@ sys.exit(result.returncode)
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def run_operator_action(self, action, *extra, env=None):
-        command = RealCoordinatorTests.command_without_default_efforts(self, *extra)
+        command = self.command(*extra)
         command[2] = action
         command.append('--skip-probe')
         if action in ('accept', 'reject') and '--scope-change' not in extra:
@@ -781,7 +775,7 @@ sys.exit(result.returncode)
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def issue_operator_intent(self, action, *extra):
-        command = RealCoordinatorTests.command_without_default_efforts(self, *extra); command[2] = action
+        command = self.command(*extra); command[2] = action
         command.extend(['--intent-only', '--skip-probe'])
         return subprocess.run(command, cwd=self.root, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)

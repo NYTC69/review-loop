@@ -3128,7 +3128,9 @@ class Coordinator:
         """Restore the saved roles, allowing explicit model and effort changes on a continuing resume."""
         saved = self._saved_config()
         overrides = ROLE_RESUME_DESTS if allow_overrides else ()
-        refuse_role_flag_changes(self.args, saved, explicit, overrides)
+        for key in sorted(set(explicit).intersection(ROLE_DESTS) - set(overrides)):
+            if getattr(self.args, key) != saved[key]:
+                raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
         policy = saved.get('allowed_models')
         if getattr(self.args, 'allowed_models', None) not in (None, policy):
             raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
@@ -10871,13 +10873,6 @@ ROLE_RESUME_DESTS = ('author_model', 'reviewer_model', 'gate_model', *ROLE_EFFOR
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
-def refuse_role_flag_changes(args, saved, explicit, overrides=()) -> None:
-    for key in sorted(set(explicit) - set(overrides)):
-        if getattr(args, key) != saved[key]:
-            reason = 'role policy is fixed' if key in ROLE_EFFORT_DESTS else 'role models are fixed'
-            raise ValueError(f'{reason} for this run: {key} differs from the saved run')
-
-
 VENDORS = ('codex', 'claude', 'gemini')   # ADR-21 G1
 VENDOR_MODEL_PREFIXES = {'codex': 'gpt-', 'claude': 'claude-', 'gemini': 'gemini-'}   # ADR-10 M4, ADR-21 G3
 GEMINI_NOT_DISPATCHED = 'this gemini role path cannot be dispatched: the vendor table has no gemini entry (ADR-21 G1)'
@@ -11447,14 +11442,11 @@ def main(argv=None) -> int:
         print('REFUSED: --reason is only for accept and withdraw-findings')
         return 2
     try:
-        if not (Path(args.run_dir) / 'state.json').exists():
+        state_exists = (Path(args.run_dir) / 'state.json').exists()
+        if args.action == 'status' or not state_exists:
             resolve_role_model_defaults(args)
+        if not state_exists:
             validate_role_models(args)
-        elif args.action == 'status' and args.explicit_role_flags:
-            state = json.loads((Path(args.run_dir) / 'state.json').read_text(encoding='utf-8'))
-            config = state.get('config') if isinstance(state, dict) else None
-            if isinstance(config, dict) and set(args.explicit_role_flags) <= config.keys():
-                refuse_role_flag_changes(args, config, args.explicit_role_flags)
         if args.action in ('run', 'resume') and not restores_run(args):   # ADR-12: actions that create state
             workspace, run_dir = Path(args.workspace).expanduser().resolve(), Path(args.run_dir).expanduser().resolve()
             programs, issue = program_snapshot(workspace, run_dir, run_dir / 'author-tmp', args.codex_bin, args.claude_bin,

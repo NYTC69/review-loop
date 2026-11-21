@@ -4,14 +4,12 @@
 
 - 移动 review-loop 安装后，若角色指令、门审提示和其他冻结输入一致，下次派发会更新安装路径、保留原会话，并记录一次 `NOTE`。自定义门审提示需保留原路径和内容，内置门审提示仍可按版本更新。
 - 继续运行时，`resume` 可显式调整 author、reviewer 或 gate 的 model 和 effort，供应商和模型许可列表保持固定。恢复已有运行时，省略 model 或 effort 参数就沿用保存值，避免因命令行或配置文件的 effort 默认值不同而被拒绝。
-- 行为变化：accept / reject / note / withdraw-findings / attach-verification / status 上显式传入与保存值不同的 `--*-effort`（`status` 上任一角色参数）现在会被拒绝；此前会被静默忽略。
 - 更换持久 author 或 reviewer 的模型会开启该角色的新会话，仅调整 effort 会保留会话。替换 author 的首个回合可读取已批准的计划或当前草稿。已保存的门审裁定继续生效。
 
 **按意图更新的测试断言**
 
 - `test_operator_roles.test_a_plain_resume_of_a_non_default_model_run_works` 改为断言 `resume` 接受同供应商的 gate 模型覆盖。
 - `test_real_coordinator.test_resume_config_mismatch_is_refused_without_traceback` 改名为 `test_resume_inherits_saved_author_effort`，断言省略 author effort 时继承保存值并继续到计划暂停点。
-- 测试辅助：`RoleModelTests.main`、`run_operator_action`、`issue_operator_intent` 改用 `command_without_default_efforts`（去掉测试框架默认的 `--*-effort low`），因为这些运行保存的是 `medium`，显式不同的 effort 现在按设计被拒绝。
 - `test_a_plain_resume_of_a_non_default_model_run_works` 保留跨供应商覆盖的拒绝断言（新提示：`does not belong to the saved codex vendor`）。
 
 ### v3.12.0：专项审查员看到操作者裁定、按位置合并重复发现；resume 可单向跳过专项审查（WI-SPEC）
