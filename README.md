@@ -295,6 +295,12 @@ The coordinator prints one progress line per event (the role, its verdict and th
 - for the run's status (`status --brief`: the latest progress lines, without disturbing the run);
 - to resume after a HOLD, once you have answered or fixed what it names; at a PLAN or EXEC round-limit HOLD,
   `resume --add-rounds N` (1-10) continues the same run with N more rounds of that phase;
+- to change a role on a continuing run, pass an explicit `--author-model`, `--reviewer-model`, `--gate-model` or
+  corresponding `--*-effort` flag to `resume`. Omitted flags keep the saved values even when a profile supplies
+  defaults. Vendors and the model allowlist stay fixed. A persistent author or reviewer model change starts
+  a new session for that role, while an effort change keeps its session. A saved gate verdict still applies.
+  An install move can continue with identical agent and gate prompt contents and the original custom prompt path.
+  See [resume settings and relocation](paired_session/README.md#changing-role-settings-or-moving-an-install).
 - to abort the run (`abort`).
 A headless session starts the run with `--detach` (the command returns at once with its pid and log; `stop` ends it;
 macOS only, refused on Windows).

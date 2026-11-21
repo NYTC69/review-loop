@@ -282,8 +282,9 @@ settings, but program/role/test-command keys there are refused (`REFUSED`, exit 
 when that profile is selected, before any run state is created, and an existing run that later finds such keys
 holds. `--config` replaces the workspace profile; copy any desired limits
 into the external profile because the two files are not layered. The CLI loads the selected profile for run
-and resume; explicit CLI options override it. On resume, effective settings
-must still match the saved run configuration. A changed binary or PATH is recorded with a NOTE
+and resume; explicit CLI options override it. Resume uses saved role models and efforts for omitted flags.
+See [resume settings and relocation](#changing-role-settings-or-moving-an-install) for the explicit overrides.
+A changed binary or PATH is recorded with a NOTE
 (`operator program or PATH changed since run start (changed: path_env); the run continues with the new state`)
 and the run continues; a program that is now missing or unsafe still holds. The names of secret-looking environment
 variables (for example a `*_TOKEN` set by an agent session) feed the Claude credential deny list, which always
@@ -621,6 +622,25 @@ its deadline stays acceptable: `accept` and `reject --scope-change` work, while
 since the last dispatch, the run HOLDs until the clock is past that time again;
 elapsed time is never refunded. A scope-change successor starts without a
 deadline; pass the time it may use as its own `--wi-deadline`.
+
+## Changing role settings or moving an install
+
+A continuing `resume` can change any of `--author-model`, `--reviewer-model`, `--gate-model`,
+`--author-effort`, `--reviewer-effort`, and `--gate-effort`. Both `--flag value` and
+`--flag=value` work. Omitted model and effort flags inherit the saved values on every action
+that restores the run, even when the current profile supplies different defaults. The saved
+vendors and `allowed_models` policy apply. Other actions refuse explicit changes.
+
+A model change starts a new persistent session for the affected author or reviewer. An
+effort-only change keeps the session. A replacement author receives the saved approved plan
+in EXEC or the current draft during a PLAN revision. Changes take effect when the run continues
+and appear in `role_resume_changes` in `state.json`. A saved gate verdict is used once per work item.
+
+After moving a review-loop install, the next verified lifecycle dispatch can update the saved
+install paths and retain the sessions if the agent bodies, gate prompt and other dispatch inputs
+match. The coordinator records the move in `role_manifest_rebinds` and prints a NOTE. A custom
+gate prompt must stay at its saved path with identical contents. The bundled gate prompt keeps
+the existing cross-release refreeze behavior.
 
 ## Skipping quality polish on resume
 

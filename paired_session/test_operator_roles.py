@@ -176,7 +176,7 @@ class RoleModelTests(unittest.TestCase):
         path.write_text(json.dumps(values))
 
     def main(self, action, *extra):
-        command = self.h.command(*extra)
+        command = self.h.command_without_default_efforts(*extra)
         command[2] = action
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -428,8 +428,8 @@ class RoleModelTests(unittest.TestCase):
         for action in ('resume', 'run'):
             a = self.restored(action=action)
             self.assertEqual((a.gate_model, a.reviewer_model), ('gpt-6.1-sol', 'claude-sonnet-5-5'))
-        with self.assertRaisesRegex(ValueError, 'role models are fixed for this run: gate_model'):
-            self.restored('--gate-model', 'claude-opus-5-5', action='resume', explicit={'gate_model'})
+        override = self.restored('--gate-model', 'gpt-6-sol', action='resume', explicit={'gate_model'})
+        self.assertEqual(override.gate_model, 'gpt-6-sol')
         # An allowlist naming only the saved models must not trip over the CLI defaults on a plain resume.
         self.h.run_dir = self.h.root / 'allow-resume'
         policy = self.allowlist_run({'codex': ['gpt-6.1-sol'], 'claude': ['claude-sonnet-5-5']}, '--author-model',

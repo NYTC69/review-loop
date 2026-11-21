@@ -163,6 +163,11 @@ review_focus: |
   and the [delivery scenario matrix](../../docs/protocol/scenario-matrix.md).
   See [the advisory rules](../../paired_session/README.md#minor-only-review-revisions) for open ledger rows.
 - **Acceptance stays yours** — a DONE run is accepted or rejected only on your explicit decision
+- **Resume settings** — on a continuing `resume`, use `--author-model`, `--reviewer-model`, `--gate-model` or the
+  corresponding `--*-effort` flags. Omitted flags keep their saved values. Vendors and model policy stay fixed.
+  A persistent model change starts a new session for that role. Effort changes keep the session.
+  A moved install can continue with matching frozen inputs and the same custom gate prompt path.
+  See [resume settings and relocation](../../paired_session/README.md#changing-role-settings-or-moving-an-install).
 - **Project-specific config** — tailor review priorities per project
 
 ## More info
