@@ -154,6 +154,21 @@ class ClassifierTests(unittest.TestCase):
                 expected = {'kind': 'rate_limited', 'reset_hint': None} if limited else None
                 self.assertEqual(rc.classify_rate_limit_failure(0, '', stdout, vendor='gemini'), expected)
 
+    def test_agy_terminal_quota_wording_and_relative_resets(self):
+        for message, hint, delay in (
+            ('Individual quota reached. Resets in 164h', 'Resets in 164h', 164 * 3600),
+            ('QUOTA EXCEEDED. Resets in 5m', 'Resets in 5m', 300),
+            ('Quota was exceeded. Resets in 2 days', 'Resets in 2 days', 2 * 86400),
+            ('Tool crashed. Resets in 5m', None, None),
+        ):
+            terminal = {'status': 'ERROR', 'error': message}
+            stdout = json.dumps({'event': 'result', 'result': terminal})
+            expected = {'kind': 'rate_limited', 'reset_hint': hint, 'reset_at': self.now + delay} if hint else None
+            with self.subTest(message=message, source='agy_result'):
+                self.assertEqual(rc.classify_rate_limit_failure(0, '', vendor='gemini', agy_result=terminal), expected)
+            with self.subTest(message=message, source='stdout'):
+                self.assertEqual(rc.classify_rate_limit_failure(0, '', stdout, vendor='gemini'), expected)
+
     def test_provider_reset_values(self):
         for hint, epoch in (
             ('Try again in 2h 3m 4s.', self.now + 7384),

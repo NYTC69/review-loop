@@ -6,6 +6,7 @@
 
 - Codex、Claude 和 Gemini 的明确配额拒绝会保留回执、退回调用额度，并在预算内重试同一个回合。能解析的重置时间写入回执。有效的重置时间不占退避次数，等待到重置时间且至少等 30 秒。只有未知或已过期的重置才使用 30、60、120、240 秒的退避。退避次数耗尽或下次等待超出剩余预算时，进入带原因的 `rate_limited` HOLD。
 - agy 错误里的文件行号 `:429` 不再被当作配额拒绝。Claude 的允许或超额事件只取消较早的 API 错误或结果中的限流信号。
+- Gemini 的 agy 回合以 `ERROR` 结束且消息包含 `quota reached` 或 `quota exceeded` 等明确措辞时，按配额拒绝处理。`Resets in 164h` 这样的相对重置时间会写入回执。所需等待超过剩余预算时，立即进入说明预算原因的 `rate_limited` HOLD。
 - `--max-rate-limit-wait` / `max_rate_limit_wait` 是整个 run 的累计等待预算，默认 21600 秒，设为 0 则立即 HOLD，恢复时不能提高预算。如果重试时间达到或超过 work item 截止时间，则立即按截止时间 HOLD。重试派发启动失败时清除已保存的等待记录。等待时 `status --brief` 显示 UTC 重试时间；`stop` 或 Ctrl-C 中断后可用普通 `resume` 继续，已安排的等待只计费一次。
 - EXEC、FINISH 和 DOCS 的作者超时时，HOLD 写明实际使用的秒数。低于上限时提示 `resume --exec-turn-timeout 14400`，到达上限时说明这是最大值。
 

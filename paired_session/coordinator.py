@@ -654,7 +654,7 @@ def classify_rate_limit_failure(returncode: int, stderr: str, stdout: str = '', 
         agy_quota = vendor == 'gemini' and (
             '429' in codes or any(str(value).upper() == 'RESOURCE_EXHAUSTED' for value in [*codes, *statuses])
             or re.search(r'^\s*429\b|\bHTTP\s+429\b|\b(?:status(?:\s+code)?|code)(?:\s*[:=]\s*|\s+)429\b|'
-                         r'\bRESOURCE_EXHAUSTED\b', message, re.I))
+                         r'\bRESOURCE_EXHAUSTED\b|\bquota(?: has been| was)? (?:reached|exceeded)\b', message, re.I))
         if (agy_quota or codes & known_codes or any(str(value) == '429' for value in statuses)
                 or (not codes and strong_message.search(message))):
             if event.get('type') == 'result':

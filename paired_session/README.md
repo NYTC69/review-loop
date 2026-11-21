@@ -44,7 +44,11 @@ reviewer approves.
 Explicit subscription or quota rejections from Codex, Claude or Gemini retry the
 same turn within the run-wide wait budget. Every rejection retains its own
 receipt and refunds the invocation. Receipts keep the provider's reset hint and
-include a numeric reset timestamp when it can be parsed.
+include a numeric reset timestamp when it can be parsed. A terminal Gemini `agy`
+result with status `ERROR` and wording such as `quota reached` or `quota exceeded`
+is an explicit rejection. Relative reset hints such as `Resets in 164h` determine
+the wait. If that wait exceeds the remaining budget, the run immediately enters
+a `rate_limited` HOLD with the budget reason.
 A turn that fails at once with a transient provider error ("Selected model is
 at capacity", Anthropic's overloaded error) before any tool call is retried
 once after 60 seconds without consuming the budget; a second such failure holds

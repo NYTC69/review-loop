@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 from paired_session import coordinator as rc
+from paired_session import test_real_coordinator as trc
 from paired_session import test_worktree_lifecycle as twl
 
 DONE = twl.DONE
@@ -161,6 +162,24 @@ class RateLimitDriveTests(unittest.TestCase):
         self.assertEqual(self.state()['config']['max_rate_limit_wait'], 0)
         refused = self.cli({}, 'resume', extra=('--max-rate-limit-wait', '30'))
         self.assertIn('resume configuration differs: max_rate_limit_wait', refused.stdout)
+
+    def test_agy_quota_reset_beyond_budget_holds_without_waiting(self):
+        agy = trc.RealCoordinatorTests.fake_gemini_cli(self.h)
+        hint = 'Resets in 164h'
+        env = {'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_FAIL_EXIT': '0',
+               'FAKE_GEMINI_ERROR': 'Individual quota reached. ' + hint}
+        with self.clock() as (now, waits):
+            self.assertEqual(self.drive(env, '--author-vendor', 'gemini', '--author-model', 'gemini-3.8-flash',
+                                        '--gemini-bin', str(agy), '--gate-vendor', 'claude',
+                                        '--max-rate-limit-wait', '60'), 'HOLD')
+        state = self.state()
+        self.assertEqual((state['status'], state.get('hold_kind')), ('HOLD', 'rate_limited'), state['hold_reason'])
+        self.assertIn('next wait needs 590400 s but only 60 s of the run-wide wait budget remain', state['hold_reason'])
+        self.assertEqual(state['rate_limit'], {'role': 'author', 'phase': 'PLAN', 'sequence': 1, 'reset_hint': hint})
+        [turn] = state['turns']
+        self.assertEqual((turn['vendor'], turn['reset_at']), ('gemini', now + 164 * 3600))
+        self.assertEqual((waits, state.get('rate_limit_wait_used', 0), state['invocations_used']), ([], 0, 0))
+        self.assertNotIn('rate_limit_wait', state)
 
     def test_unknown_reset_and_non_quota(self):
         env = {**self.limited_env(SITES[0][0], once=False), 'FAKE_RATE_LIMIT_UNKNOWN': '1'}
