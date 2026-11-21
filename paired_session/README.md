@@ -631,8 +631,11 @@ Later resumes inherit it, repeating `true` is idempotent, and explicit `false` i
 
 Completed specialist turns stay in the pass receipt. A saved quota retry for a new specialist pass is cleared,
 and its rejected turn and usage remain recorded. POLISH-Q quality writers are skipped if their batch is still
-unscheduled. An already scheduled batch follows its saved queue. If uncertain-turn recovery stops at its HOLD,
-the downgrade is unsaved. Pass the flag again on the resume that continues.
+unscheduled. An already scheduled batch follows its saved queue. The flag is saved only by a resume that
+continues the run: if that resume stops first (uncertain-turn recovery HOLD, a round-limit HOLD without
+`--add-rounds`, a past-deadline HOLD, or a DONE run), the downgrade is unsaved and no NOTE appears. Pass the flag
+again on the resume that continues. A profile `skip_quality_polish` value never downgrades a saved run; pass the
+flag.
 
 Existing blockers still go through author fix and owner recheck, with one or two calls per owner.
 An eligible blocker can also be withdrawn at the existing POLISH-Q fix HOLD.
