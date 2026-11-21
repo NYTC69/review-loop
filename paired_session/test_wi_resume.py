@@ -105,7 +105,7 @@ class ResumeTests(unittest.TestCase):
                 self.assertEqual(self.state()['role_manifest_rebinds'], [move])
 
                 body = new / 'agents' / 'executor.md'
-                for drift in ('agent', 'digest', 'role flags', 'bundled prompt'):
+                for drift in ('agent', 'digest', 'digest + config change', 'role flags', 'bundled prompt'):
                     with self.subTest(drift=drift):
                         co.state_path.write_bytes(saved)
                         if drift == 'bundled prompt':
@@ -121,15 +121,16 @@ class ResumeTests(unittest.TestCase):
                         original = body.read_bytes()
                         if drift == 'agent':
                             body.write_bytes(original + b'\nChanged instructions.\n')
-                        elif drift == 'digest':
+                        elif drift.startswith('digest'):
                             state['role_dispatch_manifest_sha256'] = 'wrong'
                         else:
                             manifest['role_flags']['author']['subagents'] = 'different'
                             manifest['role_flags_sha256'] = digest(manifest['role_flags'])
                             state['role_dispatch_manifest_sha256'] = digest(manifest)
                         rc.atomic_json(co.state_path, state)
-                        try:
-                            _, output = self.cli('resume', *flags, drive=verified_turn)
+                        extra = ('--skip-quality-polish', 'true') if drift == 'digest + config change' else ()
+                        try:   # a resume config change must not re-seal an invalid manifest digest (gate R1, AC2)
+                            _, output = self.cli('resume', *flags, *extra, drive=verified_turn)
                             self.assertIn(DRIFT, output)
                             self.assertNotIn('role_manifest_rebinds', self.state())
                         finally:

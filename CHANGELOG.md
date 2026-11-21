@@ -6,6 +6,8 @@
 - 继续运行时，`resume` 可显式调整 author、reviewer 或 gate 的 model 和 effort，供应商和模型许可列表保持固定。恢复已有运行时，省略 model 或 effort 参数就沿用保存值，避免因命令行或配置文件的 effort 默认值不同而被拒绝。
 - 更换持久 author 或 reviewer 的模型会开启该角色的新会话，仅调整 effort 会保留会话。替换 author 的首个回合可读取已批准的计划或当前草稿。已保存的门审裁定继续生效。
 
+- resume 时的配置改动（如 `--skip-quality-polish true`、调高调用上限）不再给已损坏的冻结清单重新盖章：清单在改动前已失效时保持失效，下一次派发拒绝。
+
 **按意图更新的测试断言**
 
 - `test_operator_roles.test_a_plain_resume_of_a_non_default_model_run_works` 改为断言 `resume` 接受同供应商的 gate 模型覆盖。

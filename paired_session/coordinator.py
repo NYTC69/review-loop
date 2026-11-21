@@ -10514,6 +10514,10 @@ class Coordinator:
         self.state['active'] = None
         self.state['uncertain_active'] = None
         self.refuse_rejected_tree(stale_done=True, allow_author=self.state.get('next') == 'author')
+        manifest = self.state.get('role_dispatch_manifest')   # gate R1 (AC2): never re-seal an invalid saved manifest
+        sealed = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        manifest_intact = (isinstance(manifest, dict) and sealed(manifest) == self.state.get('role_dispatch_manifest_sha256')
+                           and sealed(self.state['config']) == manifest.get('config_sha256'))
         role_changes = self._apply_resume_role_changes() if self.args.action == 'resume' else []
         resume_config_changed = any(self.state['config'].get(key) != getattr(self.args, key)
                                     for key in ('timeout', 'exec_turn_timeout', 'max_invocations', 'max_rate_limit_wait',
@@ -10535,7 +10539,7 @@ class Coordinator:
             dispatch = (self.state.get('rate_limit_wait') or {}).get('dispatch', {})
             if dispatch.get('specialist') and dispatch.get('next') == 'polish-q':
                 self.state.pop('rate_limit_wait')
-        if resume_config_changed or role_changes:
+        if (resume_config_changed or role_changes) and manifest_intact:
             self._refresh_resumed_config_digest()
         self.save()
         if self.args.max_invocations > old_cap:
