@@ -1,6 +1,9 @@
 """WI-GATE1 S7/S8: PLAN structure, per-round coverage and the single gate audit."""
+import hashlib
 import json
+import os
 import unittest
+from unittest.mock import patch
 
 from paired_session import scenario_matrix
 from paired_session import test_gate_once as tgo
@@ -9,6 +12,7 @@ from paired_session.fake_cli import FAKE_SCENARIO_MATRIX, SUPPLEMENTAL_SCENARIO
 
 
 ROW = 'Boolean input | Raise TypeError | test_rejects_bool'
+TOOL_PATH_MATRIX = FAKE_SCENARIO_MATRIX.replace(ROW, ROW.replace('Boolean input', 'Boolean input in `/tmp/claude-501/frames/`'))
 
 
 class ScenarioMatrixParserTests(unittest.TestCase):
@@ -231,6 +235,40 @@ class ScenarioMatrixRunTests(unittest.TestCase):
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
         self.assertIn('No passing evidence for test_rejects_bool', state['finding_ledger'][-1]['summary'])
         self.assertFalse(tgo.gates(state))
+
+    def test_gate_matrix_excerpt_survives_malformed_verdict_retry(self):
+        counter = self.root / 'gate-replies.count'
+        result = self.run_coordinator(*tgo.OFF, env={'FAKE_FIRST_PLAN_MATRIX': TOOL_PATH_MATRIX,
+            'FAKE_GATE_REPLIES': 'empty,ok', 'FAKE_GATE_REPLIES_COUNT': str(counter)})
+        self.assertIn(tgo.DONE, result.stdout, result.stdout + result.stderr)
+        self.assertEqual(counter.read_text(), '2')
+        first, retry = tgo.gates(self.state())
+        self.assertEqual(first['gate_malformed'], 'FAIL with no fail_items')
+        self.assertEqual(retry['answer']['verdict'], 'PASS')
+        excerpt = '\n\nScenario matrix from plan.md:\n' + scenario_matrix.section(TOOL_PATH_MATRIX) + '\n'
+        retry_note = ('\n\nNote from the coordinator: your previous answer was not a valid verdict ('
+                      'FAIL with no fail_items). Review again and answer with a complete verdict.')
+        first_prompt = self.prompt(first)
+        self.assertTrue(first_prompt.endswith(excerpt))
+        for turn, expected in ((first, first_prompt), (retry, first_prompt + retry_note)):
+            sequence = turn['sequence']
+            evidence = self.run_dir / 'evidence'
+            dispatched = (evidence / f'{sequence:03d}-exec-gate.prompt.txt').read_bytes()
+            self.assertEqual(dispatched, expected.encode('utf-8'))
+            scan = json.loads((evidence / f'{sequence:03d}-gate.independence-inputs.json').read_text())
+            self.assertEqual(scan['inputs']['prompt'], {
+                'content': expected, 'sha256': hashlib.sha256(dispatched).hexdigest()})
+
+    def test_gate_scans_history_after_matrix_excerpt(self):
+        co = self.coordinator(*tgo.OFF)
+        co.state['phase'] = 'EXEC'
+        (co.context / 'plan.md').write_text('# Plan\n' + TOOL_PATH_MATRIX)
+        counter = self.root / 'gate-replies.count'
+        with patch.dict(os.environ, {'FAKE_GATE_REPLIES': 'empty,ok', 'FAKE_GATE_REPLIES_COUNT': str(counter)}), \
+                patch.object(tgo.rc, 'gate_answer_error', return_value='prior notes in /tmp/codex-reviews/'), \
+                self.assertRaisesRegex(RuntimeError, 'gate independence check rejected history in prompt: codex'):
+            co._gate_answer()
+        self.assertEqual(counter.read_text(), '1')
 
     def test_gate_exempts_a_legacy_plan_and_audits_plans_approved_with_the_matrix_requirement(self):
         for name, draft, evidence in (('legacy', FAKE_SCENARIO_MATRIX, ''),

@@ -31,7 +31,7 @@ import threading
 import time
 import traceback
 import uuid
-from typing import Optional
+from typing import NamedTuple, Optional, Union
 try:
     from paired_session import budget_policy
     from paired_session import candidate_tree
@@ -2676,6 +2676,15 @@ class ReadOnlyTurnVoided(ValueError):
     def __init__(self, message: str, restored: bool):
         super().__init__(message)
         self.restored = restored
+
+
+class GatePromptParts(NamedTuple):
+    before_excerpt: str
+    matrix_excerpt: str
+    after_excerpt: str = ''
+
+    def append(self, text: str) -> 'GatePromptParts':
+        return GatePromptParts(self.before_excerpt, self.matrix_excerpt, self.after_excerpt + text)
 
 
 class Coordinator:
@@ -5409,19 +5418,25 @@ class Coordinator:
         ]) + self._guidance(REVIEW_GUIDANCE) + opv.prompt_block(self, snapshot, atomic_json, role) + self._matrix_review_prompt()
 
     def _gate_prompt(self, snapshot: str) -> str:
+        return ''.join(self._gate_prompt_parts(snapshot))
+
+    def _gate_prompt_parts(self, snapshot: str) -> GatePromptParts:
         template = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         filled = template.replace('${REVIEW_TARGET_DESC}', str(self.context / 'workitem.md')).replace(
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
             '\nAudit the complete current git delta in ' + str(self.workspace))
+        excerpt = ''
         if self.state.get('review_only'):
             matrix_audit = '\n\nReview-only scope: The scenario matrix requirement and audit are skipped.'
         elif self.state.get('legacy_plan'):
             matrix_audit = '\n\nThis plan was approved before scenario matrices were required. Skip the scenario matrix audit.'
         else:
             matrix_audit = ('\nScenario matrix audit applies. Audit the "## Scenario matrix" section of the plan '
-                            f'as the template says (checklist: {scenario_matrix.CHECKLIST}).' + self._matrix_plan_excerpt())
-        return (filled + '\n' + self._docs_reserved_note('review') + '\n' + self._test_instruction() +
+                            f'as the template says (checklist: {scenario_matrix.CHECKLIST}).')
+            excerpt = self._matrix_plan_excerpt()
+        return GatePromptParts(
+                filled + '\n' + self._docs_reserved_note('review') + '\n' + self._test_instruction() +
                 '\n' + self.allowed_command_prompt() +
                 '\nRead program-materialized delta.patch, delta.stat, status.txt, and optional delta-since-last-review.patch in: ' + str(self.context) +
                 '\n' + self.inspection_prompt('gate') +
@@ -5431,7 +5446,8 @@ class Coordinator:
                 '\nReview independently using only the work item, plan, delta files, and workspace.' +
                 '\n' + REVIEW_HISTORY_GUIDANCE +
                 '\nNever edit, commit, push, or load skills.' + self._guidance(REVIEW_GUIDANCE) +
-                self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json) + matrix_audit)
+                self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json) + matrix_audit,
+                excerpt)
 
     def _fresh_scan_run_paths(self, include_support: bool = True) -> list[str]:
         paths = [self.workspace, self.run_dir, self.evidence, self.context, self.author_temp_dir]
@@ -6191,7 +6207,7 @@ class Coordinator:
                     'created) and resume, or abort')
         return None
 
-    def assert_fresh_prompt(self, role: str, prompt: str) -> None:
+    def assert_fresh_prompt(self, role: str, prompt: str, *, scan_prompt: Optional[str] = None) -> None:
         if role not in ('shadow', 'gate'):
             return
         # A clean prompt is insufficient when it points to contaminated inputs.
@@ -6212,10 +6228,11 @@ class Coordinator:
                                     '(no finding ids) and run the printed Start: command for a successor '
                                     'with a fresh PLAN, or abort and start a new run')
                     raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}: {shown}; ' + recovery)
-        # The exact excerpt is checked below as part of context/plan.md, with the same rules as at PLAN approval.
-        excerpt = self._matrix_plan_excerpt()
-        prompt_for_scan = prompt.removesuffix(excerpt) if excerpt else prompt
-        checked = self._mask_docs_reserved_paths(self._mask_guidance(prompt_for_scan))   # operator guidance and DOCS paths
+        # The gate excerpt is checked below as part of context/plan.md, with the PLAN approval rules.
+        if scan_prompt is None:
+            excerpt = self._matrix_plan_excerpt() if role == 'shadow' else ''
+            scan_prompt = prompt.removesuffix(excerpt) if excerpt else prompt
+        checked = self._mask_docs_reserved_paths(self._mask_guidance(scan_prompt))   # operator guidance and DOCS paths
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', checked)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
                      if row.get('summary') and row['summary'] in checked]
@@ -6234,7 +6251,7 @@ class Coordinator:
             sources['gate-template'] = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         checked = {}
         for name, content in sources.items():
-            matches = self._introduced_history(name, prompt_for_scan if name == 'prompt' else content)
+            matches = self._introduced_history(name, scan_prompt if name == 'prompt' else content)
             if matches:
                 where = ''
                 if name == 'context/delta.patch' and (hits := self._delta_history_hits(content)):
@@ -6620,7 +6637,7 @@ class Coordinator:
         if failed and not turns and (self.state.get('active') or self.state.get('uncertain_active')):
             opv.void_stale(self, None, atomic_json)
 
-    def invoke(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
+    def invoke(self, role: str, phase: str, prompt: Union[str, GatePromptParts], schema: dict, fresh=False,
                allow_mutation_report=False, workspace_override: Optional[Path] = None,
                env_overrides: Optional[dict] = None, evidence_retry: bool = True) -> dict:
         """evidence_retry=False (the gate, WI-GATE1 R2 F9): no evidence-contract retry here; a verified_claims error comes
@@ -6633,8 +6650,7 @@ class Coordinator:
         redispatched = False                                             # D-EFF category A: one re-dispatch per invoke
         transient_retried = False                                        # V327-RETRY: one transient-provider retry per invoke
         for attempt in range(2):
-            turn_prompt = prompt if attempt == 0 else (
-                prompt + '\nEvidence contract retry: ' + self.verified_claims_prompt())
+            dispatch_notes = '\nEvidence contract retry: ' + self.verified_claims_prompt() if attempt else ''
             seq0 = self.state['sequence']
             try:
                 while True:   # a void read-only turn whose change was undone is re-dispatched once, told why
@@ -6642,6 +6658,7 @@ class Coordinator:
                     overrides = ({**(env_overrides or {}), **{key: str(scratch) for key in ('TMPDIR', 'TMP', 'TEMP')},
                                   **winplat.role_env_extras()}
                                  if scratch else env_overrides)
+                    turn_prompt = prompt.append(dispatch_notes) if isinstance(prompt, GatePromptParts) else prompt + dispatch_notes
                     try:
                         result = self._progress_dispatch(role, phase, fresh, lambda: self._invoke_once(
                             role, phase, turn_prompt, schema, fresh, allow_mutation_report, workspace_override, overrides))
@@ -6664,9 +6681,9 @@ class Coordinator:
                                                             f'restored ({exc})') from exc
                         self._redispatch_budget(phase, exc)
                         redispatched = True
-                        turn_prompt += ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
-                                        'answer was discarded and the workspace was restored. Review the current tree again without '
-                                        'creating, editing, staging, committing or deleting anything.')
+                        dispatch_notes += ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
+                                           'answer was discarded and the workspace was restored. Review the current tree again without '
+                                           'creating, editing, staging, committing or deleting anything.')
                         print(f'NOTE: {exc}; re-dispatching the {role} turn once')
                         continue
                     if scratch:   # an uncertain turn's root is dropped on archive or at the next dispatch
@@ -6709,7 +6726,7 @@ class Coordinator:
                 return {**result, 'evidence_error': error}
         raise RuntimeError(f'{role} verified_claims protocol error after one retry: {error}')
 
-    def _invoke_once(self, role: str, phase: str, prompt: str, schema: dict, fresh=False,
+    def _invoke_once(self, role: str, phase: str, prompt: Union[str, GatePromptParts], schema: dict, fresh=False,
                      allow_mutation_report=False, workspace_override: Optional[Path] = None,
                      env_overrides: Optional[dict] = None) -> dict:
         issue = self._program_state(hold=True)[1]
@@ -6750,11 +6767,17 @@ class Coordinator:
         command_rule = LONG_COMMAND_RULE.replace(
             f'gets {LONG_COMMAND_TIMEOUT_MS} for a long command.',
             f'gets {command_maximum} for a long command.')
-        if LONG_COMMAND_RULE in prompt:
-            prompt = prompt.replace(LONG_COMMAND_RULE, command_rule)
+        gate_parts = isinstance(prompt, GatePromptParts)
+        parts = prompt if gate_parts else GatePromptParts(prompt, '')
+        if any(LONG_COMMAND_RULE in part for part in parts):
+            parts = GatePromptParts(*(part.replace(LONG_COMMAND_RULE, command_rule) for part in parts))
         elif command_maximum > LONG_COMMAND_TIMEOUT_MS:   # V319-RULE: its own heading, so it never reads as operator text above it
-            prompt += LONG_COMMAND_RULE_HEADING + command_rule
-        self.assert_fresh_prompt(role, prompt)
+            parts = parts.append(LONG_COMMAND_RULE_HEADING + command_rule)
+        prompt = ''.join(parts)
+        if gate_parts:
+            self.assert_fresh_prompt(role, prompt, scan_prompt=parts.before_excerpt + parts.after_excerpt)
+        else:
+            self.assert_fresh_prompt(role, prompt)
         active_workspace = Path(workspace_override).resolve() if workspace_override else self.workspace
         capability = {}
         if self._role_vendor(role) == 'codex':
@@ -9563,12 +9586,13 @@ class Coordinator:
         while len(malformed) < 2:   # R2 F9: one budget for an undecodable reply, a schema error and an evidence error
             self.materialize_review_context()
             snapshot, _ = git_snapshot(self.workspace)
-            prompt = self._gate_prompt(snapshot)
+            prompt = self._gate_prompt_parts(snapshot)
             if malformed:
-                prompt += ('\n\nNote from the coordinator: your previous answer was not a valid verdict ('
-                           + malformed[-1]['gate_malformed'][:500] + '). Review again and answer with a complete verdict.')
+                retry_note = ('\n\nNote from the coordinator: your previous answer was not a valid verdict ('
+                              + malformed[-1]['gate_malformed'][:500] + '). Review again and answer with a complete verdict.')
                 if malformed[-1].get('verified_claims_error'):   # the evidence contract, as other roles' one retry states it
-                    prompt += '\nEvidence contract retry: ' + self.verified_claims_prompt()
+                    retry_note += '\nEvidence contract retry: ' + self.verified_claims_prompt()
+                prompt = prompt.append(retry_note)
             sequence = self.state['sequence']
             try:
                 result = self.invoke('gate', 'EXEC', prompt, gate_schema(), fresh=True, evidence_retry=False)
