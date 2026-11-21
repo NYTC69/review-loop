@@ -33,7 +33,7 @@ class ScenarioMatrixParserTests(unittest.TestCase):
         self.assertEqual(self.error('\n'.join(plan)), '')
 
     def test_numbered_checklist_labels_with_inline_and_following_content(self):
-        plan = ['## Scenario matrix', f'1. **Input boundaries** — {ROW}',
+        plan = ['## Scenario matrix', f'1. Input boundaries — {ROW}',
                 '2. **Dependency failure** — N/A: No dependencies.',
                 '3. **Repetition and concurrency**', '   N/A: No retries.',
                 '4. **Ordering and state transitions**', '   N/A: No ordering changes.',
@@ -48,35 +48,124 @@ class ScenarioMatrixParserTests(unittest.TestCase):
             r'| Boolean input \| invalid type | Raise TypeError | test_rejects_bool |')
         self.assertEqual(self.error(plan), '')
 
-    def test_trivial_requires_a_reason_and_stands_alone(self):
+    def test_trivial_requires_a_reason_on_the_first_content_line(self):
         self.assertEqual(self.error('## Scenario matrix\nTrivial: documentation only.'), '')
-        for body in ('Trivial:  ', 'Trivial: documentation only.\n### Input boundaries\n- ' + ROW):
-            with self.subTest(body=body):
-                self.assertIn('single Trivial: <reason>', self.error('## Scenario matrix\n' + body))
+        self.assertEqual(self.error('## Scenario matrix\nTrivial: documentation only.\n\nNotes for the reviewer.'), '')
+        self.assertIn('Trivial: <reason>', self.error('## Scenario matrix\nTrivial:  '))
+        self.assertIn('Input boundaries', self.error('## Scenario matrix\nNotes first.\nTrivial: documentation only.'))
 
     def test_missing_section_and_dimension_are_named(self):
         self.assertIn('missing the ## Scenario matrix section', self.error('# Plan\nVerification only.'))
         self.assertIn('Compatibility', self.error(FAKE_SCENARIO_MATRIX.split('### Compatibility')[0]))
+        error = self.error('## Scenario matrix\n\n## Verification\nRun unittest.')
+        self.assertTrue(all(name in error for name in scenario_matrix.DIMENSIONS), error)
 
-    def test_malformed_row_identifies_the_dimension_and_format(self):
+    def test_malformed_rows_are_ignored_and_do_not_cover_a_dimension(self):
         for row in ('- Boolean input | | test_rejects_bool',
                     '| Boolean input | Raise TypeError |',
+                    '- Boolean input | BACKLOG: deferred',
                     '- Boolean input | Raise TypeError | test_rejects_bool | extra'):
             with self.subTest(row=row):
-                error = self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, row))
-                self.assertIn('Input boundaries, line 3', error)
-                self.assertIn('scenario | expected behavior | test id', error)
+                self.assertIn('Input boundaries', self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, row)))
+                self.assertEqual(self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, row + '\n- ' + ROW)), '')
 
-    def test_na_requires_a_reason_and_stands_alone(self):
+    def test_na_requires_a_reason_and_can_accompany_rows(self):
         self.assertEqual(self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, '- n/a: No inputs.')), '')
-        for row in ('N/A: ', 'N/A: No inputs.\n- ' + ROW):
+        self.assertEqual(self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, 'N/A: No inputs.\n- ' + ROW)), '')
+        self.assertEqual(self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, 'x | N/A: No inputs. | none')), '')
+        for row in ('N/A: ', 'x | N/A: | none', 'N/A: | No inputs. | none'):
             with self.subTest(row=row):
-                self.assertIn('N/A: <reason>', self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, row)))
+                self.assertIn('N/A: <reason> for Input boundaries',
+                              self.error(FAKE_SCENARIO_MATRIX.replace('- ' + ROW, row)))
+
+    def test_repeated_label_and_prose_preserve_dimension_coverage(self):
+        plan = FAKE_SCENARIO_MATRIX.replace('### Input boundaries\n- ' + ROW,
+            f'### Input boundaries\n- {ROW}\n### Input boundaries\n- BACKLOG note')
+        plan = plan.replace('### Dependency failure\n', '### Dependency failure\n'
+                            'This long prose line mentions input without introducing a new dimension.\n')
+        self.assertEqual(self.error(plan), '')
 
     def test_table_headers_and_dividers_alone_do_not_cover_a_dimension(self):
         plan = FAKE_SCENARIO_MATRIX.replace('- ' + ROW,
             '| Scenario | Expected behavior | Test ID |\n| --- | --- | --- |')
         self.assertIn('Input boundaries', self.error(plan))
+
+    def test_real_run_plan_matrices(self):
+        # Preserve the matrix and its notes from each rejected plan.
+        plans = (
+            ('realrun2-plan-01.md', """## Scenario matrix
+1. **Input boundaries**
+   - Empty list raises ValueError | `ValueError` raised, no other output | test_median_empty_raises (blocking: acceptance criterion 2)
+   - Single element | returns that element with its type | test_median_single_value (blocking: correctness)
+   - Large ints above 2**53 with even sum | exact int result, no float rounding | test_median_large_int_exact (blocking: correctness, criterion 4)
+   - Odd-sum ints (e.g. `[1, 2]`) | float 1.5 | test_median_even_count_float_result (blocking: correctness)
+   - Bool values, non-numeric values (strings), NaN | BACKLOG: behavior is whatever Python comparison/arithmetic gives; no spec requirement. Not blocking.
+2. **Dependency failure**: N/A: pure in-memory function with no external calls, timeouts, or services.
+3. **Repetition and concurrency**: N/A: stateless function; no shared state, retries, or writes. Duplicate values are ordinary inputs covered by the value-based tests.
+4. **Ordering and state transitions**
+   - Unsorted input | correct middle value regardless of input order | test_median_unsorted_input (blocking: correctness)
+   - Caller list mutated by call | caller's list unchanged after call | test_median_does_not_mutate_input (blocking: data integrity, criterion 3)
+   - Invalid state transitions / stale state: N/A: no state machine or cached data.
+5. **Partial failure and recovery**: N/A: single atomic computation with no multi-step writes, cleanup, or resume.
+6. **Permissions and identity**: N/A: no access control, identity, or ownership involved.
+7. **Compatibility**
+   - Existing `mean` behavior and `test_mean` | unchanged, still passes | existing test_mean in `python3 -m unittest -q` (blocking: regression)
+   - Int result type for even-sum int inputs | `type(...) is int` | test_median_int_result_type_even_sum (blocking: correctness, criterion 4)
+   - Negative even-sum ints | exact int result | test_median_negative_int_even_sum (blocking: correctness)
+   - Float/mixed inputs | float mean of the two middle values | test_median_even_count and test_median_even_count_float_result cover the float path; the float-only case `median([1.5, 2.5, 0.5]) == 1.5` is in test_median_odd_count (blocking: correctness)
+
+Matrix notes for reviewer:
+- Blocking-class rows above all have a named test.
+- BACKLOG (non-blocking): bool/str/NaN inputs; float overflow for `(a + b) / 2` near `sys.float_info.max` (could be rewritten as `a / 2 + b / 2`; not required by criteria); precision loss when an odd-sum int pair is divided into a float for values above 2**53 (criteria only require exact int when the sum is even); accepting non-list iterables such as generators (`sorted` would consume them; `len` would fail first on generators, so behavior is a TypeError, acceptable for "keep it small").
+- Trivial exemption: not claimed; this change has logic and tests.
+
+## Risks and unresolved items
+"""),
+            ('realrun2-plan-03.md', """## Scenario matrix
+Format: each dimension has a label line; rows are `scenario | expected behavior | test id`. A dimension with no applicable scenario has an `N/A: <reason>` line directly under its label.
+
+**1. Input boundaries**
+Empty list raises ValueError | `ValueError` raised | test_median_empty_raises
+Single element | returns that element with its type | test_median_single_value
+Even-sum ints above 2**53 | exact int, no float rounding | test_median_large_int_exact
+Odd-sum int pair `[1, 2]` | float `1.5` | test_median_even_count_float_result
+Bool, string, or NaN values | BACKLOG: follows Python comparison/arithmetic; no spec requirement; non-blocking | none
+Near-float-max middle pair | BACKLOG: `a / 2 + b / 2` avoids overflow by design; no dedicated test required | none
+
+**2. Dependency failure**
+N/A: pure in-memory function with no external calls, timeouts, or services.
+
+**3. Repetition and concurrency**
+N/A: stateless function with no shared state, retries, or writes; duplicate values are ordinary inputs covered by the value tests.
+
+**4. Ordering and state transitions**
+Unsorted input | correct middle value regardless of order | test_median_unsorted_input
+Caller's list mutated by call | caller's list unchanged | test_median_does_not_mutate_input
+Invalid transitions and stale state | N/A: no state machine or cached data; nothing to transition | none
+
+**5. Partial failure and recovery**
+N/A: single atomic computation with no multi-step writes, cleanup, or resume.
+
+**6. Permissions and identity**
+N/A: no access control, identity, or ownership is involved.
+
+**7. Compatibility**
+Existing `mean` and `test_mean` | unchanged; still passes | existing test_mean (run via `python3 -m unittest -q`)
+Even-sum int inputs | `type(...) is int` | test_median_int_result_type_even_sum
+Negative even-sum ints | exact int | test_median_negative_int_even_sum
+Float and mixed inputs | float mean of middle pair | test_median_even_count, test_median_odd_count (float-only `[1.5, 2.5, 0.5]`)
+
+Matrix notes:
+- Every blocking-class row above has a named test.
+- BACKLOG (non-blocking): bool/string/NaN inputs; precision loss when an odd-sum int pair becomes a float above 2**53 (criteria require exactness only for even sums); non-list iterables (generators raise TypeError from `len`, acceptable for a small change).
+- No trivial exemption is claimed; the change has logic and tests.
+
+## Risks and unresolved items
+"""),
+        )
+        for name, plan in plans:
+            with self.subTest(plan=name):
+                self.assertEqual(self.error(plan), '')
 
 
 class ScenarioMatrixRunTests(unittest.TestCase):

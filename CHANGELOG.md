@@ -61,7 +61,7 @@ S3/S4 第 3 轮修复（Sol R2 F5、F7、F8、F10、F11、F12）：v3.8.x 恢复
 
 **9. 场景矩阵**
 
-- S7：交付计划在 `plan.md` 中写 `## Scenario matrix`，按 `docs/protocol/scenario-matrix.md` 的七个通用维度列场景、预期行为和测试 ID，或给出 `N/A` 理由。只有阻塞类场景需要测试行，简单的文档、重命名或纯配置/文本改动可以写 `Trivial: <reason>`。矩阵缺失或格式错误时，coordinator 记录 correctness 阻塞项，把 PLAN 的 APPROVE 改为 REVISE，修正后自动关闭该项。PLAN reviewer 查覆盖是否完整，EXEC reviewer 和 fresh shadow 每轮查实现与测试证据。review-only、code-quality-loop 和 review-pr 跳过矩阵要求。
+- S7：交付计划在 `plan.md` 中写 `## Scenario matrix`，按 `docs/protocol/scenario-matrix.md` 的七个通用维度列场景、预期行为和测试 ID，或给出 `N/A` 理由。只有阻塞类场景需要测试行，简单的文档、重命名或纯配置/文本改动可以写 `Trivial: <reason>`。矩阵缺失、维度缺少内容或首行的 `Trivial` 缺少理由时，coordinator 记录 correctness 阻塞项，把 PLAN 的 APPROVE 改为 REVISE，修正后自动关闭该项。第 3 轮放宽检查，忽略说明、非三列的行和重复标签，支持编号写在加粗标签内。PLAN reviewer 查覆盖是否完整，EXEC reviewer 和 fresh shadow 每轮查实现与测试证据。review-only、code-quality-loop 和 review-pr 跳过矩阵要求。
 - S7/S8：单次门审核对每行的测试通过证据，并检查是否有缺失矩阵、错误的 Trivial 声明或遗漏的阻塞类场景。缺少阻塞类场景时，FAIL 项要求 `add row + handling + test`。补充行放在对应测试附近，由 EXEC reviewer 确认修复。
 
 **10. 门审范围**
@@ -101,6 +101,7 @@ S3/S4 第 3 轮修复（Sol R2 F5、F7、F8、F10、F11、F12）：v3.8.x 恢复
 - `test_v324_test.test_advisory_revise_at_the_limit_exits_with_current_record`（未附验证记录的子用例）：只剩建议项、唯一障碍是测试证据时，S3 R3 F8 起 HOLD 原因是要求 attach-verification 的测试证据 HOLD（不占轮），不再是 'EXEC round limit reached'。
 - 新增 `test_scenario_matrix`，覆盖表格和列表解析、PLAN 退回及修正、EXEC 和 shadow 提示、门审覆盖审计及只复审一次门审提出的缺口，以及 review-only 豁免。
 - S7 第 2 轮 `test_scenario_matrix`：新增同一行 `N/A`（含冒号写在加粗里的 `**X:** N/A: …`）、七维编号清单及修复提示绝对路径断言。旧版已批准且无矩阵的 PLAN 恢复后跳过矩阵审计，门审断言由 FAIL 改为 PASS。3.9 下批准的 PLAN 缺少矩阵或误称 `Trivial` 时仍断言 FAIL。
+- S7 第 3 轮 `test_scenario_matrix`：畸形行只在该维度没有有效内容时触发缺项提示，去掉行号和格式错误断言；首个内容行带理由的 `Trivial` 允许后续说明；带理由的 `N/A` 可与场景行并存，也可写在单元格中。新增两份现场 PLAN 矩阵的通过断言，并覆盖空矩阵、重复标签和含维度关键词的长说明。
 
 ### v3.8.6：plan 里由 work item 用词组成的斜杠列表不再被当成路径
 
