@@ -2949,7 +2949,8 @@ class Coordinator:
         if not self.state_path.exists():
             self.args.exec_turn_timeout = resolve_exec_turn_timeout(
                 self.args.exec_turn_timeout, self.args.timeout)
-        resolve_max_rate_limit_wait(self.args.max_rate_limit_wait)
+        self.args.max_rate_limit_wait = resolve_max_rate_limit_wait(
+            getattr(self.args, 'max_rate_limit_wait', DEFAULT_MAX_RATE_LIMIT_WAIT))
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding='utf-8'))
             # test_a_filter_driver_name_git_cannot_pass_safely_fails_closed: validate git config on load.
@@ -2980,7 +2981,7 @@ class Coordinator:
             self._review_only_args(self.state['config'])
             saved_wait = resolve_max_rate_limit_wait(self.state['config'].get(
                 'max_rate_limit_wait', DEFAULT_MAX_RATE_LIMIT_WAIT))
-            if self.args.max_rate_limit_wait_explicit and self.args.max_rate_limit_wait != saved_wait:
+            if getattr(self.args, 'max_rate_limit_wait_explicit', False) and self.args.max_rate_limit_wait != saved_wait:
                 raise ValueError('resume configuration differs: max_rate_limit_wait')
             self.args.max_rate_limit_wait = saved_wait
             if self.args.action in ('accept', 'reject', 'withdraw-findings', 'note', 'attach-verification'):
@@ -6863,7 +6864,10 @@ class Coordinator:
         if reason:
             self.progress('quota-wait-exhausted', dispatch=f"{dispatch['phase']} {dispatch['role']}",
                           rejected_sequence=rejection['sequence'], reason=reason)
-            raise RateLimitedTurn(rejection['error'] + '; ' + reason + '; resume after the quota clears')
+            error = rejection['error']
+            if budget or rejection.get('reset_at') is not None:
+                error += '; ' + reason + '; resume after the quota clears'
+            raise RateLimitedTurn(error)
         retry_at = now + seconds
         if issue := self._wi_deadline_issue(record=False, retry_at=retry_at):
             raise RateLimitDeadline(issue)
@@ -6905,7 +6909,7 @@ class Coordinator:
         life = self.state.get('lifecycle') or {}
         request = life.get('pending') or {}
         reservation = self.state.get('polish_reservation') or {}
-        dispatch = {'next': self.state['next'], 'role': role, 'phase': phase, 'fresh': fresh,
+        dispatch = {'next': self.state.get('next'), 'role': role, 'phase': phase, 'fresh': fresh,
                     'vendor': self._role_vendor(role), 'request_id': request.get('request_id')}
         if reservation.get('bucket') == 'specialist_counts':
             dispatch.update(specialist=reservation['name'], tool_attempt=reservation['tool_attempt'])

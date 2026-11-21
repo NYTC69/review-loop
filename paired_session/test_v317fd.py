@@ -15,14 +15,14 @@ class OperatorFailureTests(unittest.TestCase):
     locals().update({name: getattr(trc.RealCoordinatorTests, name) for name in
                     ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen', 'coordinator', 'fake_codex_cli', 'fake_claude_cli')})
 
-    def failing_coordinator(self, mode, vendor, stdout='', stderr='', code=1):
+    def failing_coordinator(self, mode, vendor, stdout='', stderr='', code=1, *, extra=()):
         self.run_dir = self.root / ('run-' + mode + '-' + vendor)
         cli = self.root / ('failure-' + mode + '-' + vendor)
         cli.write_text(f'#!{sys.executable}\n# fake_cli.py diagnostic fixture\nimport sys\nsys.stdin.read()\n'
                        f'sys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\nsys.exit({code})\n')
         cli.chmod(0o755)
         co = self.coordinator('--lifecycle-mode', mode, '--author-vendor', vendor,
-                              '--' + vendor + '-bin', str(cli))
+                              '--' + vendor + '-bin', str(cli), *extra)
         return co
 
     def assert_hold(self, co, expected):
@@ -104,7 +104,8 @@ class OperatorFailureTests(unittest.TestCase):
     def test_recognized_limit_keeps_typed_hold(self):
         for mode in ('off', 'on'):
             with self.subTest(mode=mode):
-                co = self.failing_coordinator(mode, 'codex', stderr='HTTP 429 rate limit\n')
+                co = self.failing_coordinator(mode, 'codex', stderr='HTTP 429 rate limit\n',
+                                              extra=('--max-rate-limit-wait', '0'))
                 self.assertEqual(co.drive(), 'HOLD')
                 receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
                 self.assertEqual(receipt['error_kind'], 'rate_limited')

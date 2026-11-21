@@ -58,9 +58,18 @@ class DetachTests(unittest.TestCase):
         for path in record.parent.glob(record.stem + '*'):
             path.unlink(missing_ok=True)
 
-    def call(self, *extra, action='run', env=None):
+    def call(self, *extra, action='run', env=None, wait_for_stop=False):
         command = self.h.command('--shadow', 'off', '--adversarial-gate', 'off', *extra) + ['--skip-probe']
         command[2] = action
+        if wait_for_stop:
+            # The detached grandchild inherits this patch and blocks until the real stop signal.
+            command[1:2] = ['-c', (
+                'import signal, sys\n'
+                'sys.path.insert(0, sys.argv.pop(1))\n'
+                'from paired_session import coordinator\n'
+                'coordinator.sleep_rate_limit = lambda seconds: signal.pause()\n'
+                'sys.exit(coordinator.main())\n'
+            ), str(trc.MODULE_PATH.parent.parent)]
         return subprocess.run(command, cwd=self.h.root, env={**os.environ, **(env or {})}, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -170,7 +179,7 @@ class DetachTests(unittest.TestCase):
 
     def test_stopped_quota_wait_uses_plain_resume_and_keeps_the_budget_charge(self):
         quota = {'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_UNKNOWN': '1'}
-        result = self.call('--detach', '--max-rate-limit-wait', '30',
+        result = self.call('--detach', '--max-rate-limit-wait', '30', wait_for_stop=True,
                            env={**quota, 'FAKE_RATE_LIMIT_MATCH': 'plan author. Phase: PLAN.'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         try:
