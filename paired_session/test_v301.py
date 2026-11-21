@@ -1,5 +1,7 @@
 """V301: only an explicit resume may raise the saved invocation cap."""
+import contextlib
 import copy
+import io
 import json
 import shutil
 import unittest
@@ -7,6 +9,7 @@ from unittest.mock import patch
 
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 from paired_session import test_real_coordinator as trc
+from paired_session.test_worktree_lifecycle import COVERING_GITIGNORE
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen',
@@ -72,6 +75,40 @@ class InvocationCapTests(unittest.TestCase):
         saved = self.resume_without_drive(co)
         self.assertEqual(saved['config']['max_invocations'], 3)
         self.assertNotIn('invocation_cap_raises', saved)
+
+    def test_resume_downgrade(self):
+        use_lifecycle_on(self, self)
+        (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)
+        rc.subprocess.run(['git', 'commit', '-qam', 'ignore sensitive files'], cwd=self.workspace, check=True)
+        co = self.coordinator('--lifecycle-mode', 'on', '--shadow', 'on')
+        original_digest = co.state['role_dispatch_manifest']['config_sha256']
+        implicit = self.restored(defaults={'skip_quality_polish': True})
+        self.assertFalse(implicit.args.skip_quality_polish)
+        self.assertNotIn('quality_polish_downgrades', self.resume_without_drive(implicit))
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            first = self.restored('resume', '--skip-quality-polish', 'true')
+            saved = self.resume_without_drive(first)
+            first._verify_frozen_role_dispatch()
+            self.assertNotEqual(saved['role_dispatch_manifest']['config_sha256'], original_digest)
+            [transition] = saved['quality_polish_downgrades']
+            self.assertEqual((transition['old'], transition['new']), (False, True))
+            self.assertTrue(transition['timestamp'])
+            plain = self.restored(defaults={'skip_quality_polish': False})
+            self.assertTrue(self.resume_without_drive(plain)['config']['skip_quality_polish'])
+            again = self.restored('resume', '--skip-quality-polish', 'true')
+            self.assertEqual(again.resume(), 'DONE', again.state.get('hold_reason'))
+        self.assertEqual(out.getvalue().count('NOTE: skip_quality_polish is now true'), 1)
+        self.assertEqual(again.state['quality_polish_downgrades'], [transition])
+        self.assertTrue(again.state['config']['skip_quality_polish'])
+        self.assertTrue(any(turn['role'] == 'shadow' and turn['phase'] == 'EXEC' and turn['fresh']
+                            for turn in again.state['turns']))
+        self.assertFalse(any(turn['phase'] == 'POLISH-Q' for turn in again.state['turns']))
+        for flag, value, key in (('--skip-quality-polish', 'false', 'skip_quality_polish'),
+                                 ('--max-exec-rounds', '9', 'max_exec_rounds')):
+            with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, 'resume configuration differs: ' + key):
+                self.restored('resume', flag, value)
 
     def lifecycle_raise(self, flag, value, key):
         original = ('--lifecycle-mode', 'on', '--max-invocations', '3',

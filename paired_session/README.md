@@ -622,6 +622,21 @@ since the last dispatch, the run HOLDs until the clock is past that time again;
 elapsed time is never refunded. A scope-change successor starts without a
 deadline; pass the time it may use as its own `--wi-deadline`.
 
+## Skipping quality polish on resume
+
+Under quota pressure, skip new POLISH-Q specialist passes before dropping the configured fresh shadow.
+On a continuing lifecycle-on delivery run, pass `resume --skip-quality-polish true` alongside the usual
+workspace, work item, and run directory options. The first change saves the flag and emits a NOTE.
+Later resumes inherit it, repeating `true` is idempotent, and explicit `false` is refused.
+
+Completed specialist turns stay in the pass receipt. A saved quota retry for a new specialist pass is cleared,
+and its rejected turn and usage remain recorded. POLISH-Q quality writers are skipped if their batch is still
+unscheduled. An already scheduled batch follows its saved queue. If uncertain-turn recovery stops at its HOLD,
+the downgrade is unsaved. Pass the flag again on the resume that continues.
+
+Existing blockers still go through author fix and owner recheck, with one or two calls per owner.
+An eligible blocker can also be withdrawn at the existing POLISH-Q fix HOLD.
+
 ## Acceptance, rejection and round limits
 
 At a current PLAN or EXEC round-limit HOLD, `resume --add-rounds N` (1-10)
@@ -682,9 +697,11 @@ fix HOLD), gate CRITICAL/HIGH rows and `secret-scan` rows are refused. At a POLI
 fix HOLD, withdrawing the last blocking rows sets the run to replay the EXEC review,
 then FINISH and POLISH-Q (only the paths changed since the last completed
 specialist pass; none when the tree is the one that pass reviewed); the run stays HOLD
-until `resume`. A pass the budget stopped mid-way is dropped. Specialists do not see
-operator rulings, so a withdrawn point can come back once from a later pass over changed
-paths; withdraw it again at the next POLISH-Q fix HOLD.
+until `resume`. A pass the budget stopped mid-way is dropped when its blockers are withdrawn.
+Specialists, DOCS reviewers and SECURITY reviewers receive the decision reason. They continue to review the
+implementation and unrelated defects, including defects at the same location.
+When another specialist's covered report is attached to the same ledger row, withdrawing that row also
+withdraws the attached claim. The other specialist can raise it again when a later delta touches that file.
 Example: a specialist reports that the configured test fails in its sandbox (a
 database that cannot start there) while an attached host run passed on that tree. Phrase the reason as approved behavior,
 without finding ids, review-history phrases or model/vendor approval attributions;

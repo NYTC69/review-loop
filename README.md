@@ -533,8 +533,12 @@ Other replay non-approvals roll it back with the reason. After a whole-group rol
 new blockers outside every writer's changed files stay open for EXEC repair with the usual round-limit HOLD;
 writer-file blockers and advisory rows are withdrawn, and operator-withdrawn rows stay withdrawn. The advisory fix round (`advisory_fix_round`,
 `--advisory-fix-round true`; code-quality-loop turns it on, and a run without `--review-only` refuses it) gives the author one round for the open non-blocking
-findings after the first clean POLISH-Q. Tune with `quality_focus` and `skip_quality_polish` (which skips the
-specialists and the writers).
+findings after the first clean POLISH-Q. Tune with `quality_focus` and `skip_quality_polish`.
+
+Under quota pressure, keep the configured fresh shadow and drop specialists first with the one-way
+`resume --skip-quality-polish true` on a lifecycle-on delivery run. This also skips POLISH-Q quality writers whose
+batch is still unscheduled. Existing blockers still go through author fix and owner recheck, with one or two
+calls per owner, or eligible operator withdrawal at the POLISH-Q fix HOLD. See the [resume details](paired_session/README.md#skipping-quality-polish-on-resume).
 
 ## File Structure
 

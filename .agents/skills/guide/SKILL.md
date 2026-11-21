@@ -64,6 +64,10 @@ Not on Codex:
   macOS (README.md, Configuration). Which config keys apply (round limits, `docs_file`, `skip_quality_polish`,
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
   `docs/protocol/paired-session-entry.md` (Profile and settings).
+- Under quota pressure, keep the fresh shadow and use the one-way `resume --skip-quality-polish true` to skip new
+  specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. Existing blockers still need
+  the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
+  See the [resume details](../../../paired_session/README.md#skipping-quality-polish-on-resume).
 - A review of existing code is a review-only run. With lifecycle on, `accept` normally makes one local commit (never a push);
   `auto_commit: false` in `.review-loop/config.md` keeps the accepted change uncommitted. Lifecycle off stops after the gate; acceptance returns the uncommitted tree.
 
