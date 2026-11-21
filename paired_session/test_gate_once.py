@@ -145,7 +145,8 @@ class GateOnceTests(unittest.TestCase):
                 first = later[0]
                 for text in ('## Mandatory gate checks', f"{item['id']} (gate FAIL item)", 'Basis: blocking class: correctness',
                              'Evidence: sum_ints.py:1 accepts bool input', 'Smallest change: reject bool',
-                             'Proof it is fixed: test_sum_ints rejects True'):
+                             'Proof it is fixed: test_sum_ints rejects True',
+                             'lives alongside its test in the workspace', 'do not require the row there'):
                     self.assertIn(text, first)
                 if mode is ON:   # FINISH wrote: the re-check goes to the reviewer only; the convergence cites the one gate
                     self.assertEqual(state['lifecycle']['exec_convergence']['gate_sequence'], gate['sequence'])
