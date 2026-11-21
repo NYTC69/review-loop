@@ -6864,10 +6864,7 @@ class Coordinator:
         if reason:
             self.progress('quota-wait-exhausted', dispatch=f"{dispatch['phase']} {dispatch['role']}",
                           rejected_sequence=rejection['sequence'], reason=reason)
-            error = rejection['error']
-            if budget or rejection.get('reset_at') is not None:
-                error += '; ' + reason + '; resume after the quota clears'
-            raise RateLimitedTurn(error)
+            raise RateLimitedTurn(rejection['error'] + '; ' + reason + '; resume after the quota clears')
         retry_at = now + seconds
         if issue := self._wi_deadline_issue(record=False, retry_at=retry_at):
             raise RateLimitDeadline(issue)

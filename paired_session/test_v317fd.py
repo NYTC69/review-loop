@@ -110,7 +110,8 @@ class OperatorFailureTests(unittest.TestCase):
                 receipt = json.loads((co.evidence / '001-plan-author.receipt.json').read_text())
                 self.assertEqual(receipt['error_kind'], 'rate_limited')
                 self.assertEqual(co.state['hold_reason'], 'rate_limited: provider rejected the call; '
-                    'it did not consume the invocation budget; reset time unavailable')
+                    'it did not consume the invocation budget; reset time unavailable; '
+                    'automatic waiting is disabled (--max-rate-limit-wait 0); resume after the quota clears')
                 self.assertFalse(receipt['invocation_budget_counted'])
 
     def test_timeout_names_duration_without_using_output(self):

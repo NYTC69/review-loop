@@ -15,7 +15,7 @@
 - `test_rl_weekly` 的精确回执断言增加可解析的 `reset_at`，保留原有的显示提示断言。
 - `test_progress` 在被拒绝的派发结束事件之后增加等待耗尽事件的断言。
 - `test_ratelimit`、`test_rl_weekly`、`test_real_coordinator`、`test_gate_once`、`test_d09_c1b1`、`test_progress` 和 `test_readonly_scratch` 中专门检查 HOLD 的用例显式选择 0 秒预算。
-- `test_v317fd.test_recognized_limit_keeps_typed_hold` 显式选择 0 秒预算，继续断言立即进入 `rate_limited` HOLD 及原有原因。
+- `test_v317fd.test_recognized_limit_keeps_typed_hold` 显式选择 0 秒预算，继续断言立即进入 `rate_limited` HOLD；HOLD 原因现在总会写明自动等待为何停止（这里是“automatic waiting is disabled”），断言随之更新。
 - `test_ratelimit` 的截止时间断言改为在睡眠前 HOLD，等待时间和新增预算扣款均为 0；新增短重置耗尽、重试启动失败和恢复时禁止提高已耗尽预算的回归用例。
 - `test_rl_weekly` 新增 agy 文件行号和 Claude 事件顺序断言。`test_detach` 额外核对 `stop` 后协调器退出，以及普通 `resume` 只对成功派发计数。
 
