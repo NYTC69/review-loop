@@ -51,6 +51,7 @@ def validation_error(matrix: str) -> str:
     for number, line in lines:
         # Subheadings and labels can include numbering, emphasis, or a trailing colon.
         label = BULLET.sub('', re.sub(r'^#{3,6}\s+', '', line))
+        label = re.sub(r'^(\*\*[^*|]+?)\s*:\*\*', r'\1**:', label)   # `**Label:** N/A: x` reads as `**Label**: N/A: x`
         inline = ''
         if split := re.match(r'^([^|]+?)\s*(?:[:—–]|\s-\s)\s*(.+)$', label):
             prefix, rest = split.groups()

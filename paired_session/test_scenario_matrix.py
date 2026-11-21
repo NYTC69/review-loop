@@ -25,6 +25,13 @@ class ScenarioMatrixParserTests(unittest.TestCase):
                                         for name in scenario_matrix.DIMENSIONS)]
         self.assertEqual(self.error('\n'.join(plan)), '')
 
+    def test_na_with_the_colon_inside_the_bold_label(self):
+        plan = ['## Scenario matrix', *(f'- **{name}:** N/A: No dependency or input changes.'
+                                        for name in scenario_matrix.DIMENSIONS)]
+        self.assertEqual(self.error('\n'.join(plan)), '')
+        plan[1] = f'- **Input boundaries:** {ROW}'
+        self.assertEqual(self.error('\n'.join(plan)), '')
+
     def test_numbered_checklist_labels_with_inline_and_following_content(self):
         plan = ['## Scenario matrix', f'1. **Input boundaries** — {ROW}',
                 '2. **Dependency failure** — N/A: No dependencies.',
