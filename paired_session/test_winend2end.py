@@ -419,7 +419,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.assertIn(b'paired-session', data)
         self.assertFalse((self.run_dir / 'state.json').exists())
 
-    def assert_turns_and_artifacts(self, state):
+    def assert_turns_and_artifacts(self, state, *, gate_test_evidence):
         self.assertEqual(state['config']['safety_mode'], 'efficient')
         self.assertEqual(state['lifecycle']['format'], 'worktree')
         self.assertFalse((self.run_dir / 'permission-probe.json').exists())
@@ -452,15 +452,19 @@ class WindowsEndToEndTests(unittest.TestCase):
             self.assertEqual(record['exit'], 0, record)
         self.assertTrue(any(row['argv'][0] == 'powershell.exe' and row['argv'][-1] == TEST_COMMAND
                             and 'W7_REAL_UNITTEST_OK' in row['stdout'] for row in records))
-        if state['config'].get('review_report'):   # a report run reuses no test evidence: the gate runs the test itself
+        if gate_test_evidence == 'runs configured test':
+            self.assertIs(state['config'].get('review_report'), True)
             self.assertTrue(any(Path(row['argv'][0]).name.lower() == 'bash.exe' and row['argv'][-1] == TEST_COMMAND
                                 and 'W7_REAL_UNITTEST_OK' in row['stdout'] for row in records))
-        else:
+        elif gate_test_evidence == 'reuses reviewer test':
+            self.assertIs(state['config'].get('review_report', False), False)
             gate = next(turn for turn in state['turns'] if (turn['role'], turn['phase']) == ('gate', 'EXEC'))
             self.assertEqual(gate['reused_test_evidence'], reviewer['sequence'])
             self.assertFalse(any(row['command'] == TEST_COMMAND for row in gate['observed_commands']))
             self.assertTrue(any(Path(row['argv'][0]).name.lower() == 'bash.exe' and row['argv'][-1] == 'git status --short'
                                 for row in records))
+        else:
+            self.fail(f'Unknown gate test evidence expectation: {gate_test_evidence!r}')
         tests = [json.loads(path.read_text(encoding='utf-8')) for path in self.telemetry.glob('*.test.json')]
         self.assertTrue(tests)
         self.assertTrue(all(row['in_job'] for row in tests))
@@ -526,7 +530,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.assertTrue(baseline['passed'], baseline)
         self.assertEqual(baseline['exit'], 0)
         self.assertIn('W7_REAL_UNITTEST_OK', Path(baseline['log']).read_text(encoding='utf-8'))
-        self.assert_turns_and_artifacts(done)
+        self.assert_turns_and_artifacts(done, gate_test_evidence='reuses reviewer test')
         intent = self.run_process(self.command('accept', *flags, '--intent-only'))
         digest = json.loads(intent.stdout)['digest']
         accepted = self.run_process(self.command('accept', *flags, '--expect', digest))
@@ -586,7 +590,7 @@ class WindowsEndToEndTests(unittest.TestCase):
         self.assertTrue(state['config']['review_only'])
         self.assertTrue(state['config']['review_report'])
         self.assertTrue(all(row['role'] != 'author' for row in state['turns']))
-        self.assert_turns_and_artifacts(state)
+        self.assert_turns_and_artifacts(state, gate_test_evidence='runs configured test')
         report = (self.run_dir / 'review-report.md').read_bytes()
         self.assertIn(b'Status: REPORTED (complete)', report)
         self.assertIn(b'## Verdicts', report)

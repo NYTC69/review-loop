@@ -331,6 +331,26 @@ class FailedTestApprovalTests(unittest.TestCase):
         self.assertEqual(co.state['hold_reason'], 'EXEC APPROVE rejected: empty self_run_evidence')
         self.assert_reused(co, self.receipt(co, 'reviewer'), 'reused_test_evidence', reviewer['sequence'])
 
+    def test_shadow_confirmation_reuses_the_repair_reviews_passing_test_on_the_same_tree(self):
+        co = self.coordinator('--shadow', 'on', '--adversarial-gate', 'on')
+        marker = str(self.root / 'gate-failed')
+        with patch.dict(os.environ, {'FAKE_GATE_BLOCK_ONCE': marker, 'FAKE_SHADOW_BLOCKER_IF_FILE': marker,
+                                     'FAKE_CONFIRM_SHADOW': 'withdrawn'}):
+            self.assertEqual(co._drive_loop(), 'DONE', co.state.get('hold_reason'))
+
+        [finding] = [row for row in co.state['finding_ledger'] if row['summary'] == 'shadow regression']
+        turns = co.state['turns']
+        shadow_index = next(index for index, turn in enumerate(turns) if turn['sequence'] == finding['origin_round'])
+        repair, shadow, confirmation = turns[shadow_index - 1:shadow_index + 2]
+        self.assertEqual([(turn['role'], turn['phase']) for turn in (repair, shadow, confirmation)],
+                         [('reviewer', 'EXEC'), ('shadow', 'EXEC'), ('reviewer', 'EXEC')])
+        self.assertEqual(confirmation['snapshot_before'], repair['snapshot_after'])
+        self.assertTrue(any(rc.observed_test_succeeded(row, co.args.test_command) for row in repair['observed_commands']))
+        self.assertIn('shadow finding to confirm', self.prompt(co, confirmation))
+        self.assertEqual(finding['status_history'][-1], {'round': confirmation['sequence'], 'status': 'withdrawn',
+                                                        'evidence': 'fake confirmation'})
+        self.assert_reused(co, confirmation, 'reused_test_evidence', repair['sequence'])
+
     def test_invalid_or_missing_test_proof_keeps_fallback(self):
         for kind in ('missing', 'wrong-command', 'failed-host', 'incomplete'):
             with self.subTest(kind=kind):
