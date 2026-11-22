@@ -38,6 +38,13 @@ def section(plan: str) -> str:
     return heading[0].strip() + body.rstrip()
 
 
+def _canonical(label: str) -> str:
+    """A plain label's spelling of a dimension name: '&' or '/' for 'and', a trailing '(...)' note dropped."""
+    label = re.sub(r'\s*\([^)]*\)\s*$', '', label)
+    label = re.sub(r'\s*[&/]\s*', ' and ', label)
+    return ' '.join(re.sub(r'[-_]+', ' ', label).lower().split())
+
+
 def _label_and_content(line: str) -> tuple[str, str]:
     content = BULLET.sub('', line)
     marked = MARKED_LABEL.match(line) or MARKED_LABEL.match(content)
@@ -56,7 +63,7 @@ def _label_and_content(line: str) -> tuple[str, str]:
     if len(matches) == 1:
         name = matches[0]
         # Unmarked labels and labels before inline rows must be a name or a complete alias.
-        if (marked and '|' not in inline) or normalized == name.lower() or re.fullmatch(DIMENSIONS[name], normalized):
+        if (marked and '|' not in inline) or _canonical(label) == name.lower() or re.fullmatch(DIMENSIONS[name], normalized):
             return name, inline
     return '', line
 
