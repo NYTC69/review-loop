@@ -8300,8 +8300,8 @@ class Coordinator:
                 if role == 'gate':
                     if gate_answer_error(answer):
                         continue
-                # Raw ruling receipts are ineligible for reuse; a blocking repair is reviewed on its resulting tree.
-                elif role not in ('reviewer', 'shadow') or answer.get('status') not in ('APPROVE', 'REVISE', 'HOLD'):
+                elif role not in ('reviewer', 'shadow') or answer.get('status') not in (
+                        'APPROVE', 'REVISE', 'REVISE_NEEDS_OPERATOR', 'HOLD'):
                     continue
             elif (role != 'reviewer' or phase not in ('POLISH-Q', 'DOCS', 'SECURITY')
                   or not (turn is current or turn.get('test_evidence_validated'))):
@@ -9851,8 +9851,11 @@ class Coordinator:
                 return
             if ruling:
                 self.state['pending_reviewer_result_sequence'] = None
-                reason = hold_explanation('reviewer requests an operator ruling', new_blocking,
-                                          answer.get('self_run_evidence'))
+                ruling_findings = new_blocking or [row for row in self.blocking_open_findings()
+                                                   if row['source'] == 'persistent-reviewer'][:1]
+                reason = hold_explanation('reviewer requests an operator ruling', ruling_findings, None)
+                if not ruling_findings:
+                    reason += ': see the review receipt'
                 self.hold(reason + '; queue the ruling with note --text or note --file, then resume')
                 return
         elif plan_history:

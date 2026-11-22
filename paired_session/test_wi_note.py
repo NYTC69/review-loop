@@ -77,6 +77,20 @@ class OperatorNoteTests(unittest.TestCase):
             self.assertEqual([(t['role'], t['answer']['status']) for t in exec_turns[:3]],
                              [('author', 'READY'), ('reviewer', 'REVISE'), ('author', 'READY')])
 
+        with self.subTest(kind='advisory'), self.harness() as h:
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling'),
+                   'FAKE_FINDING_FIELDS': json.dumps({QUESTION: {'category': 'other', 'reachability': ''}})}
+            self.assert_result(h.run_coordinator(*OFF, env=env), 0, twl.DONE)
+            state = self.state(h)
+            self.assertEqual(state['status'], 'DONE')
+            verdict = state['review_verdicts'][-1]
+            self.assertEqual((verdict['reviewer_raw_verdict'], verdict['effective_verdict']),
+                             (RULING, 'APPROVE_WITH_ADVISORY'))
+            advisory = next(row for row in state['finding_ledger'] if row.get('advisory'))
+            self.assertEqual((advisory['category'], advisory['summary']), ('other', QUESTION))
+            self.assertTrue(any(row['id'] == advisory['id'] and row['summary'] == QUESTION
+                                for row in state['backlog']))
+
         for kind in ('cap', 'cap extension', 'stop rule', 'structural'):
             with self.subTest(kind=kind), self.harness() as h:
                 flags = OFF if kind == 'structural' else (*OFF, '--max-exec-rounds', '1')
