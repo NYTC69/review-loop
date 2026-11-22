@@ -26,6 +26,9 @@
   - v3.11.0 follow-up (WI-TURNFAIL note 7): an agy exit > 0 without a quota line is a terminal ERROR; consider one retry. (2026-11-22)
   - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (2026-11-21)
   - v3.11.0 follow-up (WI-TURNFAIL): the unknown-reset backoff slot count is per run, not reset per invoke. (2026-11-22)
+- v3.15.1 follow-ups (Opus, WI-POLISH R1 notes). (added 2026-11-22)
+  - The A3 near-miss hint can quote a numbered or bold prose line under a dimension (e.g. "1. Run the tool twice") as the unrecognised label; message only, pass/fail unchanged.
+  - A top-level Files-to-change entry written with ** emphasis (e.g. **`a.py`**) counts as a glob and falls back to PLAN review (pre-existing, conservative).
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
@@ -44,15 +47,6 @@
 
 ## Done (recent, trimmed quarterly)
 
-- ~~Gate-survey follow-up GR-4: allow skipping PLAN review for small work items that already list their files and acceptance criteria. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.15.0 WI-FASTPLAN (run --fast-plan; files <= 3 + acceptance criteria))
-- ~~Execution plan (owner 2026-11-21, backlog audit .compass/results/backlog-audit-2026-11-21.md): do these merged work items in order after v3.10.0.~~ (added 2026-11-21) (closed 2026-11-22, see v3.10.1-v3.15.0 (all seven work items shipped))
-  - 1 patch pack: gate prompt removesuffix + test isolation — done in v3.10.1.
-  - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE) — done in v3.11.0.
-  - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried` — done in v3.11.0.
-  - 4 WI-SPEC: GR-3 + GR-2 + GR-7 — done in v3.12.0.
-  - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6 — done in v3.13.0.
-  - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status` — done in v3.14.0.
-  - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21). — done in v3.15.0.
 - ~~v3.15.0 note: WI-FASTPLAN R4 shipped after three review rounds (R2/R3 Sol REVISE on label edge spellings) with a 76041-variant and 90-real-matrix differential instead of a fourth review (owner approved release 2026-11-22).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: record only; the release commit and CHANGELOG hold it)
 - ~~v3.13.0 accepted residual (gate R2): a hand-edited saved config binding is not re-sealed by a resume role change (the digest guard checks the manifest digest only).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted residual under the owner threat model)
 - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach.~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted: hard to reach, owner threat model)
