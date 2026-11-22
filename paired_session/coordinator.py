@@ -5053,27 +5053,32 @@ class Coordinator:
         try:
             note_bytes = Path(row['evidence']).read_bytes()
         except OSError as exc:
-            raise RuntimeError('operator note evidence is missing') from exc
+            raise RuntimeError(f"operator note {row['id']} evidence is missing: {row['evidence']}") from exc
         if hashlib.sha256(note_bytes).hexdigest() != row['sha256']:
-            raise RuntimeError('operator note evidence hash differs')
+            raise RuntimeError(f"operator note {row['id']} evidence hash differs: {row['evidence']}")
         return note_bytes.decode('utf-8')
 
     def operator_rulings_prompt(self, audience: str = 'reviewer') -> str:
-        """Show withdrawals and delivered notes to reviewers, and only withdrawals to authors."""
+        """Show withdrawals and delivered notes in the format for each audience."""
         rulings = self.state.get('operator_rulings', [])
-        if audience == 'author':
-            if not rulings: return ''
-            summaries = {row['id']: row['summary'] for row in self.state['finding_ledger']}
-            lines = [line for row in rulings for line in (f"- {row['id']}: {row['reason']}", *(
-                f"  - {finding_id}: {summaries.get(finding_id, '')}" for finding_id in row['finding_ids']))]
-            return ('\n## Operator withdrawals\n'
-                    'The operator withdrew these findings and decided to keep the behavior they asked to change:\n' +
-                    '\n'.join(lines) + '\n'
-                    'Do not reintroduce the change these findings asked for. When an open finding cannot be fixed without '
-                    'going against one of these decisions, keep the decision, leave that finding as it is, and say so in '
-                    'body. Never write these ids into the workspace.\n')
         notes = [(row['id'], self._read_operator_note(row)) for row in self.state.get('operator_notes', [])
                  if row['status'] == 'delivered']
+        if audience == 'author':
+            withdrawals = ''
+            if rulings:
+                summaries = {row['id']: row['summary'] for row in self.state['finding_ledger']}
+                lines = [line for row in rulings for line in (f"- {row['id']}: {row['reason']}", *(
+                    f"  - {finding_id}: {summaries.get(finding_id, '')}" for finding_id in row['finding_ids']))]
+                withdrawals = ('\n## Operator withdrawals\n'
+                               'The operator withdrew these findings and decided to keep the behavior they asked to change:\n' +
+                               '\n'.join(lines) + '\n'
+                               'Do not reintroduce the change these findings asked for. When an open finding cannot be fixed without '
+                               'going against one of these decisions, keep the decision, leave that finding as it is, and say so in '
+                               'body. Never write these ids into the workspace.\n')
+            decisions = ('\n## Operator decisions\n'
+                         'Implement and document these in-scope decisions as decided; do not reopen them.\n' +
+                         '\n'.join('- ' + note for _, note in notes) + '\n' if notes else '')
+            return withdrawals + decisions
         if audience == 'fresh':
             decisions = [row['reason'] for row in rulings] + [note for _, note in notes]
             return ('\n## Operator decisions\n'
@@ -5084,7 +5089,8 @@ class Coordinator:
         withdrawals = ('\n## Operator withdrawals\n' + '\n'.join(self.operator_ruling_lines()) +
                        '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n'
                        if rulings else '')
-        decisions = ('\n## Operator decisions\nApply these decisions within the approved scope.\n' +
+        decisions = ('\n## Operator decisions\nApply these decisions within the approved scope. '
+                     'Do not request an operator ruling again on a decided point.\n' +
                      '\n'.join(f'{note_id}: {note}' for note_id, note in notes) + '\n' if notes else '')
         return withdrawals + decisions
 

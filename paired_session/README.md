@@ -830,6 +830,7 @@ An EXEC HOLD waiting for its reviewer also accepts a note for the next author
 turn. A newer note replaces a pending one. Once delivered, the hash-verified
 note appears as an operator decision in subsequent reviewer prompts, with its
 ID shown only to the persistent reviewer.
+Subsequent EXEC, FINISH, DOCS and POLISH-Q writers also receive the decision and implement and document it as decided.
 Since v3.7.2 a note is also queued at a round-limit HOLD (it reaches the author turn after `resume --add-rounds N`)
 and, with lifecycle on, while the run waits for the gate, FINISH, DOCS or a POLISH-Q step: it reaches the next newly
 dispatched author-role turn (EXEC author, FINISH writer, DOCS writer or POLISH-Q writer). A recorded writer turn that

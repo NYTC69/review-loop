@@ -69,7 +69,7 @@ class OperatorNoteTests(unittest.TestCase):
             self.assertIn(QUESTION, prompt)
             self.assertIn(latest, prompt)
             self.assertNotIn('Original ruling.', prompt)
-            self.assertNotIn('## Operator decisions', prompt)
+            self.assertIn('## Operator in-scope clarification [N002]', prompt)
             review = after['turns'][len(state['turns']) + 1]
             self.assertEqual((review['role'], review['phase']), ('reviewer', 'EXEC'))
             gate = next(turn for turn in after['turns'] if turn['role'] == 'gate')
@@ -78,6 +78,7 @@ class OperatorNoteTests(unittest.TestCase):
                 prompt = self.prompt(h, turn)
                 self.assertIn(decision, prompt.split('## Operator decisions\n', 1)[1])
                 self.assertNotIn('Original ruling.', prompt)
+            self.assertIn('Do not request an operator ruling again on a decided point.', self.prompt(h, review))
             self.assertNotIn('N002', self.prompt(h, gate))
             self.assertNotIn('pending_operator_note_id', after)
             self.assertEqual([n['status'] for n in after['operator_notes']], ['replaced', 'delivered'])
@@ -142,6 +143,27 @@ class OperatorNoteTests(unittest.TestCase):
                         self.assertEqual(self.state(h)['turns'], state['turns'])
                     self.assert_result(h.run_operator_action('resume', *flags, '--add-rounds', '1', env=env), 0, twl.DONE)
                 self.assertEqual(self.state(h)['turns'][len(state['turns'])]['role'], 'author')
+
+    def test_delivered_ruling_reaches_lifecycle_writers(self):
+        with self.harness(lifecycle=True) as h:
+            (h.workspace / 'test_feature.py').write_text(
+                'import unittest\n\nclass Smoke(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n')
+            flags = (*ON, '--quality-writers', 'tests')
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling'), 'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'}
+            decision = 'Reject bool explicitly before the integer check.'
+            self.assert_result(h.run_coordinator(*flags, env=env), 2, 'HOLD: reviewer requests an operator ruling: ' + QUESTION)
+            self.assert_result(h.run_operator_action('note', *flags, '--text', decision), 0, 'N001 queued')
+            self.assert_result(h.run_operator_action('resume', *flags, env=env), 0, twl.DONE)
+            state = self.state(h)
+            self.assertEqual(state['operator_notes'][0]['status'], 'delivered')
+            phases = ['FINISH', 'POLISH-Q', 'DOCS']
+            writers = [turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] in phases]
+            self.assertEqual([turn['phase'] for turn in writers], phases)
+            for turn in writers:
+                with self.subTest(phase=turn['phase']):
+                    self.assertIn('## Operator decisions\n'
+                                  'Implement and document these in-scope decisions as decided; do not reopen them.\n'
+                                  '- ' + decision, self.prompt(h, turn))
 
     def test_ruling_without_new_blocker_names_open_gate_row(self):
         with self.harness() as h:
