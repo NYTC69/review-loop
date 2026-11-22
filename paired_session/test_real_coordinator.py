@@ -1952,7 +1952,7 @@ sys.exit(result.returncode)
         self.assertNotIn(str(source), co.state_path.read_text())
         self.assertEqual(third, 'N003')
 
-    def test_hold_note_cli_delivers_once_and_excludes_fresh_roles(self):
+    def test_hold_note_cli_delivers_once_and_shows_only_the_decision_to_fresh_roles(self):
         stopped = self.run_coordinator('--stop-after-plan', '--polish-round', 'off')
         self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
         held = json.loads((self.run_dir / 'state.json').read_text())
@@ -1974,7 +1974,9 @@ sys.exit(result.returncode)
         self.assertEqual(sum(row.get('operator_note_id') == 'N002' for row in receipts), 1)
         fresh = list((self.run_dir / 'evidence').glob('*-*.independence-inputs.json'))
         self.assertTrue(fresh)
-        for secret in ('Use the negative input case.', 'Operator in-scope clarification',
+        self.assertTrue(all('operator decision: Use the negative input case.' in
+                            json.loads(p.read_text())['inputs']['prompt']['content'] for p in fresh))
+        for secret in ('Use a wider negative input.', 'Operator in-scope clarification',
                        'N002', state['operator_notes'][1]['sha256'], 'operator-note-'):
             self.assertTrue(all(secret not in p.read_text() for p in fresh), secret)
         sequence = state['sequence']

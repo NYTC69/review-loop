@@ -4551,7 +4551,7 @@ class Coordinator:
             raise ValueError('rejection limit: accept, abort or use --scope-change')
         waiting = self.state.get('next')
         # FIELD-23: an EXEC HOLD that waits for the reviewer (or its shadow) takes a note too, so an operator change made in
-        # that HOLD is on record; it reaches the next EXEC author turn (a REVISE), never a review role.
+        # that HOLD is on record. The next EXEC author turn (a REVISE) delivers it.
         if waiting == 'reviewer' and self.state['phase'] == 'PLAN':
             raise ValueError('run is waiting for reviewer in PLAN, and an approval moves it to EXEC, where a PLAN note is never '
                              'delivered. To put an operator change on record: resume with --stop-after-plan and add the note '
@@ -5048,18 +5048,21 @@ class Coordinator:
         return [f"- {row['id']}: {', '.join(row['finding_ids'])}: {row['reason']}"
                 for row in self.state.get('operator_rulings', [])]
 
+    @staticmethod
+    def _read_operator_note(row: dict) -> str:
+        try:
+            note_bytes = Path(row['evidence']).read_bytes()
+        except OSError as exc:
+            raise RuntimeError('operator note evidence is missing') from exc
+        if hashlib.sha256(note_bytes).hexdigest() != row['sha256']:
+            raise RuntimeError('operator note evidence hash differs')
+        return note_bytes.decode('utf-8')
+
     def operator_rulings_prompt(self, audience: str = 'reviewer') -> str:
-        """The operator rulings for one audience: the persistent reviewer (ids and reasons), a fresh shadow or gate
-        ('fresh': the decision only, no ledger id) or an author-side turn that can change the tree ('author', V317-B3)."""
+        """Show withdrawals and delivered notes to reviewers, and only withdrawals to authors."""
         rulings = self.state.get('operator_rulings', [])
-        if not rulings: return ''
-        if audience == 'fresh':
-            return ('\n## Operator decisions\n'
-                    'The operator owns the work item. Treat these decisions as part of the approved scope; '
-                    'do not report the decided point itself as a finding. Review everything else, including '
-                    'implementation of the approved behavior, as usual.\n' +
-                    '\n'.join('operator decision: ' + row['reason'] for row in rulings) + '\n')
         if audience == 'author':
+            if not rulings: return ''
             summaries = {row['id']: row['summary'] for row in self.state['finding_ledger']}
             lines = [line for row in rulings for line in (f"- {row['id']}: {row['reason']}", *(
                 f"  - {finding_id}: {summaries.get(finding_id, '')}" for finding_id in row['finding_ids']))]
@@ -5069,8 +5072,21 @@ class Coordinator:
                     'Do not reintroduce the change these findings asked for. When an open finding cannot be fixed without '
                     'going against one of these decisions, keep the decision, leave that finding as it is, and say so in '
                     'body. Never write these ids into the workspace.\n')
-        return ('\n## Operator withdrawals\n' + '\n'.join(self.operator_ruling_lines()) +
-                '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n')
+        notes = [(row['id'], self._read_operator_note(row)) for row in self.state.get('operator_notes', [])
+                 if row['status'] == 'delivered']
+        if audience == 'fresh':
+            decisions = [row['reason'] for row in rulings] + [note for _, note in notes]
+            return ('\n## Operator decisions\n'
+                    'The operator owns the work item. Treat these decisions as part of the approved scope; '
+                    'do not report the decided point itself as a finding. Review everything else, including '
+                    'implementation of the approved behavior, as usual.\n' +
+                    '\n'.join('operator decision: ' + decision for decision in decisions) + '\n' if decisions else '')
+        withdrawals = ('\n## Operator withdrawals\n' + '\n'.join(self.operator_ruling_lines()) +
+                       '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n'
+                       if rulings else '')
+        decisions = ('\n## Operator decisions\nApply these decisions within the approved scope.\n' +
+                     '\n'.join(f'{note_id}: {note}' for note_id, note in notes) + '\n' if notes else '')
+        return withdrawals + decisions
 
     def _ignore_operator_dispositions(self, result: dict) -> None:
         """Persistent threads may remember withdrawn ids; retain their stale dispositions only as receipt evidence."""
@@ -5580,10 +5596,9 @@ class Coordinator:
         return [config[key] for key, _ in GUIDANCE_KEYS if config.get(key)]
 
     def _mask_guidance(self, text: str) -> str:
-        """L105: the frozen guidance is operator text, not review history: masked in one pass (longest first, so overlapping
-        texts stay whole) wherever a fresh role's prompt is checked."""
-        texts = sorted(self._guidance_texts() + ([self.operator_rulings_prompt('fresh')]
-                       if self.state.get('operator_rulings') else []), key=len, reverse=True)
+        """Mask operator guidance and decisions in one pass, longest first, in fresh prompt checks."""
+        decisions = self.operator_rulings_prompt('fresh')
+        texts = sorted(self._guidance_texts() + ([decisions] if decisions else []), key=len, reverse=True)
         return re.sub('|'.join(map(re.escape, texts)), '<project-guidance>', text) if texts else text
 
     def _guidance(self, keys: tuple) -> str:
@@ -7181,16 +7196,12 @@ class Coordinator:
         if operator_note:
             if operator_note['target_phase'] != phase and phase not in NOTE_WRITER_PHASES:
                 raise RuntimeError('undelivered operator note targets another phase')
-            try: note_bytes = Path(operator_note['evidence']).read_bytes()
-            except OSError as exc: raise RuntimeError('operator note evidence is missing') from exc
-            if hashlib.sha256(note_bytes).hexdigest() != operator_note['sha256']:
-                raise RuntimeError('operator note evidence hash differs')
             repeat = 'Repeat: ' if operator_note.get('attempts') else ''
             prompt += (f"\n\n## {repeat}Operator in-scope clarification [{operator_note['id']}]"
                        + (f" supersedes {operator_note['replaces_id']}" if operator_note.get('replaces_id') else '')
                        + ('\nDo not expand the work item.\n' if phase == 'PLAN' else
                           '\nDo not expand the review scope.\n' if self.state.get('review_only') else '\nDo not expand the approved plan.\n')
-                       + note_bytes.decode('utf-8'))
+                       + self._read_operator_note(operator_note))
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
         exec_author = role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
         timeout_seconds = self.args.exec_turn_timeout if exec_author else self.args.timeout
@@ -9851,8 +9862,7 @@ class Coordinator:
                 return
             if ruling:
                 self.state['pending_reviewer_result_sequence'] = None
-                ruling_findings = new_blocking or [row for row in self.blocking_open_findings()
-                                                   if row['source'] == 'persistent-reviewer'][:1]
+                ruling_findings = new_blocking or self.blocking_open_findings()[:1]
                 reason = hold_explanation('reviewer requests an operator ruling', ruling_findings, None)
                 if not ruling_findings:
                     reason += ': see the review receipt'

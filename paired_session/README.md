@@ -821,11 +821,15 @@ takes precedence, the terminal shows the question in a separate NOTE and the
 existing continuation instructions apply. With sufficient test evidence,
 advisory-only findings still take the advisory approval path and the question
 goes to the BACKLOG with the advisory.
+If the ruling request adds no blocker, the HOLD shows the first open blocker
+or directs you to the review receipt.
 
 An idle `HOLD` run accepts an in-scope clarification with `note --text '...'`
 or `note --file /path/to/note` when an author turn is available in PLAN or EXEC.
 An EXEC HOLD waiting for its reviewer also accepts a note for the next author
-turn; review roles never receive it. A newer note replaces a pending one.
+turn. A newer note replaces a pending one. Once delivered, the hash-verified
+note appears as an operator decision in subsequent reviewer prompts, with its
+ID shown only to the persistent reviewer.
 Since v3.7.2 a note is also queued at a round-limit HOLD (it reaches the author turn after `resume --add-rounds N`)
 and, with lifecycle on, while the run waits for the gate, FINISH, DOCS or a POLISH-Q step: it reaches the next newly
 dispatched author-role turn (EXEC author, FINISH writer, DOCS writer or POLISH-Q writer). A recorded writer turn that
