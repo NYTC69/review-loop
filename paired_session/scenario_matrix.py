@@ -64,8 +64,9 @@ def _label_and_content(line: str) -> tuple[str, str]:
         name = matches[0]
         # Unmarked labels and labels before inline rows must be a name or a complete alias; only a label line without an
         # inline row may spell 'and' as '&' or '/' or end with a '(note)' (Sol R2: an inline row keeps the 8257cbb rule).
-        plain = _canonical(label) if '|' not in inline else normalized
-        if (marked and '|' not in inline) or plain == name.lower() or re.fullmatch(DIMENSIONS[name], plain):
+        spellings = (normalized, _canonical(label)) if '|' not in inline else (normalized,)
+        if (marked and '|' not in inline) or any(text == name.lower() or re.fullmatch(DIMENSIONS[name], text)
+                                                 for text in spellings):
             return name, inline
     return '', line
 
