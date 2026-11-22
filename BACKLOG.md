@@ -9,14 +9,16 @@
   - 2 WI-TURNFAIL: GR-5 + the long author timeout hint (supervisor note WI-NOPROBE) — done in v3.11.0.
   - 3 WI-TESTEVID: GR-1 + lifecycle writers see operator verification records + accept shows `carried` — done in v3.11.0.
   - 4 WI-SPEC: GR-3 + GR-2 + GR-7 — done in v3.12.0.
-  - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6.
+  - 5 WI-RESUME: frozen role manifest path-only change (WI-NOPROBE gate note) + GR-6 — done in v3.13.0.
   - 6 WI-NOTE: operator note delivery window (gg-pipeline WI-413) + undelivered note in `status`.
   - 7 WI-FASTPLAN: GR-4 + PLAN/gate history scan parity (v3.8.5 Opus R3) + matrix label detection. "Small" = the work item lists the files to change (at most 3) and has explicit acceptance criteria; otherwise normal PLAN review (owner 2026-11-21).
 - Gate-survey follow-up GR-4: allow skipping PLAN review for small work items that already list their files and acceptance criteria. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
-- Gate-survey follow-up GR-6: allow a role model change on resume. (owner via main-rc, 2026-11-19; after the gate-once release) (added 2026-11-19)
 
 ## P2 — normal
 
+- v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach. (added 2026-11-22)
+- v3.13.0 follow-up (Opus, WI-RESUME R1 note 5): role flags passed again on every operator action are restored from the saved run; consider a NOTE when an explicit flag is ignored. (added 2026-11-22)
+- v3.13.0 accepted residual (gate R2): a hand-edited saved config binding is not re-sealed by a resume role change (the digest guard checks the manifest digest only). (added 2026-11-22)
 - v3.12.0 follow-up (Opus, WI-SPEC plan review): if specialist A later withdraws a row that B's claim was attached to, B's claim goes with it; B raises it again only when a later delta touches that file. (added 2026-11-22)
 - v3.12.0 follow-up (Opus, WI-SPEC): `resume --skip-quality-polish true` is silently unsaved when resume stops before the save point (round-limit HOLD without --add-rounds, past deadline, DONE, uncertain-turn HOLD); documented, consider a NOTE. (added 2026-11-22)
 - v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner decision; quota_status.py is machine-local). (added 2026-11-22)
@@ -36,7 +38,6 @@
 - v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (added 2026-11-21)
 - v3.9.0 follow-up: scenario-matrix label detection only on headings, bold or numbered lines, so a short prose line such as "Dependency note: none" under another dimension does not switch the dimension (costs one PLAN round, never lets a bad plan through). (Opus review 2026-11-21) (added 2026-11-21)
 - Gate note (v3.7.2 Opus gate): a note queued for a reused DOCS writer can reach DONE undelivered; `status` at DONE should list it ("undelivered note N001: use reject"). (added 2026-11-09)
-- Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match. (added 2026-11-09)
 - Field (gg-pipeline WI-413, v3.8.3): an operator `note` is refused while a turn is in flight and at the "uncertain in-flight CLI turn" HOLD, and a reviewer REVISE auto-dispatches the next author turn, so a ruling the reviewer asked the operator for has no delivery window (the author burned a turn to HOLD for it). (added 2026-11-19)
 - Review note (v3.8.5 Opus R3): PLAN approval / plan restatement (`_plan_history_issue`) does not apply the plan branch of `_introduced_history_matches`, so shapes that stay caught (`/srv/codex/notes/`, `.codex/sessions/`, `Codex approved`) pass PLAN approval and hold only at the gate. Have the PLAN check use the same branch. (added 2026-11-19)
 
@@ -57,6 +58,8 @@ Protocol-hardening work is Workstream 2 and follows Workstream 1 productization.
 
 ## Done (recent, trimmed quarterly)
 
+- ~~Gate-survey follow-up GR-6: allow a role model change on resume. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.13.0 WI-RESUME (model/effort per role on resume; vendor changes refused))
+- ~~Gate note (WI-NOPROBE Opus gate, 2026-11-09): the frozen role manifest records the absolute agents dir and gate-prompt path, so a lifecycle-on run resumed from another install path (a new versioned plugin cache dir, a new pinned copy) HOLDs with "frozen role dispatch changed"; existing limit, not new in v3.7.0. Consider re-freezing a path-only change with a NOTE when the hashed contents match.~~ (added 2026-11-09) (closed 2026-11-22, see v3.13.0 WI-RESUME (path-only install move re-binds with a NOTE))
 - ~~Gate-survey follow-up GR-2: dedupe specialist findings by file+line before budgeting and routing. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.12.0 WI-SPEC (covered findings attach at ingestion))
 - ~~Gate-survey follow-up GR-3: show operator rulings (withdrawn findings) to the specialists so withdrawn issues are not raised again. (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.12.0 WI-SPEC)
 - ~~Gate-survey follow-up GR-7: when quota is tight, cut the specialists first and keep the fresh shadow (poker-tools evidence: the shadow found the real defects). (owner via main-rc, 2026-11-19; after the gate-once release)~~ (added 2026-11-19) (closed 2026-11-22, see v3.12.0 WI-SPEC (manual resume --skip-quality-polish true; automatic quota sensing not done))

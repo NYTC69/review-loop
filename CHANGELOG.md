@@ -1,6 +1,6 @@
 # Changelog
 
-### Unreleased (WI-RESUME)
+### v3.13.0：换安装路径后可继续 resume；resume 时可更换角色模型和推理强度（WI-RESUME）
 
 - 移动 review-loop 安装后，若角色指令、门审提示和其他冻结输入一致，下次派发会更新安装路径、保留原会话，并记录一次 `NOTE`。自定义门审提示需保留原路径和内容，内置门审提示仍可按版本更新。
 - 继续运行时，`resume` 可显式调整 author、reviewer 或 gate 的 model 和 effort，供应商和模型许可列表保持固定。恢复已有运行时，省略 model 或 effort 参数就沿用保存值，避免因命令行或配置文件的 effort 默认值不同而被拒绝。
