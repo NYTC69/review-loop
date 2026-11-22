@@ -4,7 +4,7 @@
 
 - 持久 EXEC reviewer 可用 `REVISE_NEEDS_OPERATOR` 在修复回合前暂停，并显示需要操作者裁定的问题。用 `note --text` 或 `note --file` 记录裁定后，`resume` 将裁定连同评审意见交给修复作者。轮次上限、停止规则和结构性 HOLD 保留原原因，另以一条 NOTE 显示问题。
 - `status` 在 stderr 显示待交付的备注编号、接收方和创建时间，stdout 保持原样。`status --brief` 在 stdout 显示同一摘要。到达 DONE 时，`accept` 和普通 `resume` 不会交付备注；按意图确认的范围内 `reject` 会把排队的备注连同拒绝反馈交给下一位 EXEC 作者。
-- 已交付的备注经哈希校验后作为操作者裁定发给持久 reviewer 和独立评审角色，只有持久 reviewer 会看到备注编号。没有新阻塞项时，裁定 HOLD 会指出首个仍开放的阻塞项，或提示查看评审回执。
+- 已交付的备注经哈希校验后作为操作者裁定发给持久 reviewer 和独立评审角色，只有持久 reviewer 会看到备注编号。没有新阻塞项时，裁定 HOLD 以及轮次上限、停止规则 HOLD 附带的 NOTE 都会指出首个仍开放的阻塞项，或提示查看评审回执。
 - EXEC、FINISH、DOCS 和 POLISH-Q 作者会收到已交付的操作者裁定，并按裁定实施和记录。
 
 **按意图更新的测试断言**

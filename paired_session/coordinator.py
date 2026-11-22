@@ -9839,7 +9839,7 @@ class Coordinator:
                     self.hold(self._secret_scan_hold_reason())
                     return
                 if ruling:
-                    print(hold_explanation('NOTE: the reviewer also requests an operator ruling', new_blocking[:1], None))
+                    print(self._ruling_question('NOTE: the reviewer also requests an operator ruling', new_blocking[:1]))
                 self.round_limit_hold(self._exec_limit_reason() if phase == 'EXEC' else f'{phase} round limit reached')
                 return
             self.state['review_findings'] = answer['full_review']
@@ -9857,7 +9857,7 @@ class Coordinator:
             }, ensure_ascii=False)
             self.state['next'] = 'author'
             if ruling and (stop_rule or structural):
-                print(hold_explanation('NOTE: the reviewer also requests an operator ruling', new_blocking[:1], None))
+                print(self._ruling_question('NOTE: the reviewer also requests an operator ruling', new_blocking[:1]))
             if stop_rule:   # R4b / R4c (before the cap: it names the cause); --add-rounds dispatches the author
                 self.state['pending_reviewer_result_sequence'] = None
                 self.round_limit_hold(stop_rule)
@@ -9868,10 +9868,7 @@ class Coordinator:
                 return
             if ruling:
                 self.state['pending_reviewer_result_sequence'] = None
-                ruling_findings = new_blocking or self.blocking_open_findings()[:1]
-                reason = hold_explanation('reviewer requests an operator ruling', ruling_findings, None)
-                if not ruling_findings:
-                    reason += ': see the review receipt'
+                reason = self._ruling_question('reviewer requests an operator ruling', new_blocking)
                 self.hold(reason + '; queue the ruling with note --text or note --file, then resume')
                 return
         elif plan_history:
@@ -10171,6 +10168,11 @@ class Coordinator:
         if rules['approved'] and rules['new_blocking_streak'] >= 2:
             return f"{NEW_BLOCKERS_REASON}: {', '.join(new)}"
         return None
+
+    def _ruling_question(self, prefix: str, findings: list) -> str:
+        """WI-NOTE: the reviewer's ruling question: the given new blockers, else the first open blocker of any source."""
+        findings = findings or self.blocking_open_findings()[:1]
+        return hold_explanation(prefix, findings, None) if findings else prefix + ': see the review receipt'
 
     def rejection_notes_prompt(self) -> str:
         """WI-GATE1 Q4 (owner 2026-11-19): every operator rejection note reaches every later EXEC review round."""
