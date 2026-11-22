@@ -6,11 +6,12 @@
 
 ## P2 — normal
 
-- WI-D reviewer disposition retry edge cases (not seen in the field yet). (added 2026-11-22)
+- WI-D reviewer answer retry edge cases (disposition and self_run_evidence guards; not seen in the field yet). (added 2026-11-22)
   - v3.11.1 follow-up (Opus, WI-DISPFIX): a still_open row for a closed unexpected id, or an open id the reviewer was not asked about, still HOLDs at once without the protocol retry; make it InvalidDispositionIDs if it shows up in the field. (2026-11-22)
   - v3.11.1 follow-up (Opus, WI-DISPFIX): record ignored dispositions in the receipt (ignored_prior_findings) for audit, like _ignore_operator_dispositions. (2026-11-22)
   - v3.11.0 follow-up (Sol merge review): if a saved quota wait is stopped and resumed during a reviewer disposition retry, the retry instruction is lost and the reviewer gets the ordinary prompt (an extra protocol retry at most). (2026-11-22)
   - v3.11.0 follow-up (Opus, WI-TESTEVID): reverting the change that caused a coordinator test-failure finding leaves that row open until the next reviewer disposition. (2026-11-22)
+  - v3.15.2 real run: a low-effort sonnet reviewer APPROVEd twice without self_run_evidence (guard HOLD, resume recovered); consider a retry with the guard reason before HOLD.
 - WI-E operator note semantics (design; the rejection item is a feature and needs owner OK during the trial). (added 2026-11-22)
   - v3.14.0 follow-up (Opus, WI-NOTE R3): a note's ledger ids reach fresh roles unmasked (withdraw-findings rejects ids in its reason, note does not); replace LEDGER_ID_RE matches with a neutral token in the fresh audience. (2026-11-22)
   - v3.14.0 follow-up (Opus, WI-NOTE R3/R4): a delivered note cannot be superseded; a later contradicting note shows both as standing decisions. (2026-11-22)
@@ -20,13 +21,11 @@
   - v3.11.0 follow-up (WI-TURNFAIL note 7): an agy exit > 0 without a quota line is a terminal ERROR; consider one retry. (2026-11-22)
   - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (2026-11-21)
   - v3.11.0 follow-up (WI-TURNFAIL): the unknown-reset backoff slot count is per run, not reset per invoke. (2026-11-22)
-- v3.15.1 follow-ups (Opus, WI-POLISH R1 notes). (added 2026-11-22)
-  - The A3 near-miss hint can quote a numbered or bold prose line under a dimension (e.g. "1. Run the tool twice") as the unrecognised label; message only, pass/fail unchanged.
-  - A top-level Files-to-change entry written with ** emphasis (e.g. **`a.py`**) counts as a glob and falls back to PLAN review (pre-existing, conservative).
-- v3.15.2 follow-ups (Opus, WI-NBFIX / WI-C reviews). (added 2026-11-22)
-  - The normalization NOTE says "findings that need no confirmation" even when a non-persistent owner answered non_blocking on a needs_confirmation row; cosmetic.
-  - test_wi_dispfix builds trc.RealCoordinatorTests() by hand for its setUp; a mixin or helper would be sturdier.
-  - Real run: a low-effort sonnet reviewer APPROVEd twice without self_run_evidence (guard HOLD, resume recovered); consider a retry with the guard reason before HOLD.
+- WI-G cosmetic message and test-helper polish (no behavior change). (added 2026-11-22)
+  - v3.15.1 (Opus): the A3 near-miss hint can quote a numbered or bold prose line under a dimension (e.g. "1. Run the tool twice") as the unrecognised label; message only, pass/fail unchanged.
+  - v3.15.1 (Opus): a top-level Files-to-change entry written with ** emphasis (e.g. **`a.py`**) counts as a glob and falls back to PLAN review (pre-existing, conservative).
+  - v3.15.2 (Opus): the normalization NOTE says "findings that need no confirmation" even when a non-persistent owner answered non_blocking on a needs_confirmation row; cosmetic.
+  - v3.15.2 (Opus): test_wi_dispfix builds trc.RealCoordinatorTests() by hand for its setUp; a mixin or helper would be sturdier.
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
