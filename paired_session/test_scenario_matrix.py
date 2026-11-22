@@ -102,6 +102,19 @@ class ScenarioMatrixParserTests(unittest.TestCase):
                 without_dependency = plan.replace('### Dependency failure\nN/A: The helper has no dependencies.\n', '')
                 self.assertEqual(self.error(without_dependency), 'missing rows or N/A: <reason> for Dependency failure')
 
+    def test_plain_labels_spell_and_as_ampersand_or_slash_and_may_carry_a_note(self):
+        # Opus R1 note 1: these unmarked spellings validated before WI-FASTPLAN and must keep validating.
+        for plain, name in (('Repetition & concurrency:', 'Repetition and concurrency'),
+                            ('Repetition/concurrency:', 'Repetition and concurrency'),
+                            ('Ordering & state transitions:', 'Ordering and state transitions'),
+                            ('Partial failure / recovery:', 'Partial failure and recovery'),
+                            ('Input boundaries (blocking):', 'Input boundaries')):
+            with self.subTest(label=plain):
+                self.assertEqual(scenario_matrix._label_and_content(plain)[0], name)
+        for prose in ('Dependency note: none', 'Input note (blocking): none'):
+            with self.subTest(prose=prose):
+                self.assertEqual(scenario_matrix._label_and_content(prose)[0], '')
+
     def test_real_run_plan_matrices(self):
         # Preserve the matrices and notes from actual runs.
         plans = (
