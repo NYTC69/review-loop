@@ -1,9 +1,10 @@
 # Changelog
 
-### v3.15.2：修复门审修复后普通发现误填 `non_blocking` 导致的 HOLD（WI-NBFIX）
+### v3.15.2：修复门审修复后普通发现误填 `non_blocking` 导致的 HOLD（WI-NBFIX）；补充回归测试（WI-C）
 
 - `non_blocking` 仅用于持久评审员确认标有 “shadow finding to confirm” 的发现。普通发现误用该处置时按 `still_open` 记录，保留原有阻塞性，并通过一条 NOTE 列出受影响的编号。重放同一答复不会重复提示。仍有阻塞项时，APPROVE 继续转为 REVISE。
 - 更新评审提示和使用说明，明确其他仍开放的发现应填 `still_open`。
+- 补充回归测试（WI-C，仅测试）：备注只在交付轮出现一次、之后作为操作者决定带入；处置重试与重放；确认评审复用同一代码树的测试结果；gemini 作者修复 gemini 门审 FAIL；Windows 端到端测试的期望改为显式参数。
 
 **按意图更新的测试断言**
 

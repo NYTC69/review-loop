@@ -6,12 +6,6 @@
 
 ## P2 — normal
 
-- WI-C regression tests only (no product code). After WI-A/B if there is room (owner 2026-11-22). (added 2026-11-22)
-  - v3.14.0 follow-up (Opus, WI-NOTE R4): restore a test that the delivery turn carries the note once (no decisions block), and cover a later EXEC author turn after delivery. (2026-11-22)
-  - v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (2026-11-22)
-  - v3.11.0 follow-up (Opus, WI-TESTEVID): add a test that a confirmation review reuses the passing test result of the same tree. (2026-11-22)
-  - v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (2026-11-21)
-  - v3.11.0 follow-up: the Windows end-to-end helper branches on review_report to pick its assertion; brittle if more report shapes appear. (2026-11-22)
 - WI-D reviewer disposition retry edge cases (not seen in the field yet). (added 2026-11-22)
   - v3.11.1 follow-up (Opus, WI-DISPFIX): a still_open row for a closed unexpected id, or an open id the reviewer was not asked about, still HOLDs at once without the protocol retry; make it InvalidDispositionIDs if it shows up in the field. (2026-11-22)
   - v3.11.1 follow-up (Opus, WI-DISPFIX): record ignored dispositions in the receipt (ignored_prior_findings) for audit, like _ignore_operator_dispositions. (2026-11-22)
@@ -29,6 +23,10 @@
 - v3.15.1 follow-ups (Opus, WI-POLISH R1 notes). (added 2026-11-22)
   - The A3 near-miss hint can quote a numbered or bold prose line under a dimension (e.g. "1. Run the tool twice") as the unrecognised label; message only, pass/fail unchanged.
   - A top-level Files-to-change entry written with ** emphasis (e.g. **`a.py`**) counts as a glob and falls back to PLAN review (pre-existing, conservative).
+- v3.15.2 follow-ups (Opus, WI-NBFIX / WI-C reviews). (added 2026-11-22)
+  - The normalization NOTE says "findings that need no confirmation" even when a non-persistent owner answered non_blocking on a needs_confirmation row; cosmetic.
+  - test_wi_dispfix builds trc.RealCoordinatorTests() by hand for its setUp; a mixin or helper would be sturdier.
+  - Real run: a low-effort sonnet reviewer APPROVEd twice without self_run_evidence (guard HOLD, resume recovered); consider a retry with the guard reason before HOLD.
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
@@ -47,7 +45,6 @@
 
 ## Done (recent, trimmed quarterly)
 
-- ~~v3.15.0 note: WI-FASTPLAN R4 shipped after three review rounds (R2/R3 Sol REVISE on label edge spellings) with a 76041-variant and 90-real-matrix differential instead of a fourth review (owner approved release 2026-11-22).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: record only; the release commit and CHANGELOG hold it)
 - ~~v3.13.0 accepted residual (gate R2): a hand-edited saved config binding is not re-sealed by a resume role change (the digest guard checks the manifest digest only).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted residual under the owner threat model)
 - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach.~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted: hard to reach, owner threat model)
 - ~~WI-A plan scan false HOLDs: shadow plan-path exemption on Codex/gemini + fast-plan polish. Next up (owner 2026-11-22, with WI-B as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
@@ -60,3 +57,9 @@
   - ~~v3.14.0 follow-up (Opus, WI-NOTE R1): an ACCEPTED run still prints "Pending operator note" without saying it was never delivered; no test pins omitting the ruling sentence on a writer replay. (2026-11-22)~~
   - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 5): role flags passed again on every operator action are restored from the saved run; consider a NOTE when an explicit flag is ignored. (2026-11-22)~~
   - ~~v3.12.0 follow-up (Opus, WI-SPEC): `resume --skip-quality-polish true` is silently unsaved when resume stops before the save point (round-limit HOLD without --add-rounds, past deadline, DONE, uncertain-turn HOLD); documented, consider a NOTE. (2026-11-22)~~
+- ~~WI-C regression tests only (no product code). After WI-A/B if there is room (owner 2026-11-22).~~ (added 2026-11-22) (closed 2026-11-22, see v3.15.2 WI-C)
+  - ~~v3.14.0 follow-up (Opus, WI-NOTE R4): restore a test that the delivery turn carries the note once (no decisions block), and cover a later EXEC author turn after delivery. (2026-11-22)~~
+  - ~~v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (2026-11-22)~~
+  - ~~v3.11.0 follow-up (Opus, WI-TESTEVID): add a test that a confirmation review reuses the passing test result of the same tree. (2026-11-22)~~
+  - ~~v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (2026-11-21)~~
+  - ~~v3.11.0 follow-up: the Windows end-to-end helper branches on review_report to pick its assertion; brittle if more report shapes appear. (2026-11-22)~~
