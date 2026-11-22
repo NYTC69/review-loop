@@ -13,7 +13,7 @@ from paired_session.test_worktree_lifecycle import COVERING_GITIGNORE
 
 rc = trc.rc
 _HELPERS = ('setUp', 'tearDown', '_assert_no_real_provider_cli', '_guarded_test_popen',
-            'fake_codex_cli', 'fake_claude_cli', 'coordinator')
+            'fake_codex_cli', 'fake_claude_cli', 'coordinator', 'command')
 
 
 class InvocationCapTests(unittest.TestCase):
@@ -109,6 +109,85 @@ class InvocationCapTests(unittest.TestCase):
                                  ('--max-exec-rounds', '9', 'max_exec_rounds')):
             with self.subTest(flag=flag), self.assertRaisesRegex(ValueError, 'resume configuration differs: ' + key):
                 self.restored('resume', flag, value)
+
+    def test_resume_reports_unsaved_quality_polish(self):
+        use_lifecycle_on(self, self)
+        (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)
+        rc.subprocess.run(['git', 'commit', '-qam', 'ignore sensitive files'], cwd=self.workspace, check=True)
+        co = self.coordinator('--lifecycle-mode', 'on', '--shadow', 'on',
+                              '--wi-deadline', '100000', '--max-invocations', '1',
+                              '--author-effort', 'low', '--reviewer-effort', 'low', '--gate-effort', 'low',
+                              '--test-command', 'python3 -m unittest')
+        original = copy.deepcopy(co.state)
+        flag = ('--skip-quality-polish', 'true')
+        unsaved = 'NOTE: --skip-quality-polish true was not saved.'
+        success = 'NOTE: skip_quality_polish is now true for this run'
+
+        def cli(*extra):
+            argv = self.command(*extra)[2:]
+            argv[0] = 'resume'
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = rc.main(argv)
+            return code, output.getvalue(), json.loads(co.state_path.read_text())
+
+        cases = (
+            ('DONE', {'status': 'DONE'}, 0, 'DONE (acceptance pending)'),
+            ('deadline', {'started_at': original['started_at'] - 100001}, 2,
+             'REFUSED: resume refused: whole-WI deadline reached'),
+            ('uncertain', {'uncertain_active': {'sequence': 1, 'role': 'author', 'phase': 'PLAN'}}, 2,
+             'HOLD: uncertain CLI turn'),
+            ('round limit', {'phase': 'EXEC', 'next': 'author', 'exec_rounds': co.exec_round_limit(),
+                             'hold_reason': 'EXEC round limit reached',
+                             'round_limit_hold': {'phase': 'EXEC', 'hold_reason': 'EXEC round limit reached'}},
+             2, 'HOLD: EXEC round limit reached'),
+        )
+        for name, change, expected_code, result in cases:
+            with self.subTest(case=name):
+                state = {**original, 'status': 'HOLD', **change}
+                rc.atomic_json(co.state_path, state)
+                code, output, after = cli(*flag)
+                self.assertEqual(code, expected_code, output)
+                self.assertIn(result, output)
+                self.assertEqual(output.splitlines().count(unsaved), 1)
+                self.assertNotIn(success, output)
+                self.assertFalse(after['config']['skip_quality_polish'])
+                self.assertEqual(after.get('quality_polish_downgrades'), state.get('quality_polish_downgrades'))
+                self.assertEqual(after['turns'], state['turns'])
+
+        rc.atomic_json(co.state_path, {**original, 'status': 'DONE'})
+        code, output, state = cli(*flag, '--author-effort=high')
+        self.assertEqual(code, 0, output)
+        notes = [line for line in output.splitlines() if line.startswith('NOTE:')]
+        self.assertEqual(notes, [unsaved + ' Ignored role flags: --author-effort.'])
+        self.assertEqual(state['config'], original['config'])
+
+        profile = self.root / 'operator.json'
+        profile.write_text('{"skip_quality_polish": true}')
+        for extra in ((), ('--config', str(profile))):
+            with self.subTest(extra=extra):
+                code, output, state = cli(*extra)
+                self.assertEqual(code, 0, output)
+                self.assertNotIn(unsaved, output)
+                self.assertNotIn(success, output)
+                self.assertFalse(state['config']['skip_quality_polish'])
+
+        rc.atomic_json(co.state_path, original)
+        code, output, state = cli(*flag)
+        self.assertEqual(code, 2, output)
+        self.assertIn('HOLD: invocation limit reached', output)
+        self.assertEqual(output.splitlines().count(success), 1)
+        self.assertNotIn(unsaved, output)
+        self.assertTrue(state['config']['skip_quality_polish'])
+        self.assertEqual(len(state['turns']), 1)
+        [downgrade] = state['quality_polish_downgrades']
+        self.assertEqual((downgrade['old'], downgrade['new']), (False, True))
+        code, output, repeated = cli(*flag)
+        self.assertEqual(code, 2, output)
+        self.assertIn('HOLD: invocation limit reached', output)
+        self.assertNotIn(unsaved, output)
+        self.assertNotIn(success, output)
+        self.assertEqual(repeated['quality_polish_downgrades'], [downgrade])
 
     def lifecycle_raise(self, flag, value, key):
         original = ('--lifecycle-mode', 'on', '--max-invocations', '3',

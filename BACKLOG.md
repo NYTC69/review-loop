@@ -6,16 +6,6 @@
 
 ## P2 — normal
 
-- WI-A plan scan false HOLDs: shadow plan-path exemption on Codex/gemini + fast-plan polish. Next up (owner 2026-11-22, with WI-B as v3.15.1). (added 2026-11-22)
-  - v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (2026-11-21)
-  - v3.15.0 follow-up (Opus, WI-FASTPLAN R1): nested sub-bullets under "## Files to change" count as files (conservative fallback to PLAN review). (2026-11-22)
-  - v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the matrix "missing rows for X" error could name an unrecognised near-miss label. (2026-11-22)
-- WI-B operator message wording (text only, no behavior change). Next up (owner 2026-11-22, with WI-A as v3.15.1). (added 2026-11-22)
-  - Field (poker-tools gemini trial, 2026-11-21): the allowed_models refusal should name the profile key to edit. (2026-11-22)
-  - v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the stop-after-plan HOLD says "PLAN approved" after a fast skip; the resume fast_plan check at run creation is a dead branch for resume. (2026-11-22)
-  - v3.14.0 follow-up (Opus, WI-NOTE R1): an ACCEPTED run still prints "Pending operator note" without saying it was never delivered; no test pins omitting the ruling sentence on a writer replay. (2026-11-22)
-  - v3.13.0 follow-up (Opus, WI-RESUME R1 note 5): role flags passed again on every operator action are restored from the saved run; consider a NOTE when an explicit flag is ignored. (2026-11-22)
-  - v3.12.0 follow-up (Opus, WI-SPEC): `resume --skip-quality-polish true` is silently unsaved when resume stops before the save point (round-limit HOLD without --add-rounds, past deadline, DONE, uncertain-turn HOLD); documented, consider a NOTE. (2026-11-22)
 - WI-C regression tests only (no product code). After WI-A/B if there is room (owner 2026-11-22). (added 2026-11-22)
   - v3.14.0 follow-up (Opus, WI-NOTE R4): restore a test that the delivery turn carries the note once (no decisions block), and cover a later EXEC author turn after delivery. (2026-11-22)
   - v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (2026-11-22)
@@ -66,3 +56,13 @@
 - ~~v3.15.0 note: WI-FASTPLAN R4 shipped after three review rounds (R2/R3 Sol REVISE on label edge spellings) with a 76041-variant and 90-real-matrix differential instead of a fourth review (owner approved release 2026-11-22).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: record only; the release commit and CHANGELOG hold it)
 - ~~v3.13.0 accepted residual (gate R2): a hand-edited saved config binding is not re-sealed by a resume role change (the digest guard checks the manifest digest only).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted residual under the owner threat model)
 - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach.~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted: hard to reach, owner threat model)
+- ~~WI-A plan scan false HOLDs: shadow plan-path exemption on Codex/gemini + fast-plan polish. Next up (owner 2026-11-22, with WI-B as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
+  - ~~v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (2026-11-21)~~
+  - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): nested sub-bullets under "## Files to change" count as files (conservative fallback to PLAN review). (2026-11-22)~~
+  - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the matrix "missing rows for X" error could name an unrecognised near-miss label. (2026-11-22)~~
+- ~~WI-B operator message wording (text only, no behavior change). Next up (owner 2026-11-22, with WI-A as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
+  - ~~Field (poker-tools gemini trial, 2026-11-21): the allowed_models refusal should name the profile key to edit. (2026-11-22)~~
+  - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the stop-after-plan HOLD says "PLAN approved" after a fast skip; the resume fast_plan check at run creation is a dead branch for resume. (2026-11-22)~~
+  - ~~v3.14.0 follow-up (Opus, WI-NOTE R1): an ACCEPTED run still prints "Pending operator note" without saying it was never delivered; no test pins omitting the ruling sentence on a writer replay. (2026-11-22)~~
+  - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 5): role flags passed again on every operator action are restored from the saved run; consider a NOTE when an explicit flag is ignored. (2026-11-22)~~
+  - ~~v3.12.0 follow-up (Opus, WI-SPEC): `resume --skip-quality-polish true` is silently unsaved when resume stops before the save point (round-limit HOLD without --add-rounds, past deadline, DONE, uncertain-turn HOLD); documented, consider a NOTE. (2026-11-22)~~

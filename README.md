@@ -230,7 +230,8 @@ A SECURITY HOLD is never repaired by the run: fix it outside the run and resume 
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 
 Use `run --fast-plan` to skip PLAN review for a small delivery. The work item must list one to three
-files without globs under `## Files to change` and at least one item under `## Acceptance criteria`.
+top-level files without globs under `## Files to change` and at least one item under `## Acceptance criteria`.
+Indented detail bullets do not count toward the file limit.
 The author still drafts a plan and scenario matrix. If the first draft fails validation, ordinary PLAN
 review takes over. `status` prints the decision and reason on stderr. Review-only routes refuse the flag.
 

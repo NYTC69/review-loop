@@ -114,9 +114,12 @@ review narratives (for example "previous review" or "response to reviewer"),
 including `context/plan.md` and `context/workitem.md`. FIELD-23 prevents ACCIDENTAL carry-over of review history into a fresh context;
 it does not defend against an author who deliberately evades the check.
 Deliberate evasion is a known residual. Review independence otherwise rests on
-the fresh session and the gate templates, which stay unexempted. Prompts exempt
-only operator inputs (frozen project guidance and the decision channel described
-above).
+the fresh session and the gate templates, which stay unexempted. The prompt scan
+exempts frozen project guidance and the operator decision channel described above.
+The inline scenario matrix in the shadow prompt uses the plan-path rules on the
+first dispatch and on retries. The coordinator scans the surrounding prompt,
+including retry notes, for history and saves the complete dispatched prompt in the audit.
+
 With a run's `base_commit`, both delta patches scan only added (`+`) lines,
 excluding `+++` headers; context and removed lines are never scanned. A match is
 exempt if the same matched text, case-insensitively, occurs anywhere in that
@@ -294,7 +297,9 @@ Role models are operator-set (ADR-9): a role without `--author-model`,
 (Claude: `claude-opus-5-5`; Codex: `gpt-6.1-sol`); gemini (`agy`, ADR-21) has no
 default, so its role needs a model. Before run state is created,
 every model id must be well formed and, when `allowed_models` is set, listed for
-that role's vendor. The Step 3.4 gate defaults to the author's vendor (ADR-10);
+that role's vendor. An allowlist refusal names the `allowed_models.<vendor>` key
+to edit in the paired-session JSON profile for new runs.
+The Step 3.4 gate defaults to the author's vendor (ADR-10);
 `--gate-vendor` overrides it and is recorded as `gate_vendor_source: operator`,
 and a `--gate-model` of the other vendor without `--gate-vendor` is refused.
 `lifecycle_mode` defaults to `on` for CLI and Python entry points.
@@ -365,10 +370,11 @@ turn with an unknown-option error.
 a later `resume` enters EXEC. `--review-only` refuses `--stop-after-plan`.
 
 `run --fast-plan` opts a small delivery into first-draft validation. With one to three
-literal file items and at least one acceptance criterion in the work item, a valid
-draft with a clean applicable history scan enters EXEC directly. Other drafts go to
-ordinary PLAN review. The CLI freezes the flag at creation and refuses it on
-review-only routes. `status` shows the decision and reason on stderr.
+literal top-level file items and at least one acceptance criterion in the work item, a valid
+draft with a clean applicable history scan enters EXEC directly. Only nonempty file
+list items at the smallest indentation count toward the file limit and glob check.
+Other drafts go to ordinary PLAN review. The CLI freezes the flag at creation and
+refuses it on review-only routes. `status` shows the decision and reason on stderr.
 
 `run --review-only` reviews the existing workspace change against `--base REF`
 (default HEAD, an ancestor of HEAD), skips PLAN and may dispatch author fixes.
@@ -637,7 +643,10 @@ A continuing `resume` can change any of `--author-model`, `--reviewer-model`, `-
 that restores the run, even when the current profile supplies different defaults. The saved
 vendors and `allowed_models` policy apply. Other actions that restore a run refuse explicit model or
 vendor changes; an explicit effort change is ignored by `accept`, `reject`, `note`, `withdraw-findings` and
-`attach-verification` and refused by `abort`, a restoring `run` and `resume --polish`. Explicit flags win on
+`attach-verification` and refused by `abort`, a restoring `run` and `resume --polish`.
+A NOTE lists the explicit differing effort flags ignored by these operator actions. An ordinary
+`resume` that exits before applying requested model or effort changes also lists those flags in
+a NOTE. For `--intent-only`, NOTES go to stderr and stdout carries intent JSON. Explicit flags win on
 every continuing `resume`: a caller that re-sends its original role flags undoes an earlier override (with a
 NOTE), and an author or reviewer model revert opens another session.
 
@@ -663,9 +672,9 @@ Completed specialist turns stay in the pass receipt. A saved quota retry for a n
 and its rejected turn and usage remain recorded. POLISH-Q quality writers are skipped if their batch is still
 unscheduled. An already scheduled batch follows its saved queue. The flag is saved only by a resume that
 continues the run: if that resume stops first (uncertain-turn recovery HOLD, a round-limit HOLD without
-`--add-rounds`, a past-deadline HOLD, or a DONE run), the downgrade is unsaved and no NOTE appears. Pass the flag
-again on the resume that continues. A profile `skip_quality_polish` value never downgrades a saved run; pass the
-flag.
+`--add-rounds`, a past deadline, or a DONE run), the coordinator prints
+`NOTE: --skip-quality-polish true was not saved.` Pass the flag again on the
+resume that continues. A profile `skip_quality_polish` value never downgrades a saved run.
 
 Existing blockers still go through author fix and owner recheck, with one or two calls per owner.
 An eligible blocker can also be withdrawn at the existing POLISH-Q fix HOLD.
@@ -937,8 +946,10 @@ Plain `status` reads state under the run lease; while a coordinator owns it,
 it prints `HOLD: another coordinator currently owns this run` and exits 2.
 Use lease-free `status --brief [N]` (default 20 events) during a run. It shows the
 pending quota retry time along with progress events for waits, retries and exhausted budgets.
-Both modes show a pending operator note's ID, recipient and creation time. Plain
-`status` prints the summary to stderr and keeps the saved JSON on stdout. Brief
+Both modes show a pending operator note's ID, recipient and creation time. At DONE
+and ACCEPTED, the summary says the note remains undelivered. At DONE, it also
+explains how to send the note with an in-scope rejection. Plain `status` prints
+the summary to stderr and keeps the saved JSON on stdout. Brief
 prints the saved summary to stdout even when there are no progress events.
 Progress is saved to `RUN_DIR/progress.jsonl`; `--quiet-progress` suppresses
 live event lines while keeping that file and the final status line.

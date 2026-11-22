@@ -311,8 +311,9 @@ add `--stop-after-plan` only to `run`. The run HOLDs after PLAN approval or a su
 Show `RUN_DIR/plan.md` and `resume` only on the user's request.
 
 When the user opts in for a small delivery, pass `--fast-plan` only to `run`. The CLI freezes the
-opt-in at run creation. The work item needs one to three nonempty list items without `*`, `?`,
-or `[` under `## Files to change`, and at least one nonempty list item under `## Acceptance criteria`.
+opt-in at run creation. The work item needs one to three nonempty top-level list items without
+`*`, `?`, or `[` under `## Files to change`, and at least one nonempty list item under
+`## Acceptance criteria`. Only file items at the smallest indentation count.
 The PLAN author carries those declarations into a draft with a scenario matrix. The coordinator
 enters EXEC directly if the first draft passes matrix validation and the history scan required by
 a configured fresh shadow or pending gate. Otherwise it sends the draft to ordinary PLAN review.

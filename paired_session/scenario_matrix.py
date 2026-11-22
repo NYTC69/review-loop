@@ -84,13 +84,18 @@ def validation_error(matrix: str) -> str:
 
     covered = set()
     dimension = None
-    for line in lines:
-        label, line = _label_and_content(line)
+    unrecognised = ''
+    for original in lines:
+        label, line = _label_and_content(original)
+        cells = [cell.strip() for cell in re.split(r'(?<!\\)\|', line)]
         if label:
             dimension = label
+        elif not unrecognised and len(cells) == 1 and (MARKED_LABEL.match(original) or MARKED_LABEL.match(line)):
+            body = re.sub(r'^#{1,6}\s+', '', line).replace('*', '').replace('_', '').strip()
+            if not NA_PREFIX.match(body):
+                unrecognised = original
         if dimension is None:
             continue
-        cells = [cell.strip() for cell in re.split(r'(?<!\\)\|', line)]
         if len(cells) == 1 and NA.fullmatch(line):
             covered.add(dimension)
             continue
@@ -108,4 +113,9 @@ def validation_error(matrix: str) -> str:
             continue
         covered.add(dimension)
     incomplete = [name for name in DIMENSIONS if name not in covered]
-    return ('missing rows or N/A: <reason> for ' + ', '.join(incomplete)) if incomplete else ''
+    if not incomplete:
+        return ''
+    error = 'missing rows or N/A: <reason> for ' + ', '.join(incomplete)
+    if unrecognised:
+        error += f'. Unrecognised dimension label {unrecognised!r}'
+    return error

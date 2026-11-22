@@ -15,6 +15,7 @@ WORKITEM = ('# Small delivery\n\n## Files to change\n- sum_ints.py\n\n'
 class FastPlanTests(unittest.TestCase):
     locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in twl._HELPERS})
     state = tgo.GateOnceTests.state
+    clean = tgo.GateOnceTests.clean
 
     def test_fast_plan_enters_exec(self):
         self.workitem.write_text(WORKITEM)
@@ -84,6 +85,53 @@ class FastPlanTests(unittest.TestCase):
                     refused = self.run_coordinator(*tgo.OFF, '--fast-plan')
                     self.assertEqual(refused.returncode, 2)
                     self.assertIn('fast_plan (fixed when the run was created)', refused.stdout)
+
+    def test_fast_plan_counts_only_top_level_files(self):
+        nested = '  - sum_ints.py\n    - Keep helper *.py private\n    + Retain comments\n    1. Keep signatures'
+        two_more = '\n  2. test_sum_ints.py\n     - Exercise booleans\n  + README.md'
+        for name, files, outcome in (
+                ('one', nested, 'skipped'),
+                ('three', nested + two_more, 'skipped'),
+                ('four', nested + two_more + '\n  * CHANGELOG.md', 'fallback'),
+                ('glob', nested + '\n  - docs/*.md', 'fallback')):
+            with self.subTest(name=name):
+                self.run_dir = self.root / name
+                self.workitem.write_text(WORKITEM.replace('- sum_ints.py', files))
+                stopped = self.run_coordinator(*tgo.OFF, '--fast-plan', '--stop-after-plan')
+                self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
+                state = self.state()
+                self.assertEqual(state['fast_plan']['outcome'], outcome)
+                self.assertEqual(state['plan_reviews'], int(outcome == 'fallback'))
+
+    def test_stop_after_plan_message_covers_both_routes(self):
+        self.workitem.write_text(WORKITEM)
+        reason = 'PLAN complete, stopped by --stop-after-plan. Resume enters EXEC.'
+        for name, flags in (('ordinary', ()), ('fast', ('--fast-plan',))):
+            with self.subTest(route=name):
+                self.run_dir = self.root / name
+                stopped = self.run_coordinator(*tgo.OFF, *flags, '--stop-after-plan')
+                self.assertEqual(stopped.returncode, 2, stopped.stdout + stopped.stderr)
+                self.assertEqual(stopped.stdout.splitlines()[-1], 'HOLD: ' + reason)
+                state = self.state()
+                self.assertEqual((state['status'], state['phase'], state['next'], state['hold_reason']),
+                                 ('HOLD', 'EXEC', 'author', reason))
+                self.assertTrue(state['plan_stop_done'])
+                self.assertEqual(state['plan_reviews'], int(name == 'ordinary'))
+                event = json.loads((self.run_dir / 'progress.jsonl').read_text().splitlines()[-1])
+                self.assertEqual((event['kind'], event['reason']), ('terminal', reason))
+                self.assertIn(f'terminal · HOLD · {reason}', stopped.stdout)
+                brief = self.run_operator_action('status', '--brief', '1')
+                self.assertIn(f'terminal · HOLD · {reason}', brief.stdout)
+                done = self.run_operator_action('resume', *tgo.OFF, '--stop-after-plan')
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn(tgo.DONE, done.stdout)
+                after = self.state()
+                self.assertEqual(after['turns'][:len(state['turns'])], state['turns'])
+                self.assertEqual((after['turns'][len(state['turns'])]['phase'],
+                                  after['turns'][len(state['turns'])]['role']), ('EXEC', 'author'))
+                events = [json.loads(line) for line in (self.run_dir / 'progress.jsonl').read_text().splitlines()]
+                self.assertEqual([row for row in events if row.get('reason') == reason], [event])
+                self.clean()
 
     def test_fast_plan_checks_history_only_when_a_fresh_role_will_scan(self):
         self.workitem.write_text(WORKITEM)

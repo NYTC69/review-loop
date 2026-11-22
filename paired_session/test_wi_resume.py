@@ -248,6 +248,101 @@ class ResumeTests(unittest.TestCase):
                     self.assertEqual(self.state()[key], state[key])
                 self.assert_bound(self.state())
 
+    def test_operator_actions_report_only_ignored_explicit_roles(self):
+        co = self.h.coordinator(*self.flags, '--author-effort', 'low',
+                                '--reviewer-effort', 'low', '--gate-effort', 'low')
+        profile = self.h.root / 'operator.json'
+        profile.write_text('{"reviewer_effort": "high"}')
+        config = ('--config', str(profile), *self.flags)
+        flags = ('--author-effort=high', '--reviewer-effort', 'low', '--gate-effort', 'high')
+        note = 'NOTE: Ignored role flags: --author-effort, --gate-effort.'
+        saved = co.state_path.read_bytes()
+        for action in rc.EFFORT_IGNORING_ACTIONS:
+            with self.subTest(action=action):
+                if action in ('accept', 'reject'):
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        code, output = self.cli(action, *config, *flags, '--intent-only')
+                    self.assertEqual(code, 0, output + err.getvalue())
+                    self.assertEqual(json.loads(output)['action'], action)
+                    self.assertEqual(err.getvalue().splitlines().count(note), 1)
+                else:
+                    def restore_only(args):
+                        restored = rc.Coordinator(args)
+                        for key in rc.ROLE_EFFORT_DESTS:
+                            self.assertEqual(getattr(restored.args, key), 'low')
+                        return 0
+
+                    with patch.object(rc, '_execute_locked', side_effect=restore_only):
+                        code, output = self.cli(action, *config, *flags)
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(output.splitlines().count(note), 1)
+                self.assertEqual(co.state_path.read_bytes(), saved)
+
+        for extra in ((), ('--author-effort=low',), ('--gate-model=gpt-6-sol', '--author-effort=high')):
+            with self.subTest(extra=extra):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code, output = self.cli('accept', *config, *extra, '--intent-only')
+                self.assertNotIn('Ignored role flags', output + err.getvalue())
+                if '--gate-model=gpt-6-sol' in extra:
+                    self.assertEqual(code, 2, output)
+                    self.assertIn('role models are fixed', output)
+                else:
+                    self.assertEqual(code, 0, output)
+                    self.assertEqual(json.loads(output)['action'], 'accept')
+                self.assertEqual(co.state_path.read_bytes(), saved)
+
+    def test_resume_reports_only_unapplied_role_changes(self):
+        co = self.h.coordinator(*self.flags, '--author-effort', 'low',
+                                '--reviewer-effort', 'low', '--gate-effort', 'low')
+        profile = self.h.root / 'operator.json'
+        profile.write_text('{"reviewer_effort": "high"}')
+        config = ('--config', str(profile), *self.flags)
+        flags = ('--author-effort=high', '--reviewer-model', 'claude-sonnet-5-5', '--gate-effort=low')
+        note = 'NOTE: Ignored role flags: --reviewer-model, --author-effort.'
+        co.state['status'] = 'DONE'
+        co.save()
+        saved = co.state_path.read_bytes()
+        for extra, expected in ((flags, 1), ((), 0), (('--author-effort=low',), 0)):
+            with self.subTest(extra=extra):
+                code, output = self.cli('resume', *config, *extra, drive=lambda _: self.fail('DONE dispatched'))
+                self.assertEqual(code, 0, output)
+                self.assertEqual(output.splitlines().count(note), expected)
+                self.assertEqual(output.count('Ignored role flags'), expected)
+                self.assertNotIn(CHANGED, output)
+                self.assertEqual(co.state_path.read_bytes(), saved)
+
+        code, output = self.cli('resume', *config, *flags, '--author-vendor=claude')
+        self.assertEqual(code, 2, output)
+        self.assertIn('role models are fixed', output)
+        self.assertNotIn('Ignored role flags', output)
+        self.assertEqual(co.state_path.read_bytes(), saved)
+
+        co.state.update(status='HOLD', hold_reason='interrupted', uncertain_active={
+            'sequence': 1, 'role': 'author', 'phase': 'PLAN', 'vendor': 'codex', 'pid': 12345})
+        co.save()
+        code, output = self.cli('resume', *config, *flags, drive=lambda _: self.fail('uncertain turn dispatched'))
+        self.assertEqual(code, 2, output)
+        self.assertEqual(output.splitlines().count(note), 1)
+        self.assertEqual(self.state()['config'], co.state['config'])
+        self.assertNotIn('role_resume_changes', self.state())
+
+        co.state['uncertain_active'] = None
+        co.save()
+        code, output = self.cli('resume', *config, *flags, drive=lambda resumed: resumed.hold('test HOLD'))
+        self.assertEqual(code, 2, output)
+        self.assertIn('HOLD: test HOLD', output)
+        self.assertEqual(output.count(CHANGED), 1)
+        self.assertNotIn('Ignored role flags', output)
+        state = self.state()
+        self.assertEqual(state['config']['author_effort'], 'high')
+        self.assertEqual(state['config']['reviewer_model'], 'claude-sonnet-5-5')
+        self.assertEqual((state['config']['reviewer_effort'], state['config']['gate_effort']), ('low', 'low'))
+        self.assertEqual([(row['key'], row['old'], row['new']) for row in state['role_resume_changes']],
+                         [('reviewer_model', 'claude-opus-5-5', 'claude-sonnet-5-5'), ('author_effort', 'low', 'high')])
+        self.assert_bound(state)
+
     def test_replacement_dispatch(self):
         with patch.dict(rc.os.environ, {'FAKE_UNIQUE_CODEX_THREAD': '1'}):
             co = self.h.coordinator(*self.flags)

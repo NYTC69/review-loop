@@ -144,7 +144,7 @@ def normal_cli_updates(old: dict, new: dict) -> Optional[list]:
                         'old_version': '.'.join(map(str, old_version)) if old_version else None,
                         'new_version': '.'.join(map(str, new_version))})
     return updates
-PLAN_STOP_REASON = 'PLAN approved; stopped by --stop-after-plan; resume enters EXEC'
+PLAN_STOP_REASON = 'PLAN complete, stopped by --stop-after-plan. Resume enters EXEC.'
 DEFAULT_EXEC_TURN_TIMEOUT_SECONDS = 7200
 DEFAULT_SAFETY_MODE = 'efficient'   # v3.7.0: the only mode (docs/efficient-mode.md); a saved or requested 'strict' is noted and ignored
 STRICT_REMOVED_NOTE = 'NOTE: strict mode was removed in v3.7.0; the run uses the default mode'
@@ -3137,7 +3137,12 @@ class Coordinator:
         self.args.allowed_models = policy
         # An explicit differing effort: applied by a continuing resume, ignored by the operator actions (as before
         # WI-RESUME), and left for the resume config check to refuse on run / abort / resume --polish.
-        keep = set(overrides) | (set(ROLE_EFFORT_DESTS) if self.args.action not in EFFORT_IGNORING_ACTIONS else set())
+        keep = set(overrides)
+        if self.args.action in EFFORT_IGNORING_ACTIONS:
+            self._ignored_options_note([key for key in ROLE_EFFORT_DESTS
+                                        if key in explicit and getattr(self.args, key) != saved[key]])
+        else:
+            keep.update(ROLE_EFFORT_DESTS)
         for key in (*ROLE_DESTS, *ROLE_EFFORT_DESTS, 'gate_vendor_source'):
             if key not in keep or key not in explicit:
                 setattr(self.args, key, saved[key])
@@ -5668,33 +5673,40 @@ class Coordinator:
         return '\n\nScenario matrix from plan.md:\n' + matrix + '\n' if matrix else ''
 
     def _matrix_review_prompt(self) -> str:
+        return self._matrix_review_instructions() + self._matrix_plan_excerpt()
+
+    def _matrix_review_instructions(self) -> str:
         if self.state.get('review_only'):
             return ''
         return ('\n\nScenario matrix review: Verify that the current implementation handles every scenario matrix row '
                 'and that its named test exists and passes. Check passing evidence for the named tests on this tree. '
-                f'Use the checklist {scenario_matrix.CHECKLIST} to guide robustness and corner-case review.' +
-                self._matrix_plan_excerpt())
+                f'Use the checklist {scenario_matrix.CHECKLIST} to guide robustness and corner-case review.')
+
+    def _shadow_prompt_parts(self, snapshot: str) -> GatePromptParts:
+        before_excerpt = '\n'.join([
+            f'Role: shadow, fresh isolated read-only whole-delta reviewer. Phase: {self.state["phase"]}.',
+            f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
+            self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
+            f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
+            'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
+            REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
+            self.inspection_prompt('shadow'), self._docs_reserved_note('review'),
+            self.verified_claims_prompt(),
+            self.allowed_command_prompt(),
+            self._test_instruction(snapshot),
+            'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
+            'Do not report exit codes; the coordinator reads tool results directly. ' + MISSING_HOST_TEST_RULE,
+            'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
+            'Return only JSON matching the supplied schema.',
+        ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt('fresh') + opv.prompt_block(
+            self, snapshot, atomic_json) + self._matrix_review_instructions()
+        return GatePromptParts(before_excerpt, self._matrix_plan_excerpt())
 
     def _review_prompt(self, role: str, snapshot: str) -> str:
         base_phase = self.state['phase']
         phase = base_phase
         if role == 'shadow':
-            return '\n'.join([
-                f'Role: shadow, fresh isolated read-only whole-delta reviewer. Phase: {phase}.',
-                f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
-                self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
-                f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
-                'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
-                REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
-                self.inspection_prompt(role), self._docs_reserved_note('review'),
-                self.verified_claims_prompt(),
-                self.allowed_command_prompt(),
-                self._test_instruction(snapshot),
-                'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
-                'Do not report exit codes; the coordinator reads tool results directly. ' + MISSING_HOST_TEST_RULE,
-                'APPROVE in EXEC requires non-empty self_run_evidence. Never edit files, commit, push, or load skills.',
-                'Return only JSON matching the supplied schema.',
-            ]) + self._guidance(REVIEW_GUIDANCE) + self.operator_rulings_prompt('fresh') + opv.prompt_block(self, snapshot, atomic_json) + self._matrix_review_prompt()
+            return ''.join(self._shadow_prompt_parts(snapshot))
         fresh_note = 'Use your persistent thread history across PLAN and EXEC.'
         exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
@@ -6617,7 +6629,7 @@ class Coordinator:
                                     '(no finding ids) and run the printed Start: command for a successor '
                                     'with a fresh PLAN, or abort and start a new run')
                     raise RuntimeError(f'{role} independence check rejected ledger ids in context/{name}: {shown}; ' + recovery)
-        # The gate excerpt is checked below as part of context/plan.md, with the PLAN approval rules.
+        # The matrix excerpt is checked below as part of context/plan.md, with the PLAN approval rules.
         if scan_prompt is None:
             excerpt = self._matrix_plan_excerpt() if role == 'shadow' else ''
             scan_prompt = prompt.removesuffix(excerpt) if excerpt else prompt
@@ -7240,14 +7252,14 @@ class Coordinator:
         command_rule = LONG_COMMAND_RULE.replace(
             f'gets {LONG_COMMAND_TIMEOUT_MS} for a long command.',
             f'gets {command_maximum} for a long command.')
-        gate_parts = isinstance(prompt, GatePromptParts)
-        parts = prompt if gate_parts else GatePromptParts(prompt, '')
+        explicit_parts = isinstance(prompt, GatePromptParts)
+        parts = prompt if explicit_parts else GatePromptParts(prompt, '')
         if any(LONG_COMMAND_RULE in part for part in parts):
             parts = GatePromptParts(*(part.replace(LONG_COMMAND_RULE, command_rule) for part in parts))
         elif command_maximum > LONG_COMMAND_TIMEOUT_MS:   # V319-RULE: its own heading, so it never reads as operator text above it
             parts = parts.append(LONG_COMMAND_RULE_HEADING + command_rule)
         prompt = ''.join(parts)
-        if gate_parts:
+        if explicit_parts:
             self.assert_fresh_prompt(role, prompt, scan_prompt=parts.before_excerpt + parts.after_excerpt)
         else:
             self.assert_fresh_prompt(role, prompt)
@@ -7704,14 +7716,19 @@ class Coordinator:
     def _fast_plan_issue(self, draft: str) -> Optional[str]:
         workitem = (self.context / 'workitem.md').read_text(encoding='utf-8')
 
-        def items(heading):
+        def items(heading, *, top_level=False):
             section = re.search(rf'^ {{0,3}}##[ \t]+{heading}(?:[ \t]+#+)?[ \t]*$', workitem, re.I | re.M)
             if not section:
                 return []
             body = re.split(r'^ {0,3}#{1,2}[ \t]+', workitem[section.end():], maxsplit=1, flags=re.M)[0]
-            return re.findall(r'^[ \t]*(?:[-+*]|\d+[.)])[ \t]+(\S[^\r\n]*)', body, re.M)
+            item = r'(?:[-+*]|\d+[.)])[ \t]+(\S[^\r\n]*)'
+            if not top_level:
+                return re.findall(r'^[ \t]*' + item, body, re.M)
+            matches = re.findall(r'^([ \t]*)' + item, body, re.M)
+            indentation = min((len(indent) for indent, _ in matches), default=0)
+            return [entry for indent, entry in matches if len(indent) == indentation]
 
-        files = items('Files to change')
+        files = items('Files to change', top_level=True)
         if not 1 <= len(files) <= 3 or any(char in item for item in files for char in '*?['):
             return 'Files to change must list 1–3 items without glob characters'
         if not items('Acceptance criteria'):
@@ -9745,7 +9762,7 @@ class Coordinator:
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
             if shadow is None:
-                shadow = self.invoke('shadow', phase, self._review_prompt('shadow', shadow_snapshot),
+                shadow = self.invoke('shadow', phase, self._shadow_prompt_parts(shadow_snapshot),
                                      fresh_review_schema(), fresh=True)
             shadow['answer'] = copy.deepcopy(shadow['answer'])
             if post_gate:   # S3 R2 F2: the fresh shadow cannot tell a regression of the fix; the persistent reviewer confirms
@@ -10680,6 +10697,16 @@ class Coordinator:
         print(text, file=sys.stderr if getattr(self.args, 'intent_only', False) or getattr(self.args, 'action', None) == 'status'
               else sys.stdout)
 
+    def _ignored_options_note(self, role_keys: list[str], *, unsaved_polish=False) -> None:
+        messages = []
+        if unsaved_polish:
+            messages.append('--skip-quality-polish true was not saved.')
+        if role_keys:
+            flags = ', '.join('--' + key.replace('_', '-') for key in role_keys)
+            messages.append(f'Ignored role flags: {flags}.')
+        if messages:
+            self._operator_note('NOTE: ' + ' '.join(messages))
+
     def write_usage(self) -> None:
         groups: dict[str, dict] = {}
         for turn in self.state['turns']:
@@ -10918,7 +10945,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--gemini-bin', default='agy', help='the Antigravity CLI that runs gemini roles (ADR-21)')
     p.add_argument('--exercise-revisions', action='store_true')
     p.add_argument('--stop-after-plan', action='store_true',
-                   help='HOLD once right after PLAN approval; a later resume enters EXEC')
+                   help='HOLD once at PLAN completion, after approval or a fast PLAN skip. Resume enters EXEC.')
     p.add_argument('--fast-plan', action='store_true',
                    help='run only: skip PLAN review for an eligible small delivery with a valid first draft')
     p.add_argument('--review-only', action='store_true', default=None,
@@ -11221,7 +11248,8 @@ def validate_role_models(args: argparse.Namespace) -> None:
         if not isinstance(model, str) or not MODEL_ID_RE.fullmatch(model):
             raise ValueError(f'{key} is not a well-formed model id: {model!r}')
         if allowed is not None and model not in allowed.get(vendor, []):
-            raise ValueError(f'{key} {model} is not in allowed_models for the {vendor} role')
+            raise ValueError(f'{key} {model} is not in allowed_models for the {vendor} role. '
+                             f'For new runs, edit allowed_models.{vendor} in the paired-session JSON profile.')
         if vendor == 'claude' and model.lower() in CLAUDE_CLI_ALIASES:   # HYGIENE-1: an alias would HOLD only after a wasted turn
             raise ValueError(f'{key} {model!r} is a Claude CLI alias, not a full model id (the run compares the id with the model '
                              'the CLI reports, so an alias would HOLD after its first turn); give the full id, for example claude-opus-5-5')
@@ -11360,6 +11388,8 @@ def pending_note_summary(state: dict) -> Optional[str]:
     note = next((row for row in state.get('operator_notes', []) if row.get('id') == note_id), {})
     summary = (f"Pending operator note {note_id}: recipient {note.get('deliver_to') or 'unknown'}; "
                f"created {note.get('timestamp') or 'unknown'}")
+    if state.get('status') in ('DONE', 'ACCEPTED'):
+        summary += f'\n{note_id} remains undelivered.'
     if state.get('status') == 'DONE':
         summary += (
             f'\nAt DONE, accept and plain resume leave {note_id} undelivered. An in-scope reject reopens EXEC '
@@ -11494,8 +11524,22 @@ def _execute_locked(args: argparse.Namespace) -> int:
     if args.action == 'run' and co.state['config'].get('lifecycle_mode') == 'off' and co.state['config'].get('auto_commit'):
         print('NOTE: ' + OFF_NEVER_COMMITS_NOTE)   # V312: a note, not a refusal
     print(f'GATE: {args.gate_vendor} {args.gate_model} (gate_vendor_source: {args.gate_vendor_source})')   # ADR-10 M2
-    status = (co.drive() if args.action == 'run' else
-              co.resume_polish() if args.polish else co.resume(args.retry_uncertain))
+    if args.action == 'run':
+        status = co.drive()
+    elif args.polish:
+        status = co.resume_polish()
+    else:
+        config = co.state['config']
+        requested_roles = {key: getattr(args, key) for key in ROLE_RESUME_DESTS
+                           if key in args.explicit_role_flags and getattr(args, key) != config[key]}
+        requested_polish = (getattr(args, 'skip_quality_polish_explicit', False) and args.skip_quality_polish
+                            and not config['skip_quality_polish'])
+        try:
+            status = co.resume(args.retry_uncertain)
+        finally:
+            config = co.state['config']
+            co._ignored_options_note([key for key, value in requested_roles.items() if config[key] != value],
+                                     unsaved_polish=requested_polish and not config['skip_quality_polish'])
     if status == 'HOLD' and co.at_round_limit_hold():   # L100: the continue option first
         print('NEXT: resume --add-rounds N (1-10) continues this run with N more rounds; '
               'note --scope-change starts a successor run; or abort')

@@ -231,12 +231,19 @@ class OperatorNoteTests(unittest.TestCase):
         held = h.run_coordinator(*ON, env=env)
         self.assert_result(held, 2, 'HOLD: DOCS reviewer did not observe a successful run')
         note_text = 'Mention the migration in the changelog.'
+        [writer] = [turn for turn in self.state(h)['turns'] if (turn['role'], turn['phase']) == ('author', 'DOCS')]
+        prompt_path = h.run_dir / 'evidence' / f"{writer['sequence']:03d}-docs-author.prompt.txt"
+        original_prompt = prompt_path.read_bytes()
         self.assert_result(h.run_operator_action('note', *ON, '--text', note_text), 0, 'N001 queued')
         self.assert_result(h.run_operator_action('resume', *ON, env=env), 0, twl.DONE)
         state = self.state(h)
         self.assertEqual(state['pending_operator_note_id'], 'N001')
         self.assertEqual(sum(t['role'] == 'author' and t['phase'] == 'DOCS' for t in state['turns']), 1)
         self.assertFalse(any(t.get('operator_note_id') for t in state['turns']))
+        replayed_prompt = prompt_path.read_bytes()
+        self.assertEqual(replayed_prompt, original_prompt)
+        self.assertNotIn(note_text.encode(), replayed_prompt)
+        self.assertNotIn(b'## Operator decisions', replayed_prompt)
         return state, note_text, env
 
     def test_done_note_status_after_reused_docs_writer(self):
@@ -255,6 +262,7 @@ class OperatorNoteTests(unittest.TestCase):
             self.assert_result(brief, 0, 'no progress events yet')
             for summary in (plain.stderr.decode(), brief.stdout):
                 for expected in ('Pending operator note N001', note['deliver_to'], note['timestamp'],
+                                 'N001 remains undelivered.',
                                  'accept and plain resume leave N001 undelivered',
                                  'sends N001 together with the rejection to the next EXEC author',
                                  'reject --intent-only --text "<rejection feedback>"',
@@ -296,6 +304,19 @@ class OperatorNoteTests(unittest.TestCase):
             self.assertEqual(accepted['turns'], done['turns'])
             self.assertEqual(accepted['pending_operator_note_id'], 'N001')
             self.assertEqual(accepted['operator_notes'], done['operator_notes'])
+            state_path = h.run_dir / 'state.json'
+            saved = state_path.read_bytes()
+            plain = h.run_operator_action('status', *ON)
+            self.assertEqual(plain.returncode, 0, plain.stderr)
+            self.assertEqual(plain.stdout, saved.decode() + '\n')
+            brief = h.run_operator_action('status', *ON, '--brief')
+            self.assert_result(brief, 0, 'N001 remains undelivered.')
+            for summary in (plain.stderr, brief.stdout):
+                for expected in ('Pending operator note N001', 'N001 remains undelivered.',
+                                 accepted['operator_notes'][0]['deliver_to'], accepted['operator_notes'][0]['timestamp']):
+                    self.assertIn(expected, summary)
+                self.assertNotIn('reject --intent-only', summary)
+            self.assertEqual(state_path.read_bytes(), saved)
 
 
 if __name__ == '__main__':

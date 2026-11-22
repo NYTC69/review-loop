@@ -145,6 +145,18 @@ class GeminiVendorTests(unittest.TestCase):
         profile = self.operator_profile({'allowed_models': allowed})
         self.assertEqual(self.args('--config', str(profile)).allowed_models, allowed)
 
+    def test_allowed_models_refusal_names_profile_key(self):
+        profile = self.operator_profile({'allowed_models': {
+            'codex': [rc.CODEX_DEFAULT_MODEL], 'claude': ['claude-opus-5-5'], 'gemini': ['gemini-3.8-pro']}})
+        fake = self.h.fake_gemini_cli()
+        with patch.object(rc, 'program_snapshot') as bind:
+            refused = self.main('run', *GEMINI_REVIEWER, '--gemini-bin', str(fake), '--config', str(profile))
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('reviewer_model gemini-3.8-flash-medium is not in allowed_models for the gemini role', refused.stdout)
+        self.assertIn('For new runs, edit allowed_models.gemini in the paired-session JSON profile.', refused.stdout)
+        self.assertFalse((self.h.run_dir / 'state.json').exists())
+        bind.assert_not_called()
+
     # ---- ADR-10 M4 with three vendors ----
     def test_a_foreign_gate_model_is_checked_against_every_other_vendor(self):
         for flags, text in (

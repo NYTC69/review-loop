@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from paired_session import scenario_matrix
 from paired_session import test_gate_once as tgo
+from paired_session import test_gemini_vendor as tgem
+from paired_session import test_real_coordinator as trc
 from paired_session import test_rounds_threshold as threshold
 from paired_session.fake_cli import FAKE_SCENARIO_MATRIX, SUPPLEMENTAL_SCENARIO
 
@@ -63,6 +65,21 @@ class ScenarioMatrixParserTests(unittest.TestCase):
         self.assertIn('Compatibility', self.error(FAKE_SCENARIO_MATRIX.split('### Compatibility')[0]))
         error = self.error('## Scenario matrix\n\n## Verification\nRun unittest.')
         self.assertTrue(all(name in error for name in scenario_matrix.DIMENSIONS), error)
+
+    def test_missing_dimension_names_unrecognised_label(self):
+        missing = 'missing rows or N/A: <reason> for Compatibility'
+        for label in ('### Compatiblity', '7. Compatiblity', '- **Compatiblity:**'):
+            with self.subTest(label=label):
+                plan = FAKE_SCENARIO_MATRIX.replace('### Compatibility', label)
+                self.assertEqual(self.error(plan), f'{missing}. Unrecognised dimension label {label!r}')
+        without_compatibility = FAKE_SCENARIO_MATRIX.split('### Compatibility')[0]
+        for prose in ('', 'Compatiblity:', 'Dependency note: none',
+                      '1. N/A: No extra cases.', '- **N/A**: No extra cases.',
+                      '**Other scenario** | expected result | test_other',
+                      '| **Scenario** | Expected behavior | Test ID |'):
+            with self.subTest(prose=prose):
+                self.assertEqual(self.error(without_compatibility + prose), missing)
+        self.assertEqual(self.error(FAKE_SCENARIO_MATRIX + '\n### Compatiblity'), '')
 
     def test_malformed_rows_are_ignored_and_do_not_cover_a_dimension(self):
         for row in ('- Boolean input | | test_rejects_bool',
@@ -233,6 +250,7 @@ Matrix notes:
 class ScenarioMatrixRunTests(unittest.TestCase):
     locals().update({name: getattr(threshold.ThresholdRunTests, name) for name in (*threshold.twl._HELPERS, 'args')})
     state, clean = tgo.GateOnceTests.state, tgo.GateOnceTests.clean
+    fake_gemini_cli = trc.RealCoordinatorTests.fake_gemini_cli
 
     def prompt(self, turn):
         return (self.run_dir / 'evidence' /
@@ -293,6 +311,65 @@ class ScenarioMatrixRunTests(unittest.TestCase):
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
         self.assertIn('No passing evidence for test_rejects_bool', state['finding_ledger'][-1]['summary'])
         self.assertFalse(tgo.gates(state))
+
+    def test_shadow_matrix_excerpt_survives_readonly_redispatch(self):
+        for vendor, flags in (
+                ('codex', ('--reviewer-vendor', 'codex')),
+                ('gemini', (*tgem.GEMINI_REVIEWER, '--gemini-bin', str(self.fake_gemini_cli())))):
+            with self.subTest(vendor=vendor):
+                self.clean()
+                self.run_dir = self.root / vendor
+                marker = self.root / f'{vendor}-mutated'
+                tracked = self.workspace / 'tracked.txt'
+                original = tracked.read_bytes()
+                result = self.run_coordinator(
+                    '--lifecycle-mode', 'off', '--shadow', 'on', *flags,
+                    env={'FAKE_FIRST_PLAN_MATRIX': TOOL_PATH_MATRIX, 'FAKE_MUTATION': 'checkout',
+                         'FAKE_CODEX_LONG': 'yield', 'FAKE_MUTATION_ROLE': 'Role: shadow,', 'FAKE_MUTATION_ONCE': str(marker)})
+                state = self.state()
+                shadows = [turn for turn in state['turns'] if turn['role'] == 'shadow']
+                self.assertTrue(marker.exists(), result.stdout + result.stderr)
+                self.assertEqual(tracked.read_bytes(), original)
+                self.assertTrue(shadows[0]['voided']['restored'])
+                self.assertIn('re-dispatching the shadow turn once', result.stdout)
+                self.assertIn(tgo.DONE, result.stdout, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                first, retry = shadows
+                self.assertEqual([turn['vendor'] for turn in shadows], [vendor, vendor])
+                self.assertNotIn('answer', first)
+                self.assertEqual(retry['answer']['status'], 'APPROVE')
+                excerpt = '\n\nScenario matrix from plan.md:\n' + scenario_matrix.section(TOOL_PATH_MATRIX) + '\n'
+                retry_note = ('\n\nNote from the coordinator: your previous answer to this request changed the workspace. That '
+                              'answer was discarded and the workspace was restored. Review the current tree again without '
+                              'creating, editing, staging, committing or deleting anything.')
+                first_prompt = self.prompt(first)
+                self.assertTrue(first_prompt.endswith(excerpt))
+                self.assertEqual(self.prompt(retry), first_prompt + retry_note)
+                for turn in shadows:
+                    prompt = self.prompt(turn)
+                    scan = json.loads((self.run_dir / 'evidence' /
+                                       f"{turn['sequence']:03d}-shadow.independence-inputs.json").read_text())
+                    self.assertEqual(scan['inputs']['prompt'], {
+                        'content': prompt, 'sha256': hashlib.sha256(prompt.encode()).hexdigest()})
+                    self.assertIn(excerpt, prompt)
+
+    def test_shadow_scans_history_outside_matrix_excerpt(self):
+        co = self.coordinator('--lifecycle-mode', 'off', '--shadow', 'on', '--reviewer-vendor', 'codex')
+        co.state['phase'] = 'EXEC'
+        (co.context / 'plan.md').write_text('# Plan\n' + TOOL_PATH_MATRIX)
+        snapshot, _ = tgo.rc.git_snapshot(self.workspace)
+        parts = co._shadow_prompt_parts(snapshot)
+        self.assertEqual(''.join(parts), co._review_prompt('shadow', snapshot))
+        self.assertIn('/tmp/claude-501/frames/', parts.matrix_excerpt)
+        marker = self.root / 'shadow-mutated'
+        with patch.dict(os.environ, {'FAKE_MUTATION': 'checkout', 'FAKE_MUTATION_ROLE': 'Role: shadow,',
+                                     'FAKE_MUTATION_ONCE': str(marker)}), self.assertRaisesRegex(
+                RuntimeError, 'shadow independence check rejected history in prompt: claude'):
+            co.invoke('shadow', 'EXEC', parts.append('\n\nPrior notes in /tmp/claude-501/frames/'),
+                      tgo.rc.fresh_review_schema(), fresh=True)
+        self.assertFalse(marker.exists())
+        self.assertFalse(co.state['turns'])
+        self.assertFalse(list(co.evidence.glob('*-shadow.independence-inputs.json')))
 
     def test_gate_matrix_excerpt_survives_malformed_verdict_retry(self):
         counter = self.root / 'gate-replies.count'
