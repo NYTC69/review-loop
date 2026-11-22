@@ -108,12 +108,20 @@ class ScenarioMatrixParserTests(unittest.TestCase):
                             ('Repetition/concurrency:', 'Repetition and concurrency'),
                             ('Ordering & state transitions:', 'Ordering and state transitions'),
                             ('Partial failure / recovery:', 'Partial failure and recovery'),
-                            ('Input boundaries (blocking):', 'Input boundaries')):
+                            ('Input boundaries (blocking):', 'Input boundaries'),
+                            ('Input (blocking):', 'Input boundaries')):
             with self.subTest(label=plain):
                 self.assertEqual(scenario_matrix._label_and_content(plain)[0], name)
         for prose in ('Dependency note: none', 'Input note (blocking): none'):
             with self.subTest(prose=prose):
                 self.assertEqual(scenario_matrix._label_and_content(prose)[0], '')
+        # Sol R2: an inline row whose prefix looks like a dimension with a note stays a row of the current dimension.
+        row = 'Compatibility (legacy URLs): DNS is unavailable | Use cached address | test_cached_dns'
+        self.assertEqual(scenario_matrix._label_and_content(row)[0], '')
+        plan = FAKE_SCENARIO_MATRIX.replace('### Dependency failure\nN/A: The helper has no dependencies.\n',
+                                            '### Dependency failure\n' + row + '\n')
+        self.assertNotEqual(plan, FAKE_SCENARIO_MATRIX)
+        self.assertEqual(self.error(plan), '')
 
     def test_real_run_plan_matrices(self):
         # Preserve the matrices and notes from actual runs.

@@ -62,8 +62,10 @@ def _label_and_content(line: str) -> tuple[str, str]:
     matches = [name for name, pattern in DIMENSIONS.items() if re.search(pattern, normalized)]
     if len(matches) == 1:
         name = matches[0]
-        # Unmarked labels and labels before inline rows must be a name or a complete alias.
-        if (marked and '|' not in inline) or _canonical(label) == name.lower() or re.fullmatch(DIMENSIONS[name], normalized):
+        # Unmarked labels and labels before inline rows must be a name or a complete alias; only a label line without an
+        # inline row may spell 'and' as '&' or '/' or end with a '(note)' (Sol R2: an inline row keeps the 8257cbb rule).
+        plain = _canonical(label) if '|' not in inline else normalized
+        if (marked and '|' not in inline) or plain == name.lower() or re.fullmatch(DIMENSIONS[name], plain):
             return name, inline
     return '', line
 
