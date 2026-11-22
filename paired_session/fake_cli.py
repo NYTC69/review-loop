@@ -779,6 +779,9 @@ def main():
                 findings = [{'severity': 'MAJOR', 'file': 'sum_ints.py', 'category': 'correctness', 'reachability': 'every caller',
                              'summary': 'shadow regression' + (f' {raised + 1}' if repeats > 1 else ''),
                              'failure_scenario': 'a caller gets the wrong result'}]
+                if os.environ.get('FAKE_SHADOW_INCLUDE_MINOR'):
+                    findings.append({'severity': 'MINOR', 'file': 'sum_ints.py', 'summary': 'shadow naming',
+                                     'failure_scenario': 'the name hides the intent'})
         confirm = os.environ.get('FAKE_CONFIRM_SHADOW')   # S3 R2 F2: how the reviewer disposes a shadow row it is asked to confirm
         if confirm and role == 'reviewer' and phase == 'EXEC':
             asked = {line[2:].split(':', 1)[0] for line in prompt.splitlines()
@@ -787,6 +790,11 @@ def main():
                      for row in prior]
             revise = revise or (bool(asked) and (confirm == 'still_open' or
                                                 os.environ.get('FAKE_CONFIRM_SHADOW_REVISE')))
+        if (role == 'reviewer' and phase == 'EXEC' and
+                (summary := os.environ.get('FAKE_EXEC_NON_BLOCKING'))):
+            ids = {line[2:].split(':', 1)[0] for line in prompt.splitlines()
+                   if line.startswith('- F') and line.endswith('] ' + summary)}
+            prior = [{**row, 'disposition': 'non_blocking'} if row['id'] in ids else row for row in prior]
         if (log := os.environ.get('FAKE_REVIEW_PROMPT_LOG')) and role == 'reviewer' and phase == 'EXEC':
             with open(log, 'a') as out:   # WI-GATE1: what each EXEC reviewer round was asked to check
                 out.write(json.dumps(prompt) + '\n')

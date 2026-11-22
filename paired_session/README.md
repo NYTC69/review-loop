@@ -694,8 +694,10 @@ wherever the EXEC cap stood (round rule R2); a FAIL item still open after them H
 gate items into a new work item. From the FAIL until a repair review passes, only the open FAIL items and blocking
 regressions introduced by the fix (the reviewer starts their reachability with `regression:`) keep a review from
 passing; other new findings go to the BACKLOG. A shadow blocker in that scope waits for the persistent reviewer, who
-confirms a blocking regression, marks a valid finding outside the fix non-blocking, or withdraws an incorrect
-finding. The confirmation uses the same tree and no author round. The automatic hard cap is
+confirms a blocking regression with `still_open`, marks a valid finding outside the fix as `non_blocking`, or
+withdraws an incorrect finding. Use `non_blocking` only for a row marked "shadow finding to confirm" and use
+`still_open` for other rows that remain open. The coordinator records an inapplicable `non_blocking` as `still_open`
+and prints a NOTE listing the affected IDs. The confirmation uses the same tree and no author round. The automatic hard cap is
 5 EXEC rounds whatever `--max-exec-rounds` says. Explicit extensions, counted rejections and the opt-in advisory fix
 round add their own allowance. Later FINISH and writer re-reviews use the ordinary threshold. R4 asks the owner when
 the same non-gate blocker is marked `still_open` in two consecutive reviews, and recommends a split when two consecutive

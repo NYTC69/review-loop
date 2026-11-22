@@ -10,6 +10,8 @@ one more, then a HOLD that recommends a split (after the gate only the gate item
 hard cap; R4 stop rules (b) a finding still open in two consecutive reviews, (c) new blockers in two consecutive reviews
 after an approval; R5 FINISH, POLISH-Q, DOCS and SECURITY writes, writer replays and a sandbox-only test failure under an
 APPROVE use no round. Each round HOLD names its rule."""
+import contextlib
+import io
 import json
 import os
 from unittest import mock
@@ -409,6 +411,57 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertIn(DONE, result.stdout)
         self.assertFalse(state.get('round_limit_hold'))
         self.assertIn('shadow regression', self.backlog())
+
+    def test_mixed_shadow_non_blocking_dispositions_proceed_after_gate_repair(self):
+        marker = str(self.root / 'gate-failed')
+        env = {'FAKE_GATE_BLOCK_ONCE': marker, 'FAKE_SHADOW_BLOCKER_IF_FILE': marker,
+               'FAKE_SHADOW_INCLUDE_MINOR': '1', 'FAKE_CONFIRM_SHADOW': 'non_blocking',
+               'FAKE_EXEC_NON_BLOCKING': 'shadow naming'}
+        done = self.run_coordinator('--lifecycle-mode', 'off', env=env)
+        self.assertIn(DONE, done.stdout, done.stdout + done.stderr)
+        state = self.state()
+        [major, minor] = [row for row in state['finding_ledger'] if row['source'] == 'fresh-shadow']
+        verdict = state['review_verdicts'][-1]
+        self.assertEqual(verdict['reviewer_raw_verdict'], 'APPROVE')
+        [review] = [turn for turn in state['turns'] if turn['sequence'] == verdict['sequence']]
+        raw = {row['id']: row['disposition'] for row in review['answer']['prior_findings']}
+        self.assertEqual((raw[major['id']], raw[minor['id']]), ('non_blocking', 'non_blocking'))
+        self.assertEqual((major['status'], major['status_history'][-1]['status']), ('open', 'non_blocking'))
+        self.assertTrue(major['post_gate_nonblocking'])
+        self.assertEqual((minor['status'], minor['status_history'][-1]['status']), ('open', 'still_open'))
+        self.assertFalse(rc.blocks_by_severity(minor))
+        self.assertEqual(done.stdout.count(
+            'NOTE: non_blocking recorded as still_open for findings that need no confirmation: ' + minor['id']), 1)
+
+    def test_non_blocking_on_an_ordinary_major_converts_approve_to_revise(self):
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'off', '--shadow', 'off'))
+        co.state.update(phase='EXEC', next='reviewer', exec_rounds=1, sequence=1)
+        finding = {'severity': 'MAJOR', 'file': 'sum_ints.py', 'failure_scenario': 'wrong result', **CORRECT}
+        co.record_findings('persistent-reviewer', 'EXEC', 1, [{**finding, 'summary': 'ordinary blocker'}])
+        co.record_findings('fresh-shadow', 'EXEC', 1, [
+            {**finding, 'summary': 'shadow regression', 'needs_confirmation': True}])
+        major, shadow = co.state['finding_ledger']
+        env = {'FAKE_CONFIRM_SHADOW': 'non_blocking', 'FAKE_EXEC_NON_BLOCKING': 'ordinary blocker'}
+        with mock.patch.dict(os.environ, env):
+            co.reviewer_turn()
+        verdict = co.state['review_verdicts'][-1]
+        self.assertEqual((verdict['reviewer_raw_verdict'], verdict['effective_verdict']), ('APPROVE', 'REVISE'))
+        self.assertEqual(co.state['next'], 'author')
+        self.assertEqual(co.blocking_open_findings(), [major])
+        self.assertEqual(major['status_history'][-1]['status'], 'still_open')
+        self.assertFalse(json.loads(co.state['delivered_review'])['prior_findings'][0]['fixed'])
+        self.assertEqual(co.state['stop_rules']['still_open'], [major['id']])
+
+        # The original answer can be replayed after the ledger has already consumed it.
+        [review] = [turn for turn in co.state['turns'] if turn['sequence'] == verdict['sequence']]
+        history = [list(row['status_history']) for row in (major, shadow)]
+        args = (review['answer']['prior_findings'], verdict['sequence'],
+                [major['id'], shadow['id']], 'persistent-reviewer')
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(co.apply_dispositions(*args, validate_only=True), [])
+            self.assertEqual(co.apply_dispositions(*args), [])
+        self.assertEqual([row['status_history'] for row in (major, shadow)], history)
+        self.assertEqual(stdout.getvalue(), '')
 
     def test_r2f7_r4c_counts_the_shadow_s_new_blockers_too(self):
         co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))

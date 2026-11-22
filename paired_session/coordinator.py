@@ -4107,7 +4107,8 @@ class Coordinator:
         # The coordinator reconciles its test-failure findings from observed evidence.
         normalized = [{**row, 'disposition': 'still_open'} if all_by_id[row['id']].get('source') == 'test-failure'
                       else row for row in applicable]
-        for row in normalized:
+        normalized_non_blocking = set()
+        for index, row in enumerate(normalized):
             finding = all_by_id[row['id']]
             if row['id'] not in expected:
                 raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
@@ -4122,13 +4123,16 @@ class Coordinator:
                 raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
             if (row['disposition'] == 'non_blocking' and
                     (owner_role != 'persistent-reviewer' or not (finding.get('needs_confirmation') or replayed))):
-                raise RuntimeError('non_blocking disposition requires a shadow finding to confirm')
+                normalized[index] = applicable[index] = {**row, 'disposition': 'still_open'}
+                normalized_non_blocking.add(row['id'])
         if validate_only:
             return []
-        if ignored:
+        if ignored or normalized_non_blocking:
             dispositions[:] = applicable
+        if ignored:
             print('NOTE: ignored dispositions for closed findings: ' + ', '.join(sorted(ignored)))
         changed = False
+        noted = []
         for row in normalized:
             finding = all_by_id[row['id']]
             disposition = row['disposition']
@@ -4138,6 +4142,8 @@ class Coordinator:
                 continue
             finding['status_history'].append({'round': origin_round, 'status': disposition,
                                               'evidence': row['evidence']})
+            if row['id'] in normalized_non_blocking:
+                noted.append(row['id'])
             if owner_role == 'persistent-reviewer' and finding.pop('needs_confirmation', None):
                 if disposition == 'still_open':
                     finding['confirmed_regression'] = origin_round
@@ -4149,6 +4155,9 @@ class Coordinator:
             changed = True
         if changed:
             self.write_ledger()
+        if noted:
+            print('NOTE: non_blocking recorded as still_open for findings that need no confirmation: ' +
+                  ', '.join(sorted(noted)))
         return []
 
     _progress_seq_n, _progress_label, _progress_warned = None, None, False
@@ -5599,12 +5608,15 @@ class Coordinator:
                             '; non-blocking' if not blocks_by_severity(finding) and finding.get('category') else '')
                          + f"] {finding['summary']}" for finding in findings)
         dispositions = 'fixed, still_open, or withdrawn'
+        shadow_guidance = ''
         if any(finding.get('needs_confirmation') for finding in findings):
-            dispositions = 'fixed, still_open, withdrawn, or non_blocking for a shadow finding to confirm'
+            dispositions = 'fixed, still_open, withdrawn, or non_blocking'
+            shadow_guidance = ('Use non_blocking only for rows marked "shadow finding to confirm". '
+                               'For other rows that remain open, use still_open.\n')
         return (notice + 'Open finding ledger (return exactly one prior_findings disposition for EVERY id: '
                 + dispositions + ', with evidence):\n' + rows + '\n'
                 'Never report a listed finding again as a new one; its disposition above is its report.\n'
-                + LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
+                + shadow_guidance + LEDGER_DISPOSITION_GUIDANCE + '\n' + owned + APPROVE_CONVERSION_NOTE)
 
     def _guidance_texts(self) -> list[str]:
         config = (getattr(self, 'state', None) or {}).get('config') or {}
