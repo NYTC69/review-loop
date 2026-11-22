@@ -40,6 +40,17 @@ class OperatorNoteTests(unittest.TestCase):
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         self.assertIn(line, result.stdout, result.stdout + result.stderr)
 
+    def test_ruling_question_falls_back_to_an_open_blocker(self):
+        """Gate R2 (AC1): a ruling about an existing blocker names it in the HOLD and in the cap/stop-rule NOTE."""
+        prefix = 'NOTE: the reviewer also requests an operator ruling'
+        open_row = {'id': 'F003', 'summary': QUESTION}
+        stub = type('Stub', (), {'blocking_open_findings': lambda self: [open_row, {'summary': 'later'}]})()
+        self.assertEqual(rc.Coordinator._ruling_question(stub, prefix, []), RULING_NOTE)
+        self.assertEqual(rc.Coordinator._ruling_question(stub, prefix, [{'summary': 'new question'}]),
+                         prefix + ': new question')
+        empty = type('Stub', (), {'blocking_open_findings': lambda self: []})()
+        self.assertEqual(rc.Coordinator._ruling_question(empty, prefix, []), prefix + ': see the review receipt')
+
     def test_reviewer_ruling_window(self):
         with self.harness() as h:
             latest = 'Reject bool explicitly before the integer check. The previous review raised this question.'
