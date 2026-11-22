@@ -1,6 +1,6 @@
 # Changelog
 
-### Unreleased (WI-FASTPLAN)
+### v3.15.0：run --fast-plan 让小改动跳过 PLAN 评审；PLAN 历史检查与门审一致；说明文字不再切换矩阵维度（WI-FASTPLAN）
 
 - 交付运行可用 `run --fast-plan` 显式启用小改动快速计划。工作项列出 1–3 项无通配符的待改文件和至少一项验收标准时，首份草稿若通过矩阵和适用的历史检查，直接进入 EXEC，PLAN 评审计数为零。检查未通过则交给常规 PLAN 评审。该选项在创建运行时冻结，仅审查入口拒绝此选项。
 - `status` 在 stderr 显示跳过或回退的原因，stdout 保持状态 JSON。`--stop-after-plan` 仍只暂停一次，已保存的作者回执可在恢复时继续交接。EXEC 评审、已配置的独立 shadow、门审和矩阵审计按原流程执行。
