@@ -361,8 +361,14 @@ Agent result's usage, and an earlier subagent request keeps its start-snapshot
 output (no other source exists). This needs a Claude Code that supports
 `--forward-subagent-text` (verified on 2.1.303); an older CLI fails that author
 turn with an unknown-option error.
-`run --stop-after-plan` HOLDs once after PLAN approval, with `RUN_DIR/plan.md`;
+`run --stop-after-plan` HOLDs once after PLAN approval or a successful fast plan, with `RUN_DIR/plan.md`;
 a later `resume` enters EXEC. `--review-only` refuses `--stop-after-plan`.
+
+`run --fast-plan` opts a small delivery into first-draft validation. With one to three
+literal file items and at least one acceptance criterion in the work item, a valid
+draft with a clean applicable history scan enters EXEC directly. Other drafts go to
+ordinary PLAN review. The CLI freezes the flag at creation and refuses it on
+review-only routes. `status` shows the decision and reason on stderr.
 
 `run --review-only` reviews the existing workspace change against `--base REF`
 (default HEAD, an ancestor of HEAD), skips PLAN and may dispatch author fixes.

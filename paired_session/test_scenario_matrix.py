@@ -94,9 +94,43 @@ class ScenarioMatrixParserTests(unittest.TestCase):
             '| Scenario | Expected behavior | Test ID |\n| --- | --- | --- |')
         self.assertIn('Input boundaries', self.error(plan))
 
+    def test_prose_does_not_switch_dimension(self):
+        for prose in ('Dependency note: none', '- Dependency note: none'):
+            with self.subTest(prose=prose):
+                plan = FAKE_SCENARIO_MATRIX.replace('- ' + ROW, prose + '\n- ' + ROW)
+                self.assertEqual(self.error(plan), '')
+                without_dependency = plan.replace('### Dependency failure\nN/A: The helper has no dependencies.\n', '')
+                self.assertEqual(self.error(without_dependency), 'missing rows or N/A: <reason> for Dependency failure')
+
     def test_real_run_plan_matrices(self):
-        # Preserve the matrix and its notes from each rejected plan.
+        # Preserve the matrices and notes from actual runs.
         plans = (
+            ('realrun-resume/run2/context/plan.md', """## Scenario matrix
+Format: label line per dimension; rows are `scenario | expected behavior | test id`. Only blocking-class rows (correctness, data loss) carry a test id. Non-blocking items are listed under BACKLOG below the matrix.
+
+Input boundaries:
+- empty list raises ValueError | raises ValueError, no result returned | test_median_empty_raises
+- single value returns that value | returns the element unchanged | test_median_single_value
+- even count, int pair, even sum, values above 2**53 | exact int `10**20 + 1` | test_median_large_int_exact
+- even count, int pair, even sum, small values | result type int | test_median_int_result_type
+- even count, int pair, odd sum | float 1.5 (exactness not required) | test_median_odd_int_sum_returns_float
+
+Dependency failure: N/A: pure function with no external calls, I/O, or timeouts.
+
+Repetition and concurrency: N/A: stateless function with no shared state; repeated calls are covered by the non-mutation row below.
+
+Ordering and state transitions:
+- unsorted input gives the same result as sorted input | returns the median of the sorted order | test_median_unsorted_input
+- caller's list is not reordered or mutated | list equals its pre-call contents | test_median_does_not_modify_input
+
+Partial failure and recovery: N/A: no side effects or multi-step writes; an exception leaves no partial state.
+
+Permissions and identity: N/A: no access control, identity, or ownership involved.
+
+Compatibility:
+- existing `mean` behavior unchanged | mean([1, 2, 3]) == 2 | test_mean
+- module gains one public name; `from stats import mean` still works | import succeeds, existing test passes | test_mean
+"""),
             ('realrun2-plan-01.md', """## Scenario matrix
 1. **Input boundaries**
    - Empty list raises ValueError | `ValueError` raised, no other output | test_median_empty_raises (blocking: acceptance criterion 2)

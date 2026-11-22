@@ -836,7 +836,7 @@
       "id": "pse_plan_only_maps_to_stop_after_plan",
       "kind": "contains",
       "path": "docs/protocol/paired-session-entry.md",
-      "needle": "add `--stop-after-plan` only to `run`;\nthe run HOLDs after PLAN approval"
+      "needle": "add `--stop-after-plan` only to `run`. The run HOLDs after PLAN approval or a successful fast plan."
     },
     {
       "id": "review_loop_review_only_hands_over_auto_commit_false",

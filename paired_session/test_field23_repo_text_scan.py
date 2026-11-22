@@ -204,7 +204,7 @@ class RepoTextScanTests(unittest.TestCase):
         self.write('a.md', 'Works with Claude and Codex.\nClaude and Codex both work.\n')   # the bare name is base text
         self.scan(co)
         (co.context / 'plan.md').write_text('# Plan\nKeep `Codex approved` as is.\n')
-        self.assert_holds(co, 'Codex')   # (PLAN approval checks no vendor wording; the shadow/gate does, as before)
+        self.assert_holds(co, 'Codex')   # PLAN approval uses the same plan scan when a fresh role will scan.
 
     def test_the_base_text_must_be_the_same_whole_word(self):   # gate R2
         cases = (('approved.txt', 'The change was approved.\n', 'Verdict: APPROVE\n', 'APPROVE'),

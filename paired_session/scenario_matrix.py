@@ -17,13 +17,15 @@ def prompt_checklist() -> str:
     """A compact checklist for role prompts (one line per dimension); the full rules stay in CHECKLIST."""
     lines = [line.strip() for line in CHECKLIST.read_text(encoding='utf-8').splitlines() if re.match(r'^\d+\. \*\*', line.strip())]
     return '\n'.join([f'Scenario matrix checklist (full rules: {CHECKLIST}):', *lines,
-                      'Use one label line per dimension, followed by scenario | expected behavior | test id rows, '
+                      'Use one label line per dimension. For plain or bulleted labels, use the dimension names above. '
+                      'Follow each label with scenario | expected behavior | test id rows, '
                       'or put N/A: <reason> on the label line or the next line.',
                       'Only blocking-class scenarios (correctness, data loss, security, money) need a row with a test; '
                       'others are BACKLOG notes; N/A needs a one-line reason; a trivial change writes only "Trivial: <reason>".'])
 
 
 BULLET = re.compile(r'^(?:[-+*]|\d+[.)])\s+')
+MARKED_LABEL = re.compile(r'^(?:#{1,6}\s+|\d+[.)]\s+|\*\*|__)')
 NA_PREFIX = re.compile(r'N/A\s*(?::|$)', re.I)
 NA = re.compile(r'N/A\s*:\s*\S.*', re.I)
 
@@ -37,6 +39,9 @@ def section(plan: str) -> str:
 
 
 def _label_and_content(line: str) -> tuple[str, str]:
+    content = BULLET.sub('', line)
+    marked = MARKED_LABEL.match(line) or MARKED_LABEL.match(content)
+    line = content
     if NA_PREFIX.match(line):
         return '', line
     label = BULLET.sub('', re.sub(r'^#{1,6}\s+', '', line))
@@ -50,8 +55,8 @@ def _label_and_content(line: str) -> tuple[str, str]:
     matches = [name for name, pattern in DIMENSIONS.items() if re.search(pattern, normalized)]
     if len(matches) == 1:
         name = matches[0]
-        # Require a name or alias before an inline row so ordinary row prose stays under its label.
-        if '|' not in inline or normalized == name.lower() or re.fullmatch(DIMENSIONS[name], normalized):
+        # Unmarked labels and labels before inline rows must be a name or a complete alias.
+        if (marked and '|' not in inline) or normalized == name.lower() or re.fullmatch(DIMENSIONS[name], normalized):
             return name, inline
     return '', line
 
@@ -60,9 +65,10 @@ def validation_error(matrix: str) -> str:
     """Check that the matrix has content for every dimension or a trivial reason."""
     if not matrix:
         return f'missing the {HEADING} section'
-    lines = [BULLET.sub('', line.strip()) for line in matrix.splitlines()[1:] if line.strip()]
-    if lines and re.match(r'^Trivial\s*:', lines[0], re.I):
-        if lines[0].split(':', 1)[1].strip():
+    lines = [line.strip() for line in matrix.splitlines()[1:] if line.strip()]
+    first = BULLET.sub('', lines[0]) if lines else ''
+    if re.match(r'^Trivial\s*:', first, re.I):
+        if first.split(':', 1)[1].strip():
             return ''
         return 'use Trivial: <reason> for a trivial work item'
 
