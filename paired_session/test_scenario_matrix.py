@@ -109,7 +109,10 @@ class ScenarioMatrixParserTests(unittest.TestCase):
                             ('Ordering & state transitions:', 'Ordering and state transitions'),
                             ('Partial failure / recovery:', 'Partial failure and recovery'),
                             ('Input boundaries (blocking):', 'Input boundaries'),
-                            ('Input (blocking):', 'Input boundaries')):
+                            ('Input (blocking):', 'Input boundaries'),
+                            ('State/transitions:', 'Ordering and state transitions'),   # Sol R3
+                            ('Input/boundaries:', 'Input boundaries'),
+                            ('Dependency/failure:', 'Dependency failure')):
             with self.subTest(label=plain):
                 self.assertEqual(scenario_matrix._label_and_content(plain)[0], name)
         for prose in ('Dependency note: none', 'Input note (blocking): none'):
