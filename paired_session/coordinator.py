@@ -3266,6 +3266,8 @@ class Coordinator:
         if getattr(self.args, 'auto_commit_source', None): config['auto_commit_source'] = self.args.auto_commit_source   # as F2
         if getattr(self.args, 'review_report', None):   # LG2-a1, as F2
             config.update(review_report=True, review_aspects=list(self.args.review_aspects))   # LG2-b1
+        if getattr(self.args, 'fast_plan', False):
+            config['fast_plan'] = True
         gate_prompt = Path(self.args.gate_prompt).expanduser()
         if not gate_prompt.is_absolute():
             gate_prompt = self.workspace / gate_prompt
@@ -5434,6 +5436,8 @@ class Coordinator:
                     else 'Revise the plan to address the reviewer findings below. Return the complete replacement plan as body.')
             if self.args.exercise_revisions and first:
                 task += ' Exercise rule: omit a Verification section on this first draft only.'
+            if first and self.state['config'].get('fast_plan'):
+                task += ' Carry forward the declared files to change and acceptance criteria from the work item.'
             if (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':   # FIELD-11b
                 task = ('Rewrite-only turn: return the approved plan as body with all review history removed (finding ids, '
                         'references to earlier reviews, response-to-reviewer narrative). Do not change the scope, the steps, or '
@@ -5767,6 +5771,8 @@ class Coordinator:
         template = Path(self.args.gate_prompt).read_text(encoding='utf-8')
         filled = template.replace('${REVIEW_TARGET_DESC}', str(self.context / 'workitem.md')).replace(
             '${FOCUS_TEXT}', ('Review scope (review-only entry; no plan was approved): ' if self.state.get('review_only')
+                              else 'Plan (PLAN review skipped: small work item): '
+                              if self.state.get('fast_plan', {}).get('outcome') == 'skipped'
                               else 'Approved plan: ') + str(self.context / 'plan.md') +
             '\nAudit the complete current git delta in ' + str(self.workspace))
         excerpt = ''
@@ -6333,15 +6339,26 @@ class Coordinator:
         try: return out.decode('utf-8')
         except UnicodeDecodeError: return None
 
+    def _fresh_role_will_scan(self) -> bool:
+        return self.args.shadow == 'on' or (self.args.adversarial_gate == 'on' and not self.state.get('gate_ran'))
+
     def _plan_history_issue(self, texts: Optional[dict] = None, base: Optional[str] = None) -> Optional[str]:
         """FIELD-11: what the fresh shadow/gate scan rejects in the work item or plan, found at PLAN approval (or, for a
         review-only run, which has no PLAN approval, on the texts it is about to write)."""
         for label, path in (('work item', self.context / 'workitem.md'), ('plan', self.context / 'plan.md')):
-            text = texts[label] if texts else path.read_text(encoding='utf-8') if path.is_file() else ''
-            text = self._fresh_history_text('context/' + path.name, text, base)   # FIELD-23: as the gate scan
+            raw_text = texts[label] if texts else path.read_text(encoding='utf-8') if path.is_file() else ''
+            name = 'context/' + path.name
+            text = self._fresh_history_text(name, raw_text, base)   # FIELD-23: as the gate scan
             if ids := sorted(set(LEDGER_ID_RE.findall(text))):
                 return f'{label}: ledger-id-shaped tokens ' + ', '.join(ids)
-            if match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):   # as the gate scan
+            if label == 'plan' and texts is None:
+                matches = self._introduced_history_matches('context/plan.md', raw_text, base)
+                if matches:
+                    marker, whole = matches[0]
+                    if marker != whole or self._bare_name_re().fullmatch(marker):
+                        return f'plan: tool-named directory or attribution marker {whole!r}'
+                    return f'plan: review-history wording {marker!r}'
+            elif match := FRESH_HISTORY_RE.search(text) or re.search(r'\b(?:APPROVE|REVISE|needs-attention)\b', text):
                 return f'{label}: review-history wording {match.group(0)!r}'
         return None
 
@@ -6468,6 +6485,13 @@ class Coordinator:
             args.review_only, args.review_base = False, None
         if saved is None and getattr(args, 'advisory_fix_round', False) and not args.review_only:
             raise ValueError(ADVISORY_FIX_ROUND_REFUSAL)
+        fast_plan = getattr(args, 'fast_plan', False)
+        if args.review_only and fast_plan:
+            raise ValueError('--review-only has no PLAN phase; --fast-plan does not apply')
+        if saved is not None:
+            if fast_plan and not saved.get('fast_plan'):
+                raise ValueError('resume configuration differs: fast_plan (fixed when the run was created)')
+            args.fast_plan = saved.get('fast_plan', False)
         args.auto_commit_source = (saved or {}).get('auto_commit_source')   # FIELD-25 gate: frozen with the value
         if getattr(args, 'auto_commit', None) is None:   # owner 2026-10-06: a review-only W run commits by default; an
             args.auto_commit = (bool(saved.get('auto_commit')) if saved is not None else   # explicit value (CLI, profile) wins
@@ -7660,6 +7684,8 @@ class Coordinator:
             self.state.pop('pending_operator_note_id', None)
             if phase in ('PLAN', 'EXEC'):   # a lifecycle writer keeps its own stage flow
                 self.state['pending_author_result_sequence'] = seq   # WI-GATE1: reviewed again, never re-gated
+        if role == 'author' and phase == 'PLAN' and answer['status'] == 'READY' and self._fast_plan_draft(0):
+            self.state['pending_author_result_sequence'] = seq
         self.save()
         return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role,
                 'open_finding_ids': receipt.get('open_finding_ids', [])}
@@ -7670,6 +7696,36 @@ class Coordinator:
         path = self.rounds / f"{result['sequence']:02d}-{actor}-{status}.md"
         evidence_file = f"{result['sequence']:03d}-{phase.lower()}-{result.get('role', actor)}.receipt.json"
         atomic_text(path, render_markdown(actor, phase, payload, result['snapshot'], evidence_file))
+
+    def _fast_plan_draft(self, rounds: int) -> bool:
+        return (self.state['config'].get('fast_plan', False) and self.state['plan_rounds'] == rounds
+                and self.state['plan_reviews'] == 0 and not self.state.get('plan_history_rewrite'))
+
+    def _fast_plan_issue(self, draft: str) -> Optional[str]:
+        workitem = (self.context / 'workitem.md').read_text(encoding='utf-8')
+
+        def items(heading):
+            section = re.search(rf'^ {{0,3}}##[ \t]+{heading}(?:[ \t]+#+)?[ \t]*$', workitem, re.I | re.M)
+            if not section:
+                return []
+            body = re.split(r'^ {0,3}#{1,2}[ \t]+', workitem[section.end():], maxsplit=1, flags=re.M)[0]
+            return re.findall(r'^[ \t]*(?:[-+*]|\d+[.)])[ \t]+(\S[^\r\n]*)', body, re.M)
+
+        files = items('Files to change')
+        if not 1 <= len(files) <= 3 or any(char in item for item in files for char in '*?['):
+            return 'Files to change must list 1–3 items without glob characters'
+        if not items('Acceptance criteria'):
+            return 'Acceptance criteria must list at least one item'
+        return (scenario_matrix.validation_error(scenario_matrix.section(draft))
+                or (self._plan_history_issue() if self._fresh_role_will_scan() else None))
+
+    def _enter_exec_from_plan(self) -> bool:
+        self.state.update(phase='EXEC', next='author', review_findings=[])
+        if self.args.stop_after_plan and not self.state.get('plan_stop_done'):
+            self.state.update(plan_stop_done=True, pending_reviewer_result_sequence=None)
+            self.hold(PLAN_STOP_REASON)
+            return True
+        return False
 
     def author_turn(self) -> None:
         if self.state.get('acceptance_state') == 'PENDING': self.state['acceptance_state'] = 'IN_PROGRESS'
@@ -7714,6 +7770,12 @@ class Coordinator:
         # R1/R2 F5: a rejection repair is the persistent EXEC reviewer's (with the rejection notes) until it approves
         self.state['next'] = 'reviewer' if self.state.get('rejection_repair') else self._post_author_next()
         self.state.pop('pending_author_result_sequence', None)
+        if phase == 'PLAN' and self._fast_plan_draft(1):
+            issue = self._fast_plan_issue(answer['body'])
+            self.state['fast_plan'] = {'outcome': 'fallback' if issue else 'skipped',
+                                       'reason': issue or 'small work item with a valid first draft'}
+            if not issue and self._enter_exec_from_plan():
+                return
         self.save()
 
     def _save_approval_manifest(self, kind: str) -> dict:
@@ -9765,8 +9827,7 @@ class Coordinator:
             for receipt in self.state.get('turns', []):
                 if receipt.get('sequence') == result['sequence']: receipt['approve_refusal'] = refusal
         plan_history = (self._plan_history_issue() if phase == 'PLAN' and answer['status'] == 'APPROVE'
-                        and (self.args.shadow == 'on' or (self.args.adversarial_gate == 'on' and not self.state.get('gate_ran')))
-                        else None)   # only when a fresh role (the shadow, or the gate that has not run yet) will scan
+                        and self._fresh_role_will_scan() else None)
         if plan_history:   # FIELD-11: the fresh shadow/gate would refuse this plan after EXEC; refuse the approval now, recorded like RF-5
             refusal = 'PLAN APPROVE rejected: ' + plan_history
             self.state.setdefault('approve_refusals', []).append({'sequence': result['sequence'], 'phase': phase, 'reason': refusal})
@@ -9886,6 +9947,9 @@ class Coordinator:
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold(reason)
                 return
+            restate = 'Return the same plan with every finding id and every reference to earlier reviews removed.'
+            if plan_history.startswith('plan: tool-named directory or attribution marker '):
+                restate += f" Reword the detected {plan_history.removeprefix('plan: ')}."
             if last_round:   # FIELD-11b (owner 2026-10-04): one extra rewrite-only author turn, outside the PLAN round cap
                 self.state['plan_history_rewrite'] = {
                     'status': 'requested', 'requested_sequence': result['sequence'], 'history': plan_history,
@@ -9893,8 +9957,8 @@ class Coordinator:
                 self.progress('plan_rewrite', status='requested', history=plan_history[:120])
                 self.state['delivered_review'] = (
                     f'Rewrite-only turn. The coordinator accepted the plan in substance in the last PLAN round, including any advisory findings left open, but it carries review history '
-                    f'({plan_history}), which the independent shadow and gate refuse. Return the same plan with every finding id '
-                    'and every reference to earlier reviews removed. Do not change the scope, the steps, or the verification; '
+                    f'({plan_history}), which the independent shadow and gate refuse. {restate} '
+                    'Do not change the scope, the steps, or the verification; '
                     'change nothing else. This turn does not count as a PLAN round. The plan is reviewed again; if it still '
                     'carries review history or differs in substance, the run holds.')
             else:
@@ -9903,8 +9967,7 @@ class Coordinator:
                             if advisory_exit else 'The reviewer approved the plan')
                 self.state['delivered_review'] = (
                     f'{approved}, but it carries review history ({plan_history}). The independent shadow '
-                    'and gate refuse a plan that carries review history. Return the same plan with every finding id and every '
-                    'reference to earlier reviews removed; change nothing else.')
+                    f'and gate refuse a plan that carries review history. {restate} Change nothing else.')
             self.state['next'] = 'author'
         elif phase == 'PLAN':
             if rewrite and rewrite.get('status') == 'written':
@@ -9913,13 +9976,7 @@ class Coordinator:
             advisory = self.nonblocking_open_findings()
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')
-            self.state['phase'] = 'EXEC'
-            self.state['next'] = 'author'
-            self.state['review_findings'] = []
-            if self.args.stop_after_plan and not self.state.get('plan_stop_done'):
-                self.state['plan_stop_done'] = True
-                self.state['pending_reviewer_result_sequence'] = None
-                self.hold(PLAN_STOP_REASON)
+            if self._enter_exec_from_plan():
                 return
         elif answer['reviewed_snapshot'] != git_snapshot(self.workspace)[0]:
             self.state['pending_reviewer_result_sequence'] = None
@@ -10862,6 +10919,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--exercise-revisions', action='store_true')
     p.add_argument('--stop-after-plan', action='store_true',
                    help='HOLD once right after PLAN approval; a later resume enters EXEC')
+    p.add_argument('--fast-plan', action='store_true',
+                   help='run only: skip PLAN review for an eligible small delivery with a valid first draft')
     p.add_argument('--review-only', action='store_true', default=None,
                    help='review the existing change (the workspace tree against --base) with no PLAN phase; fixed at run creation')
     p.add_argument('--review-report', action='store_true', default=None,
@@ -11346,6 +11405,8 @@ def _execute_locked(args: argparse.Namespace) -> int:
         except ValueError: state = {}
         if summary := pending_note_summary(state):
             print(summary, file=sys.stderr)
+        if isinstance(state, dict) and (decision := state.get('fast_plan')):
+            print(f"Fast PLAN: {decision['outcome']} ({decision['reason']})", file=sys.stderr)
         return 0
     if args.lifecycle_mode is None and not (Path(args.run_dir) / 'state.json').exists():
         args.lifecycle_mode = 'on'   # V3-B5 (ADR-17 V1): the CLI default for a new run; a saved run keeps its mode
@@ -11467,6 +11528,8 @@ def main(argv=None) -> int:
         raw_argv = fill_from_run(raw_argv, known.action, known.run_dir)   # WI-ROR: `stop --run-dir RUN` on its own
         args = configure_parser(cli_parser, raw_argv).parse_args(raw_argv)
         refuse_removed_options(args)
+        if args.fast_plan and args.action != 'run':
+            raise ValueError('--fast-plan is only for run')
     except ValueError as exc:
         print('REFUSED: ' + str(exc))
         return 2

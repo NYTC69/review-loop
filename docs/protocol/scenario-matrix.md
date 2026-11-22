@@ -5,6 +5,13 @@ Use a subsection or a label for each dimension. One dimension can have several
 rows. Write each row as `scenario | expected behavior | test id`, in a Markdown
 table or a bullet. Use `N/A: <one-line reason>` for an inapplicable dimension.
 
+Use the full dimension name or a complete alias for a plain or bulleted label
+(for example, `Dependency failure:` or `Dependencies:`). A heading, bold label,
+or numbered label can also use a longer phrase containing the name or alias.
+When a row starts on the label line, use the full name or a complete alias
+regardless of markup. Prose such as `Dependency note: none` leaves the current
+dimension in effect.
+
 1. **Input boundaries** — limits, empty values, and invalid inputs.
 2. **Dependency failure** — errors, timeouts, and unavailable dependencies.
 3. **Repetition and concurrency** — retries, duplicates, and simultaneous operations.
@@ -20,8 +27,10 @@ notes. Most dimensions may be N/A for a small change. For a trivial change
 section. Domain-specific extensions are future BACKLOG work.
 
 PLAN review checks that all dimensions are addressed and all blocking-class
-scenarios are covered. Each EXEC review and the fresh shadow check that the
-implementation handles every row and that its named test exists and passes.
+scenarios are covered. On a successful `run --fast-plan` handoff, the coordinator
+validates the first draft's matrix structure before entering EXEC. Each EXEC
+review and the fresh shadow check that the implementation handles every row and
+that its named test exists and passes.
 
 The gate makes one verdict and audits coverage and gaps. An unmet acceptance
 criterion or a blocking-class defect is grounds for FAIL, including defects

@@ -70,6 +70,42 @@ class PlanLedgerIdTests(unittest.TestCase):
         self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
         self.assertIn("review-history wording 'previous review'", co.state['delivered_review'])
 
+    def test_plan_history_matches_gate(self):
+        rejected = (
+            ('/tmp/claude-501/codex-review/notes.md', 'codex'),
+            ('.codex/agents/*.toml', 'codex'),
+            ('.claude/memory', 'claude'),
+            ('~/.codex/sessions/', 'codex'),
+            ('Codex approved these steps', 'Codex approved'),
+        )
+        permitted = ('agents/executor.md, .agents/skills/…, .codex-plugin/plugin.json, '
+                     '.claude-plugin/marketplace.json, paired_session/codex_cli.py and Codex and Claude hosts. '
+                     'Use /tmp/claude-501/frames/ for scratch data.')
+        for index, (text, marker) in enumerate((*rejected, (permitted, ''))):
+            with self.subTest(text=text):
+                self.h.run_dir = self.h.root / f'parity-{index}'
+                plan = PLAN_CLEAN + f'\n## Details\n{text}\n'
+                co = self.coordinator('--shadow', 'off', plan=plan)
+                if marker:
+                    with self.assertRaisesRegex(RuntimeError, 'gate independence check rejected history in context/plan.md: ' + marker.split()[0]):
+                        co.assert_fresh_prompt('gate', 'Review the delta.')
+                    self.approve(co)
+                    self.assertEqual((co.state['phase'], co.state['next']), ('PLAN', 'author'))
+                    self.assertRegex(co.state['delivered_review'],
+                                     rf"Reword the detected tool-named directory or attribution marker '[^']*{marker}")
+                else:
+                    co.assert_fresh_prompt('gate', 'Review the delta.')
+                    self.approve(co)
+                    self.assertEqual((co.state['phase'], co.state['next']), ('EXEC', 'author'))
+
+    def test_the_rewrite_only_turn_names_the_attribution(self):
+        co = self.coordinator(plan=PLAN_CLEAN + '\nCodex approved these steps.\n')
+        co.state['plan_rounds'] = co.args.max_plan_rounds
+        self.approve(co)
+        self.assertEqual(co.state['plan_history_rewrite']['status'], 'requested')
+        self.assertIn("Reword the detected tool-named directory or attribution marker 'Codex approved'.",
+                      co._author_prompt())
+
     def test_without_a_plan_round_left_it_gets_one_rewrite_only_turn_not_a_hold(self):   # FIELD-11b (owner 2026-10-04) replaced the HOLD
         co = self.coordinator(plan=PLAN_WITH_IDS)
         co.state['plan_rounds'] = co.args.max_plan_rounds

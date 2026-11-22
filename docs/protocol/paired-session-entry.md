@@ -305,11 +305,22 @@ run without the Claude Code Bash sandbox, which native Windows lacks). The first
 `run` ends before `RUN_DIR/state.json` exists, report its output verbatim as a refusal (a host setup step's stage A
 exit stays a stage A failure).
 
-Add the same `--config` and mapped one-run options to every call. Plan only (the Claude skill's
-`--plan-only`, or a request on either host to stop after the plan): add `--stop-after-plan` only to `run`;
-the run HOLDs after PLAN approval (`PLAN approved; stopped by
---stop-after-plan; resume enters EXEC`) with the approved plan in `RUN_DIR/plan.md`: show it, and `resume`
-only on the user's request. Every command that can
+Add the same `--config` and mapped options to every call except flags scoped to `run`. For plan-only
+work (the Claude skill's `--plan-only`, or a request on either host to stop after the plan),
+add `--stop-after-plan` only to `run`. The run HOLDs after PLAN approval or a successful fast plan.
+Show `RUN_DIR/plan.md` and `resume` only on the user's request.
+
+When the user opts in for a small delivery, pass `--fast-plan` only to `run`. The CLI freezes the
+opt-in at run creation. The work item needs one to three nonempty list items without `*`, `?`,
+or `[` under `## Files to change`, and at least one nonempty list item under `## Acceptance criteria`.
+The PLAN author carries those declarations into a draft with a scenario matrix. The coordinator
+enters EXEC directly if the first draft passes matrix validation and the history scan required by
+a configured fresh shadow or pending gate. Otherwise it sends the draft to ordinary PLAN review.
+EXEC review, the configured shadow, the gate and its matrix audit, and the selected lifecycle still run.
+`status` shows the outcome and reason on stderr and returns state JSON on stdout. Review-only,
+report, and code-quality routes refuse `--fast-plan`.
+
+Every command that can
 dispatch model turns (`run`, `resume`, `reject --expect`)
 uses the host skill's long-command form. Wait for each such command to finish
 before starting the next; do not start a second run while one is active.
