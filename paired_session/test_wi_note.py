@@ -155,6 +155,32 @@ class OperatorNoteTests(unittest.TestCase):
                     self.assert_result(h.run_operator_action('resume', *flags, '--add-rounds', '1', env=env), 0, twl.DONE)
                 self.assertEqual(self.state(h)['turns'][len(state['turns'])]['role'], 'author')
 
+    def test_note_is_delivered_once_then_carried_as_a_later_exec_author_decision(self):
+        with self.harness() as h:
+            note = 'Reject bool explicitly before the integer check.'
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling'), 'FAKE_GATE_BLOCK': '1'}
+            self.assert_result(h.run_coordinator(*WITH_GATE, env=env), 2,
+                               'HOLD: reviewer requests an operator ruling: ' + QUESTION)
+            before = self.state(h)
+            self.assert_result(h.run_operator_action('note', *WITH_GATE, '--text', note), 0, 'N001 queued')
+            self.assert_result(h.run_operator_action('resume', *WITH_GATE, env=env), 0, twl.DONE)
+
+            turns = self.state(h)['turns'][len(before['turns']):]
+            [delivery, repair] = [turn for turn in turns if (turn['role'], turn['phase']) == ('author', 'EXEC')]
+            self.assertEqual(delivery['operator_note_id'], 'N001')
+            prompt = self.prompt(h, delivery)
+            self.assertIn('## Operator in-scope clarification [N001]', prompt)
+            self.assertEqual(prompt.count(note), 1)
+            self.assertNotIn('## Operator decisions', prompt)
+            [gate] = [turn for turn in turns if turn['role'] == 'gate']
+            self.assertEqual(gate['answer']['verdict'], 'FAIL')
+            self.assertLess(delivery['sequence'], gate['sequence'])
+            self.assertLess(gate['sequence'], repair['sequence'])
+            self.assertNotIn('operator_note_id', repair)
+            self.assertIn('## Operator decisions\n'
+                          'Implement and document these in-scope decisions as decided; do not reopen them.\n'
+                          '- ' + note, self.prompt(h, repair))
+
     def test_delivered_ruling_reaches_lifecycle_writers(self):
         with self.harness(lifecycle=True) as h:
             (h.workspace / 'test_feature.py').write_text(

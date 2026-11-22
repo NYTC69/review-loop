@@ -176,6 +176,28 @@ class GeminiAuthorRunTests(unittest.TestCase):
         self.assertEqual({(t['role'], t['vendor']) for t in state['turns']},
                          {('author', 'gemini'), ('reviewer', 'claude'), ('shadow', 'claude'), ('gate', 'gemini')})
 
+    def test_gemini_author_repairs_the_default_gemini_gates_failure(self):
+        done = self.run_coordinator(*GEMINI_AUTHOR, '--gemini-bin', str(self.fake_gemini_cli()),
+                                    '--lifecycle-mode', 'off', '--shadow', 'off', env={'FAKE_GATE_BLOCK': '1'})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        state = self.state()
+        self.assertEqual(state['status'], 'DONE')
+        self.assertEqual((state['config']['gate_vendor'], state['config']['gate_vendor_source']), ('gemini', 'default'))
+        [gate] = [turn for turn in state['turns'] if turn['role'] == 'gate']
+        self.assertEqual((gate['vendor'], gate['phase'], gate['answer']['verdict']), ('gemini', 'EXEC', 'FAIL'))
+        self.assertEqual({turn['vendor'] for turn in state['turns'] if turn['role'] == 'author'}, {'gemini'})
+        [repair, review] = [turn for turn in state['turns'] if turn['sequence'] > gate['sequence']]
+        self.assertEqual([(turn['role'], turn['phase'], turn['answer']['status']) for turn in (repair, review)],
+                         [('author', 'EXEC', 'READY'), ('reviewer', 'EXEC', 'APPROVE')])
+        prompt = (self.run_dir / 'evidence' / f"{repair['sequence']:03d}-exec-author.prompt.txt").read_text()
+        self.assertIn('Smallest change: reject bool', prompt)
+        self.assertNotEqual(repair['snapshot_before'], repair['snapshot_after'])
+        self.assertEqual(review['snapshot_before'], repair['snapshot_after'])
+        [item] = state['gate_fail_items']
+        [row] = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate']
+        self.assertEqual((row['id'], row['status'], row['status_history'][-1]['round']),
+                         (item['id'], 'fixed', review['sequence']))
+
     def test_a_lifecycle_on_run_dispatches_every_writer_on_gemini(self):
         use_lifecycle_on(self, self)
         done = self.run_coordinator(*GEMINI_AUTHOR, '--gemini-bin', str(self.fake_gemini_cli()), '--quality-writers', 'both',
