@@ -5,11 +5,13 @@
 - 持久 EXEC reviewer 可用 `REVISE_NEEDS_OPERATOR` 在修复回合前暂停，并显示需要操作者裁定的问题。用 `note --text` 或 `note --file` 记录裁定后，`resume` 将裁定连同评审意见交给修复作者。轮次上限、停止规则和结构性 HOLD 保留原原因，另以一条 NOTE 显示问题。
 - `status` 在 stderr 显示待交付的备注编号、接收方和创建时间，stdout 保持原样。`status --brief` 在 stdout 显示同一摘要。到达 DONE 时，`accept` 和普通 `resume` 不会交付备注；按意图确认的范围内 `reject` 会把排队的备注连同拒绝反馈交给下一位 EXEC 作者。
 - 已交付的备注经哈希校验后作为操作者裁定发给持久 reviewer 和独立评审角色，只有持久 reviewer 会看到备注编号。没有新阻塞项时，裁定 HOLD 会指出首个仍开放的阻塞项，或提示查看评审回执。
+- EXEC、FINISH、DOCS 和 POLISH-Q 作者会收到已交付的操作者裁定，并按裁定实施和记录。
 
 **按意图更新的测试断言**
 
 - `test_v318cap.test_default_review_dispatch_bytes_match_release_except_for_review_rules_and_exec_author_grows` 的持久 EXEC reviewer 提示字节比较纳入请求操作者裁定的句子。
 - `test_real_coordinator.test_hold_note_cli_delivers_once_and_excludes_fresh_roles` 改为 `test_hold_note_cli_delivers_once_and_shows_only_the_decision_to_fresh_roles`，断言独立评审提示包含已交付的备注正文，并继续排除被替换的正文及备注元数据。
+- `test_wi_note.test_reviewer_ruling_window` 将作者提示不得含有 `## Operator decisions` 的断言改为检查首次交付的澄清标题，另有生命周期测试验证交付后的作者提示包含裁定。
 
 ### Unreleased (WI-RESUME)
 
