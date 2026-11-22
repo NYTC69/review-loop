@@ -35,7 +35,6 @@
   - Field (poker-tools gemini trial, 2026-11-21): the allowed_models refusal should name the profile key to edit. (2026-11-22)
   - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (2026-11-21)
   - v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (2026-11-21)
-- v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner decision; quota_status.py is machine-local). (added 2026-11-22)
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 - v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (added 2026-11-21)
 
@@ -51,6 +50,7 @@
     - Warn at `note` time when the operator text contains a phrase the independence check rejects later (the author may quote the note into the change); and at the last EXEC round, give the author one reword turn instead of the gate HOLD (gg-pipeline WI-263m, 2026-10-21; v3.2.3 only adds the path:line places to the HOLD).
     - A run/resume pre-flight check that each vendor CLI is logged in under the run's CODEX_HOME / Claude config, refusing early with a refresh hint instead of a mid-run HOLD (gg-pipeline WI-282a, 2026-10-24; deferred).
 - Deferred Windows items after v3.3.0 (ADR-20): map Git Bash `/c/...` operands through `winplat.windows_abs_path` in `evidence_guard` (log-only on Windows today); decode PowerShell `-EncodedCommand` if a real Codex sample shows it; `--detach` on Windows; Linux/WSL support. (added 2026-10-27)
+- v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner 2026-11-22: deferred, quota is not tight; revisit when it is. quota_status.py is machine-local). (added 2026-11-22)
 
 ## Done (recent, trimmed quarterly)
 
