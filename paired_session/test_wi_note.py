@@ -14,6 +14,7 @@ RULING = 'REVISE_NEEDS_OPERATOR'
 QUESTION = '[class: input-validation] Should bool be rejected explicitly?'
 RULING_NOTE = 'NOTE: the reviewer also requests an operator ruling: ' + QUESTION
 OFF = ('--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'off', '--polish-round', 'off')
+WITH_GATE = ('--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'on', '--polish-round', 'off')
 ON = ('--lifecycle-mode', 'on', '--max-invocations', '60')
 
 
@@ -41,8 +42,10 @@ class OperatorNoteTests(unittest.TestCase):
 
     def test_reviewer_ruling_window(self):
         with self.harness() as h:
-            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling')}
-            held = h.run_coordinator(*OFF, env=env)
+            latest = 'Reject bool explicitly before the integer check. The previous review raised this question.'
+            self.assertIsNotNone(rc.FRESH_HISTORY_RE.search(latest))
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling'), 'FAKE_GATE_SCOPE': latest}
+            held = h.run_coordinator(*WITH_GATE, env=env)
             self.assert_result(held, 2, 'HOLD: reviewer requests an operator ruling: ' + QUESTION)
             self.assertIn('note --text or note --file, then resume', held.stdout)
             state = self.state(h)
@@ -53,12 +56,11 @@ class OperatorNoteTests(unittest.TestCase):
             verdict = state['review_verdicts'][-1]
             self.assertEqual((verdict['reviewer_raw_verdict'], verdict['effective_verdict']), (RULING, 'REVISE'))
             self.assertEqual(state['exec_comparisons'][-1]['persistent']['verdict'], RULING)
-            self.assert_result(h.run_operator_action('note', *OFF, '--text', 'Original ruling.'), 0, 'N001 queued')
-            latest = 'Reject bool explicitly before the integer check.'
-            self.assert_result(h.run_operator_action('note', *OFF, '--text', latest), 0, 'N002 queued')
-            status = h.run_operator_action('status', *OFF, '--brief', '1')
+            self.assert_result(h.run_operator_action('note', *WITH_GATE, '--text', 'Original ruling.'), 0, 'N001 queued')
+            self.assert_result(h.run_operator_action('note', *WITH_GATE, '--text', latest), 0, 'N002 queued')
+            status = h.run_operator_action('status', *WITH_GATE, '--brief', '1')
             self.assert_result(status, 0, 'Pending operator note N002')
-            self.assert_result(h.run_operator_action('resume', *OFF, env=env), 0, twl.DONE)
+            self.assert_result(h.run_operator_action('resume', *WITH_GATE, env=env), 0, twl.DONE)
             after = self.state(h)
             first = after['turns'][len(state['turns'])]
             self.assertEqual((first['role'], first['phase'], first['answer']['status'], first['operator_note_id']),
@@ -67,10 +69,20 @@ class OperatorNoteTests(unittest.TestCase):
             self.assertIn(QUESTION, prompt)
             self.assertIn(latest, prompt)
             self.assertNotIn('Original ruling.', prompt)
+            self.assertNotIn('## Operator decisions', prompt)
+            review = after['turns'][len(state['turns']) + 1]
+            self.assertEqual((review['role'], review['phase']), ('reviewer', 'EXEC'))
+            gate = next(turn for turn in after['turns'] if turn['role'] == 'gate')
+            self.assertEqual(gate['answer']['verdict'], 'PASS')
+            for turn, decision in ((review, 'N002: ' + latest), (gate, 'operator decision: ' + latest)):
+                prompt = self.prompt(h, turn)
+                self.assertIn(decision, prompt.split('## Operator decisions\n', 1)[1])
+                self.assertNotIn('Original ruling.', prompt)
+            self.assertNotIn('N002', self.prompt(h, gate))
             self.assertNotIn('pending_operator_note_id', after)
             self.assertEqual([n['status'] for n in after['operator_notes']], ['replaced', 'delivered'])
-            self.assertNotIn('Pending operator note', h.run_operator_action('status', *OFF).stderr)
-            self.assertNotIn('Pending operator note', h.run_operator_action('status', *OFF, '--brief').stdout)
+            self.assertNotIn('Pending operator note', h.run_operator_action('status', *WITH_GATE).stderr)
+            self.assertNotIn('Pending operator note', h.run_operator_action('status', *WITH_GATE, '--brief').stdout)
         with self.harness() as h:
             self.assert_result(h.run_coordinator(*OFF, '--exercise-revisions'), 0, twl.DONE)
             exec_turns = [row for row in self.state(h)['turns'] if row['phase'] == 'EXEC']
@@ -130,6 +142,30 @@ class OperatorNoteTests(unittest.TestCase):
                         self.assertEqual(self.state(h)['turns'], state['turns'])
                     self.assert_result(h.run_operator_action('resume', *flags, '--add-rounds', '1', env=env), 0, twl.DONE)
                 self.assertEqual(self.state(h)['turns'][len(state['turns'])]['role'], 'author')
+
+    def test_ruling_without_new_blocker_names_open_gate_row(self):
+        with self.harness() as h:
+            self.assert_result(h.run_coordinator(*WITH_GATE, '--stop-after-plan'), 2, 'HOLD: ' + rc.PLAN_STOP_REASON)
+            argv = h.command(*WITH_GATE)[2:]
+            argv[0] = 'resume'
+            argv.append('--skip-probe')
+            co = rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv))
+            invoke = co.invoke
+
+            def rule_after_gate(role, phase, *args, **kwargs):
+                if role == 'reviewer' and co.state.get('gate_ran'):
+                    with patch.dict(os.environ, {'FAKE_EXEC_RULING_ONCE': str(h.root / 'gate-ruling')}):
+                        return invoke(role, phase, *args, **kwargs)
+                return invoke(role, phase, *args, **kwargs)
+
+            env = {'FAKE_GATE_BLOCK': '1', 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'}
+            with patch.dict(os.environ, env), patch.object(co, 'invoke', side_effect=rule_after_gate):
+                self.assertEqual(co.resume(), 'HOLD')
+            state = self.state(h)
+            self.assertEqual(state['turns'][-1]['answer']['status'], RULING)
+            [row] = [row for row in state['finding_ledger'] if row['source'] == 'adversarial-gate']
+            self.assertEqual(row['status'], 'open')
+            self.assertTrue(state['hold_reason'].startswith('reviewer requests an operator ruling: ' + row['summary']))
 
     def test_recorded_ruling_receipt_parks_on_resume(self):
         class SimulatedCrash(BaseException):
