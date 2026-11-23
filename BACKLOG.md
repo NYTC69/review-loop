@@ -20,7 +20,6 @@
   - v3.11.0 follow-up (WI-TURNFAIL note 7): an agy exit > 0 without a quota line is a terminal ERROR; consider one retry. (2026-11-22)
   - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (2026-11-21)
   - v3.11.0 follow-up (WI-TURNFAIL): the unknown-reset backoff slot count is per run, not reset per invoke. (2026-11-22)
-- CI: two macOS test groups hit the 20-minute job timeout on the v3.15.5 candidate (cancelled, passed on rerun); rebalance the groups or raise the job timeout before more tests land. (added 2026-11-24)
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
@@ -41,19 +40,15 @@
   - v3.15.4 note (Opus, WI-G/H R1): scenario_matrix re-splits each hint candidate with LABEL_SEPARATOR, close to _label_and_content; minor duplication in a diagnostic. (2026-11-24)
   - v3.15.5 note (Opus, WI-E R1): README "When delivering a new clarification after an earlier note, the author follows…" reads as if the operator delivers; say "When a new clarification is delivered after an earlier note…". (2026-11-24)
   - v3.15.5 note (Opus, WI-E R1): no test combines a withdrawal with two delivered notes (precedence line placement); optional. (2026-11-24)
+  - v3.15.6 note (Opus, WI-HISTSCAN R1): paired_session/README "A valid declaration also names its vendors for the existing bare-name exception" holds for the delta patches; say "in the delta patches" (plans exempt bare prose names by another route). (2026-11-24)
+- History-scan subject follow-ups (optional; WI-HISTSCAN v3.15.6). (added 2026-11-24)
+  - v3.15.6 note (Opus R1): `_history_workitem()` strips every `history-scan-subject:` line, so a malformed line (e.g. `claude unknown`) no longer counts as a mention of `claude` for FIELD-30 / tool-path lookups; consistent with "malformed grants nothing". (2026-11-24)
+  - v3.15.6 note (Opus R1): `_history_workitem()` re-reads context/workitem.md per match; cache per scan if it ever matters. (2026-11-24)
+  - v3.15.6 note (Opus R1): `HISTORY_SUBJECT_DIR_RE` attribution lookahead omits `reviewed`/`found` (`.codex reviewed it` is masked as a dir); the unmasked prose attribution regexes cover the realistic forms. (2026-11-24)
 
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-C regression tests only (no product code). After WI-A/B if there is room (owner 2026-11-22).~~ (added 2026-11-22) (closed 2026-11-22, see v3.15.2 WI-C)
-  - ~~v3.14.0 follow-up (Opus, WI-NOTE R4): restore a test that the delivery turn carries the note once (no decisions block), and cover a later EXEC author turn after delivery. (2026-11-22)~~
-  - ~~v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (2026-11-22)~~
-  - ~~v3.11.0 follow-up (Opus, WI-TESTEVID): add a test that a confirmation review reuses the passing test result of the same tree. (2026-11-22)~~
-  - ~~v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (2026-11-21)~~
-  - ~~v3.11.0 follow-up: the Windows end-to-end helper branches on review_report to pick its assertion; brittle if more report shapes appear. (2026-11-22)~~
-- ~~WI-D reviewer answer retry edge cases.~~ (added 2026-11-22, closed 2026-11-23 in v3.15.3)
-  - D1, D2, D3 and D5 shipped in v3.15.3.
-  - D4 characterized by a revert regression test; runtime change dropped because closing a test-failure row still requires a newer eligible pass or valid host verification.
 - ~~WI-G cosmetic message and test-helper polish.~~ (added 2026-11-22, closed 2026-11-24, see v3.15.4)
   - G1, G3-G6 fixed in v3.15.4 (matrix near-miss hint takes the label prefix, normalization NOTE wording, retry correction matches the error kind, coordinator_fixture helper, discard docstring).
   - G2 dropped: a bold Files-to-change entry falls back to ordinary PLAN review (safe direction); only glob fallback is pinned by a test, the bold case is not.
@@ -63,3 +58,7 @@
   - E1 fixed: fresh review roles (shadow, gate, POLISH-Q specialist, DOCS, SECURITY) see delivered notes with finding ids masked as [finding ID]; authors and the persistent reviewer keep the original text.
   - E2 fixed: a later delivered note takes precedence on conflicting points (handoff line on the second delivery, precedence line when two or more notes are delivered).
   - E4 dropped with a characterization test: a withdrawn covering row takes the attached report with it; the other specialist files a new row on a later eligible delta. E3 stays open (feature).
+- ~~WI-HISTSCAN history scan blocks a repository whose subject is a tool (token-meter field HOLD on `.claude`).~~ (added 2026-11-24, closed 2026-11-24, see v3.15.6)
+  - Fixed: a frozen work-item declaration `history-scan-subject: claude codex gemini` exempts the declared vendors' state dot dirs in the plan and both delta views; ledger ids, verdict words, attributions and history phrases stay caught; the diagnostic reports only the real hit.
+- ~~CI: two macOS test groups cancelled at 20 minutes on the v3.15.5 candidate.~~ (added 2026-11-24, closed 2026-11-24, supervisor CI tooling, no plugin change)
+  - Root cause: GitHub found no macOS runner (capacity), not a timeout. ci_wait.sh now reruns cancelled jobs once and never counts a cancelled job green; workflow source d14 refreshes the macOS timings (timeout stays 60).
