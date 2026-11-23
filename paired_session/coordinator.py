@@ -4160,8 +4160,7 @@ class Coordinator:
         if changed:
             self.write_ledger()
         if noted:
-            print('NOTE: non_blocking recorded as still_open for findings that need no confirmation: ' +
-                  ', '.join(sorted(noted)))
+            print('NOTE: non_blocking recorded as still_open for finding IDs: ' + ', '.join(sorted(noted)))
         return []
 
     _progress_seq_n, _progress_label, _progress_warned = None, None, False
@@ -8413,7 +8412,8 @@ class Coordinator:
             legacy_current = result_matches and 'snapshot_after' not in turn
             answer = result['answer'] if legacy_current else turn.get('answer')
             if (turn.get('snapshot_before') != tree or (not legacy_current and turn.get('snapshot_after') != tree)
-                    or turn.get('discarded') or turn.get('verified_claims_error') or turn.get('gate_malformed')
+                    or turn.get('discarded') or turn.get('approval_blocked_reason')
+                    or turn.get('verified_claims_error') or turn.get('gate_malformed')
                     or (turn.get('error') and turn.get('error_kind') != 'test_evidence_shortfall')
                     or not isinstance(answer, dict) or (not legacy_current and verified_claims_error(answer))):
                 continue
@@ -8441,9 +8441,13 @@ class Coordinator:
         return {} if proof.get('reused_test_evidence') == sequence else proof
 
     def _discard_reviewer_result(self, result: dict, reason: str) -> None:
+        """Mark the result discarded and update its receipt. Callers must save state."""
+        self._mark_reviewer_result(result, 'discarded', reason)
+
+    def _mark_reviewer_result(self, result: dict, field: str, reason: str) -> None:
         turn = next((row for row in self.state['turns'] if row['sequence'] == result['sequence']), None)
         if turn is not None:
-            turn['discarded'] = reason
+            turn[field] = reason
             atomic_json(self.evidence / f"{turn['sequence']:03d}-{turn['phase'].lower()}-reviewer.receipt.json", turn)
 
     def _save_test_evidence(self, turn: dict, proof: dict, *, validated=False) -> None:
@@ -9703,6 +9707,10 @@ class Coordinator:
         schema = review_schema(statuses=statuses, confirm_shadow=phase == 'EXEC' and any(
             row.get('needs_confirmation') for row in self._reviewer_open_findings()))
         retry = self.state.get('reviewer_retry') or {}
+        if retry and any(turn.get('role') == 'author' and turn['sequence'] > retry['rejected_sequence']
+                         for turn in self.state['turns']):
+            self.state.pop('reviewer_retry')
+            retry = {}
         if retry.get('phase') != phase:
             retry = {}
         empty_evidence_reason = 'EXEC APPROVE rejected: empty self_run_evidence'
@@ -9760,9 +9768,14 @@ class Coordinator:
                 self.state.pop('reviewer_retry', None)
                 self.hold(hold_reason)
                 return
-            correction = ('\nYour previous response ' + feedback +
-                          '. This is the one allowed protocol retry; return exactly the requested dispositions.')
+            correction = '\nYour previous response ' + feedback + '. This is the one allowed protocol retry'
             if reason == empty_evidence_reason:
+                correction += '.'
+            else:
+                correction += '; return exactly the requested dispositions.'
+            if retry_empty:
+                if reason != empty_evidence_reason:
+                    correction += ' Approval was also rejected with this guard reason: ' + empty_evidence_reason + '.'
                 correction += ' If you approve, list the checks you actually ran in self_run_evidence.'
                 if self.args.test_command:
                     correction += ' Rerun the configured test command and report it in self_run_evidence.'
@@ -9940,7 +9953,7 @@ class Coordinator:
         if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and not (
                 self.args.test_command is None and self.state['config'].get('review_report')):   # LG2-b2: a static approval
             if empty_approval:
-                self._discard_reviewer_result(result, empty_evidence_reason)
+                self._mark_reviewer_result(result, 'approval_blocked_reason', empty_evidence_reason)
             self.state['pending_reviewer_result_sequence'] = None
             self.hold(empty_evidence_reason)
             return
@@ -10086,7 +10099,7 @@ class Coordinator:
         answer = receipt.get('answer')
         if (receipt.get('role') != 'reviewer' or receipt.get('phase') != phase or
                 not isinstance(answer, dict) or receipt.get('error') or receipt.get('discarded') or
-                receipt.get('verified_claims_error')):
+                receipt.get('approval_blocked_reason') or receipt.get('verified_claims_error')):
             return None
         effective = answer
         if phase == 'PLAN' and answer.get('status') == 'REVISE':

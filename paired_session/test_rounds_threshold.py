@@ -431,7 +431,25 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertEqual((minor['status'], minor['status_history'][-1]['status']), ('open', 'still_open'))
         self.assertFalse(rc.blocks_by_severity(minor))
         self.assertEqual(done.stdout.count(
-            'NOTE: non_blocking recorded as still_open for findings that need no confirmation: ' + minor['id']), 1)
+            'NOTE: non_blocking recorded as still_open for finding IDs: ' + minor['id']), 1)
+
+    def test_non_persistent_owner_normalization_keeps_confirmation_and_notes_once(self):
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'off', '--shadow', 'off'))
+        owner = 'specialist:python-reviewer'
+        co.record_findings(owner, 'EXEC', 1, [
+            {'severity': 'MAJOR', 'file': 'sum_ints.py', 'summary': 'Awaiting confirmation', 'needs_confirmation': True}])
+        [finding] = co.state['finding_ledger']
+        finding_id = finding['id']
+        answer = {'id': finding_id, 'disposition': 'non_blocking', 'evidence': 'owner assessment'}
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            for _ in range(2):
+                self.assertEqual(co.apply_dispositions([answer.copy()], 2, [finding_id], owner), [])
+        self.assertTrue(finding['needs_confirmation'])
+        self.assertEqual(finding['status'], 'open')
+        self.assertEqual([(row['round'], row['status']) for row in finding['status_history']],
+                         [(1, 'open'), (2, 'still_open')])
+        self.assertEqual(stdout.getvalue().splitlines(),
+                         ['NOTE: non_blocking recorded as still_open for finding IDs: ' + finding_id])
 
     def test_non_blocking_on_an_ordinary_major_converts_approve_to_revise(self):
         co = rc.Coordinator(self.args('--lifecycle-mode', 'off', '--shadow', 'off'))

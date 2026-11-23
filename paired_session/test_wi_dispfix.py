@@ -14,10 +14,7 @@ RETRY_MARKER = 'This is the one allowed protocol retry'
 
 class DispositionRetryTests(unittest.TestCase):
     def setUp(self):
-        self.h = trc.RealCoordinatorTests()
-        self.h.setUp()
-        self.addCleanup(self.h.doCleanups)
-        self.addCleanup(self.h.tearDown)
+        self.h = trc.coordinator_fixture(self)
         self.co = self.start_review()
 
     def start_review(self, *extra):
@@ -168,6 +165,8 @@ class DispositionRetryTests(unittest.TestCase):
         self.assertTrue(co.configured_test_succeeded(retry))
         prompt = self.prompt(co, retry)
         self.assertIn(EMPTY_EVIDENCE, prompt)
+        self.assertIn('list the checks you actually ran in self_run_evidence', prompt)
+        self.assertNotIn('return exactly the requested dispositions', prompt)
         self.assertIn('Rerun the configured test command and report it in self_run_evidence.', prompt)
         self.assertEqual([row['status'] for row in co.state['finding_ledger']], ['fixed', 'fixed'])
         self.assertEqual(co.state['exec_rounds'], 1)
@@ -261,6 +260,56 @@ class DispositionRetryTests(unittest.TestCase):
         self.assertNotIn(RETRY_MARKER, self.prompt(resumed, review))
         self.assertEqual(resumed.state['invocations_used'], 1)
 
+    def hold_on_failed_evidence_correction(self):
+        co = self.co
+        # This text does not match the transient dispatch retry classifier.
+        failure = 'fake correction dispatch failed'
+        with patch.dict(os.environ, {'FAKE_EXEC_NO_EVIDENCE': '1', 'FAKE_PROVIDER_FAIL': failure,
+                                     'FAKE_PROVIDER_FAIL_MATCH': RETRY_MARKER}):
+            self.assertEqual(co.drive(), 'HOLD')
+        self.assertNotEqual(co.state.get('hold_kind'), 'rate_limited')
+        self.assertIn(failure, co.state['hold_reason'])
+        rejected, failed = co.state['turns']
+        self.assertEqual(rejected['discarded'], EMPTY_EVIDENCE)
+        self.assertIn('error', failed)
+        record = co.state['reviewer_retry']
+        self.assertEqual(record['rejected_sequence'], rejected['sequence'])
+        self.assertIn(EMPTY_EVIDENCE, record['correction'])
+        return record, rejected, failed
+
+    def test_author_turn_in_same_phase_starts_fresh_reviewer_retry(self):
+        record, rejected, failed = self.hold_on_failed_evidence_correction()
+        resumed = self.coordinator('resume')
+        resumed.state['next'] = 'author'
+        resumed.save()
+        with patch.dict(os.environ, {'FAKE_OMIT_DISPOSITION': '1'}):
+            status = resumed.resume()
+        author, review, *corrections = resumed.state['turns'][2:]
+        self.assertEqual((author['role'], author['phase']), ('author', 'EXEC'))
+        self.assertEqual((review['role'], review['phase']), ('reviewer', 'EXEC'))
+        self.assertNotIn(RETRY_MARKER, self.prompt(resumed, review))
+        self.assertNotIn(record['correction'], self.prompt(resumed, review))
+        [correction] = corrections
+        prompt = self.prompt(resumed, correction)
+        self.assertEqual(prompt.count(RETRY_MARKER), 1)
+        self.assertIn('omitted dispositions for: ' + self.co.state['finding_ledger'][-1]['id'], prompt)
+        self.assertNotIn(EMPTY_EVIDENCE, prompt)
+        self.assertEqual(resumed.state['turns'][:2], [rejected, failed])
+        self.assertEqual(status, 'DONE', resumed.state.get('hold_reason'))
+
+    def test_direct_resume_keeps_failed_evidence_correction(self):
+        record, rejected, failed = self.hold_on_failed_evidence_correction()
+        resumed = self.coordinator('resume')
+        session = resumed.state['sessions']['reviewer']
+        self.assertEqual(resumed.resume(), 'DONE', resumed.state.get('hold_reason'))
+        self.assertEqual(resumed.state['turns'][:2], [rejected, failed])
+        [retry] = resumed.state['turns'][2:]
+        self.assertEqual(self.prompt(resumed, retry).count(record['correction']), 1)
+        self.assertTrue(session)
+        at = retry['command'].index('--resume')
+        self.assertEqual(retry['command'][at + 1], session)
+        self.assertEqual(resumed.state['sessions']['reviewer'], session)
+
     def test_recorded_retry_replays_without_dispatch(self):
         for malformed in (False, True):
             with self.subTest(malformed=malformed):
@@ -306,10 +355,28 @@ class DispositionRetryTests(unittest.TestCase):
                 with patch.object(co, '_collect', side_effect=malformed):
                     co.reviewer_turn()
                 self.assertEqual(co.state['status'], 'HOLD')
-                expected = [EMPTY_EVIDENCE, 'missing finding dispositions']
-                if not first_empty:
-                    expected.reverse()
-                self.assertEqual([turn['discarded'] for turn in co.state['turns']], expected)
+                rejected, retry = co.state['turns']
+                saved = json.loads((self.h.run_dir / 'state.json').read_text())
+                self.assertEqual(saved['turns'], [rejected, retry])
+                for turn in (rejected, retry):
+                    receipt = co.evidence / f"{turn['sequence']:03d}-exec-reviewer.receipt.json"
+                    self.assertEqual(json.loads(receipt.read_text()), turn)
+                self.assertEqual(rejected['discarded'], EMPTY_EVIDENCE if first_empty else 'missing finding dispositions')
+                self.assertNotIn('approval_blocked_reason', rejected)
+                if first_empty:
+                    self.assertEqual(retry['discarded'], 'missing finding dispositions')
+                    self.assertNotIn('approval_blocked_reason', retry)
+                else:
+                    self.assertEqual(retry['approval_blocked_reason'], EMPTY_EVIDENCE)
+                    self.assertNotIn('discarded', retry)
+                    self.assertTrue(co.configured_test_succeeded(retry))
+                    self.assertEqual([row['status'] for row in saved['finding_ledger']], ['fixed', 'fixed'])
+                    [verdict] = saved['review_verdicts']
+                    self.assertEqual((verdict['sequence'], verdict['reviewer_raw_verdict'], verdict['effective_verdict']),
+                                     (retry['sequence'], 'APPROVE', 'APPROVE'))
+                    self.assertEqual(co._test_proof(retry['snapshot_after']), {})
+                    with patch.dict(co.state, {'pending_reviewer_result_sequence': retry['sequence']}):
+                        self.assertIsNone(co._recorded_reviewer_result('EXEC'))
                 self.assertIn(EMPTY_EVIDENCE if first_empty else 'omitted dispositions for:',
                               self.prompt(co, co.state['turns'][-1]))
                 missing_id = co.state['finding_ledger'][-1]['id']
@@ -317,6 +384,29 @@ class DispositionRetryTests(unittest.TestCase):
                                  'reviewer omitted open finding dispositions after retry: ' + missing_id
                                  if first_empty else EMPTY_EVIDENCE)
                 self.assertNotIn('reviewer_retry', co.state)
+
+    def test_one_correction_addresses_both_disposition_and_evidence_errors(self):
+        co = self.co
+        collect = co._collect
+
+        def omit_both(*args):
+            parsed = collect(*args)
+            if co.state['sequence'] == 2:
+                parsed[0]['prior_findings'].pop()
+                parsed[0]['self_run_evidence'] = []
+            return parsed
+
+        with patch.object(co, '_collect', side_effect=omit_both):
+            co.reviewer_turn()
+        self.assertEqual(co.state['status'], 'DONE', co.state.get('hold_reason'))
+        rejected, retry = co.state['turns']
+        self.assertEqual(rejected['discarded'], 'missing finding dispositions')
+        prompt = self.prompt(co, retry)
+        self.assertEqual(prompt.count(RETRY_MARKER), 1)
+        self.assertIn('omitted dispositions for: ' + co.state['finding_ledger'][-1]['id'], prompt)
+        self.assertIn('return exactly the requested dispositions', prompt)
+        self.assertIn(EMPTY_EVIDENCE, prompt)
+        self.assertIn('Rerun the configured test command and report it in self_run_evidence.', prompt)
 
     def test_second_empty_approval_leaving_blockers_routes_to_author(self):
         co = self.co
@@ -335,6 +425,7 @@ class DispositionRetryTests(unittest.TestCase):
         rejected, retry = co.state['turns']
         self.assertEqual(rejected['discarded'], EMPTY_EVIDENCE)
         self.assertNotIn('discarded', retry)
+        self.assertNotIn('approval_blocked_reason', retry)
         self.assertEqual(co.state['review_verdicts'][-1]['effective_verdict'], 'REVISE')
         self.assertNotIn('reviewer_retry', co.state)
 
@@ -368,6 +459,8 @@ class DispositionRetryTests(unittest.TestCase):
         prompt = prefix.with_suffix('.prompt.txt').read_text()
         self.assertIn('duplicate or unknown id: F999', prompt)
         self.assertIn('one allowed protocol retry', prompt)
+        self.assertIn('return exactly the requested dispositions', prompt)
+        self.assertNotIn('If you approve, list the checks', prompt)
         for turn, reason in ((rejected, 'invalid finding dispositions'), (retry, 'missing finding dispositions')):
             self.assertEqual(turn['discarded'], reason)
             receipt = co.evidence / f"{turn['sequence']:03d}-exec-reviewer.receipt.json"

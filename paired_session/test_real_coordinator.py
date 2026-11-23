@@ -78,6 +78,14 @@ def allowed_tool_values(command):
             if value == '--allowedTools']
 
 
+def coordinator_fixture(case):
+    harness = RealCoordinatorTests()
+    case.addCleanup(harness.doCleanups)
+    case.addCleanup(harness.tearDown)
+    harness.setUp()
+    return harness
+
+
 class RealCoordinatorTests(unittest.TestCase):
     def setUp(self):
         git_env = patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
@@ -555,11 +563,13 @@ class RealCoordinatorTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def tearDown(self):
-        if self.original_home is None:
-            os.environ.pop('HOME', None)
-        else:
-            os.environ['HOME'] = self.original_home
-        self.temp.cleanup()
+        if hasattr(self, 'original_home'):
+            if self.original_home is None:
+                os.environ.pop('HOME', None)
+            else:
+                os.environ['HOME'] = self.original_home
+        if hasattr(self, 'temp'):
+            self.temp.cleanup()
 
     def fake_codex_cli(self):
         path = self.root / 'fake-codex'

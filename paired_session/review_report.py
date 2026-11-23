@@ -258,7 +258,9 @@ def render(state: dict) -> str:
         if turn.get('role') in ('probe', 'gate-probe'):
             continue
         label = names.get(turn.get('sequence')) or phase_names.get((turn.get('role'), turn.get('phase'))) or turn.get('role')
-        status = (' (discarded: ' + str(turn['discarded']) + ')' if turn.get('discarded') else ' (voided)' if turn.get('voided') else
+        status = (' (discarded: ' + str(turn['discarded']) + ')' if turn.get('discarded') else
+                  ' (approval blocked: ' + str(turn['approval_blocked_reason']) + ')' if turn.get('approval_blocked_reason') else
+                  ' (voided)' if turn.get('voided') else
                   ' (static, untested approval)' if turn.get('static_untested_approval') else '')
         lines.append(f"- {label} ({turn.get('phase')}): {len(turn.get('observed_tool_calls') or [])} tool calls{status}")
     for failure in state.get('spawn_failures', []):

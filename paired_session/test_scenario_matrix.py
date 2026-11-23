@@ -81,6 +81,19 @@ class ScenarioMatrixParserTests(unittest.TestCase):
                 self.assertEqual(self.error(without_compatibility + prose), missing)
         self.assertEqual(self.error(FAKE_SCENARIO_MATRIX + '\n### Compatiblity'), '')
 
+    def test_dimension_hint_skips_marked_prose_and_keeps_unknown_headings(self):
+        missing = 'missing rows or N/A: <reason> for Compatibility'
+        matrix = FAKE_SCENARIO_MATRIX.split('### Compatibility')[0]
+        for prose in ('1. Run the tool twice', '- **Explain the observed result**'):
+            with self.subTest(prose=prose):
+                self.assertEqual(self.error(matrix + prose), missing)
+        prose = '1. Run the tool twice\n- **Explain the observed result**\n'
+        for label in ('7. Compatiblity — N/A: none', '**Compatiblity:** N/A: x'):
+            with self.subTest(label=label):
+                self.assertEqual(self.error(matrix + prose + label), f'{missing}. Unrecognised dimension label {label!r}')
+        self.assertEqual(self.error(matrix + '### Notes\n7. Compatiblity'),
+                         f"{missing}. Unrecognised dimension label '### Notes'")
+
     def test_malformed_rows_are_ignored_and_do_not_cover_a_dimension(self):
         for row in ('- Boolean input | | test_rejects_bool',
                     '| Boolean input | Raise TypeError |',
@@ -259,7 +272,9 @@ class ScenarioMatrixRunTests(unittest.TestCase):
     def test_plan_approval_is_refused_then_a_fixed_matrix_is_approved(self):
         for name, draft, message in (
                 ('missing', '', 'missing the ## Scenario matrix section'),
-                ('dimension', FAKE_SCENARIO_MATRIX.split('### Compatibility')[0], 'Compatibility')):
+                ('dimension', FAKE_SCENARIO_MATRIX.split('### Compatibility')[0], 'Compatibility'),
+                ('typo', FAKE_SCENARIO_MATRIX.replace('### Compatibility',
+                    '1. Run the tool twice\n7. Compatiblity'), "Unrecognised dimension label '7. Compatiblity'")):
             with self.subTest(name=name):
                 self.run_dir = self.root / name
                 result = self.run_coordinator(*tgo.OFF, '--adversarial-gate', 'off', '--stop-after-plan',
@@ -276,6 +291,8 @@ class ScenarioMatrixRunTests(unittest.TestCase):
                 self.assertIn('Include the "## Scenario matrix" section', self.prompt(first_author))
                 self.assertIn('silently skipped dimension is a blocking PLAN finding', self.prompt(first_review))
                 self.assertIn(message, self.prompt(repair))
+                if name == 'typo':
+                    self.assertNotIn("Unrecognised dimension label '1. Run the tool twice'", self.prompt(repair))
                 self.assertIn(f'Fix the matrix in plan.md using {scenario_matrix.CHECKLIST}.', self.prompt(repair))
                 self.assertEqual(state['phase'], 'EXEC')
 

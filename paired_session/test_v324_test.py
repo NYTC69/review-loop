@@ -363,7 +363,10 @@ class FailedTestApprovalTests(unittest.TestCase):
         self.assert_reused(co, self.receipt(co, 'reviewer'), 'reused_test_evidence', reviewer['sequence'])
         rejected = [turn for turn in co.state['turns'] if turn['role'] == 'reviewer'
                     and turn['sequence'] > reviewer['sequence']]
-        self.assertEqual([turn['discarded'] for turn in rejected], [co.state['hold_reason']] * 2)
+        first, second = rejected
+        self.assertEqual(first['discarded'], co.state['hold_reason'])
+        self.assertEqual(second['approval_blocked_reason'], co.state['hold_reason'])
+        self.assertNotIn('discarded', second)
 
     def test_shadow_confirmation_reuses_the_repair_reviews_passing_test_on_the_same_tree(self):
         co = self.coordinator('--shadow', 'on', '--adversarial-gate', 'on')

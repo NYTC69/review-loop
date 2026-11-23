@@ -35,6 +35,7 @@ class ReviewPrEntryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertNotIn('empty self_run_evidence', str(state.get('hold_reason')))
+        # This filter relies on the late guard's test_command is None exemption in report mode.
         [reviewer] = [t for t in state['turns'] if (t['role'], t['phase']) == ('reviewer', 'EXEC') and not t.get('discarded')]
         self.assertTrue(reviewer['static_untested_approval'])
         self.assertIn('Status: REPORTED (complete)', (self.run_dir / 'review-report.md').read_text())
@@ -43,6 +44,8 @@ class ReviewPrEntryTests(unittest.TestCase):
         self.assertNotEqual(held.returncode, 0)
         self.assertIn('EXEC APPROVE rejected: empty self_run_evidence',
                       json.loads((self.run_dir / 'state.json').read_text())['hold_reason'])
+        self.assertRegex((self.run_dir / 'review-report.md').read_text(),
+                         r'(?m)^- EXEC reviewer \(EXEC\): \d+ tool calls \(approval blocked: EXEC APPROVE rejected: empty self_run_evidence\)$')
 
 
     def materialized_pr(self):

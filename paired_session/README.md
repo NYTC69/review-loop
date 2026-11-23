@@ -76,9 +76,13 @@ from the persistent reviewer's own independent checks. The reused result need no
 A submitted EXEC APPROVE with an empty list gets one correction in the same persistent session, after
 disposition validation and before applying the answer. The discarded answer supplies no reusable test proof.
 When a test is configured, the retry prompt asks the reviewer to rerun it and report it in `self_run_evidence`.
-Disposition and evidence errors share this one retry, which counts toward the invocation cap. If the retry
-also approves with an empty list, normal review routing runs first. An answer still marked APPROVE then
-HOLDs with `EXEC APPROVE rejected: empty self_run_evidence`. The no-test review-report path can approve statically.
+Disposition and evidence errors share this one retry, which counts toward the invocation cap. Resuming the same
+reviewer turn keeps the saved correction and its retry count, including after a stopped quota wait or quota HOLD.
+Any later author receipt starts the next review with a fresh correction opportunity, including a failed or
+quota-denied author turn or one in another phase. If the retry supplies valid dispositions and approves with an
+empty list, normal review routing applies its dispositions and records the verdict first. An answer still marked
+APPROVE then HOLDs with `EXEC APPROVE rejected: empty self_run_evidence`. Its receipt records
+`approval_blocked_reason` and supplies no reusable test proof. The no-test review-report path can approve statically.
 Blocking findings retain the normal repair loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
 round; its eligible advisory re-review exits immediately.
 Blocking means a CRITICAL, MAJOR or SECURITY finding whose category is correctness,

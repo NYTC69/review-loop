@@ -1,5 +1,19 @@
 # Changelog
 
+### v3.15.4：改进场景矩阵提示与评审答复重试（WI-G、WI-H）
+
+- WI-G：场景矩阵缺少维度时，编号或粗体标签须与缺失维度近似拼写才会出现在提示中，带内联内容的标签也可匹配。未知 Markdown 标题（如 `### Notes`）仍可占用首个提示位置。G2 已放弃，粗体文件项仍走常规 PLAN 评审。现有测试覆盖通配符回退，粗体回退以一次性检查验证。
+- WI-G：误用 `non_blocking` 时，NOTE 列出按 `still_open` 记录的发现编号。处置和证据错误共用一次纠正，提示按实际错误给出指令。处置测试复用假 CLI 夹具，丢弃评审答复的辅助函数明确由调用方保存状态。
+- WI-H：直接恢复同一评审回合时保留纠正提示和已用机会。被拒答复之后的任何作者回执都会使旧纠正失效，包括失败、配额拒绝和其他阶段的回执。在 `author_turn()` 中删除记录只能处理之后的派发，在恢复评审时比较回执序号也能处理 v3.15.3 已留下的记录。
+- WI-H：第二次空证据答复的处置和裁定已应用时，仍为 APPROVE 的答复按原原因 HOLD，回执和报告注明批准被阻止（`approval_blocked_reason`）。该回执不提供可复用测试证明，也不能作为待处理答复重放。
+
+**按意图更新的测试断言**
+
+- `test_rounds_threshold.test_mixed_shadow_non_blocking_dispositions_proceed_after_gate_repair` 更新 NOTE 前缀为 `NOTE: non_blocking recorded as still_open for finding IDs: `，继续断言只出现一次且列出同一编号。
+- `test_wi_dispfix.DispositionRetryTests.test_mixed_reviewer_errors_share_one_retry` 保留首个回执丢弃及第二次处置错误时的丢弃断言。第二次答复进入末尾证据检查时，改为精确断言 `approval_blocked_reason` 等于 HOLD 原因且无 `discarded` 字段。
+- `test_v324_test.test_reuse_observed_pass_on_same_tree` 继续断言有两份回执且首份被丢弃，第二份精确断言 `approval_blocked_reason` 等于 HOLD 原因且无 `discarded` 字段。保留同一代码树的证明来源和 HOLD 原因断言。
+- `tests/skills/contracts/review-loop.json` 的四个版本断言与发布清单同步更新为 `3.15.4`。
+
 ### v3.15.3：修复持久评审答复重试的边界情况（WI-D）
 
 - 持久评审员为未请求的发现提交适用处置时，协调器会列出编号并要求在同一会话中纠正一次。已关闭且未请求的 `fixed` 和 `withdrawn` 行仍被忽略，原始行以 `closed-unrequested` 为原因写入回执。操作者撤回的行以 `operator-withdrawn` 记录，两类记录重放时合并去重。

@@ -1,4 +1,5 @@
 """Read and validate the scenario matrix in a PLAN draft."""
+from difflib import get_close_matches
 from pathlib import Path
 import re
 
@@ -26,6 +27,7 @@ def prompt_checklist() -> str:
 
 BULLET = re.compile(r'^(?:[-+*]|\d+[.)])\s+')
 MARKED_LABEL = re.compile(r'^(?:#{1,6}\s+|\d+[.)]\s+|\*\*|__)')
+LABEL_SEPARATOR = re.compile(r'\s*(?:[:—–]|\s+-)\s*')
 NA_PREFIX = re.compile(r'N/A\s*(?::|$)', re.I)
 NA = re.compile(r'N/A\s*:\s*\S.*', re.I)
 
@@ -53,7 +55,7 @@ def _label_and_content(line: str) -> tuple[str, str]:
         return '', line
     label = BULLET.sub('', re.sub(r'^#{1,6}\s+', '', line))
     label = re.sub(r'^([*_]{1,3})([^|]+?):\1', r'\1\2\1:', label)
-    prefix, *suffix = re.split(r'\s*(?:[:—–]|\s+-)\s*', label, maxsplit=1)
+    prefix, *suffix = LABEL_SEPARATOR.split(label, maxsplit=1)
     label = BULLET.sub('', prefix.strip(' *_`')).strip(' *_`')
     normalized = re.sub(r'[-_/]+', ' ', label).lower()
     if '|' in label or len(normalized.split()) > 6:
@@ -84,16 +86,16 @@ def validation_error(matrix: str) -> str:
 
     covered = set()
     dimension = None
-    unrecognised = ''
+    candidates = []
     for original in lines:
         label, line = _label_and_content(original)
         cells = [cell.strip() for cell in re.split(r'(?<!\\)\|', line)]
         if label:
             dimension = label
-        elif not unrecognised and len(cells) == 1 and (MARKED_LABEL.match(original) or MARKED_LABEL.match(line)):
+        elif len(cells) == 1 and (MARKED_LABEL.match(original) or MARKED_LABEL.match(line)):
             body = re.sub(r'^#{1,6}\s+', '', line).replace('*', '').replace('_', '').strip()
             if not NA_PREFIX.match(body):
-                unrecognised = original
+                candidates.append((original, line))
         if dimension is None:
             continue
         if len(cells) == 1 and NA.fullmatch(line):
@@ -116,6 +118,10 @@ def validation_error(matrix: str) -> str:
     if not incomplete:
         return ''
     error = 'missing rows or N/A: <reason> for ' + ', '.join(incomplete)
-    if unrecognised:
-        error += f'. Unrecognised dimension label {unrecognised!r}'
+    missing_labels = [_canonical(name) for name in incomplete]
+    for original, line in candidates:
+        prefix = LABEL_SEPARATOR.split(BULLET.sub('', line.strip(' *_`')), maxsplit=1)[0]
+        if re.match(r'^#{1,6}\s+', line) or get_close_matches(
+                _canonical(prefix.strip(' *_`')), missing_labels, n=1, cutoff=0.8):
+            return error + f'. Unrecognised dimension label {original!r}'
     return error
