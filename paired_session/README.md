@@ -73,6 +73,12 @@ An EXEC advisory-only REVISE whose only gap is the test evidence HOLDs for `atta
 Before the gate, the coordinator rechecks any test proof the EXEC approval reused.
 EXEC requires proof that the configured test passed on the reviewed tree and non-empty `self_run_evidence`
 from the persistent reviewer's own independent checks. The reused result need not appear among those commands.
+A submitted EXEC APPROVE with an empty list gets one correction in the same persistent session, after
+disposition validation and before applying the answer. The discarded answer supplies no reusable test proof.
+When a test is configured, the retry prompt asks the reviewer to rerun it and report it in `self_run_evidence`.
+Disposition and evidence errors share this one retry, which counts toward the invocation cap. If the retry
+also approves with an empty list, normal review routing runs first. An answer still marked APPROVE then
+HOLDs with `EXEC APPROVE rejected: empty self_run_evidence`. The no-test review-report path can approve statically.
 Blocking findings retain the normal repair loop or round-limit HOLD. The opt-in advisory fix round (code-quality-loop) keeps its own single
 round; its eligible advisory re-review exits immediately.
 Blocking means a CRITICAL, MAJOR or SECURITY finding whose category is correctness,
@@ -100,8 +106,13 @@ Operator rulings are persistent review input on both lifecycle routes. The
 persistent reviewer sees the withdrawn ids and reasons, owes no disposition for
 them, and must not raise the same objection as a new finding. If the reviewer
 still returns such a disposition, it is ignored and recorded as
-`ignored_prior_findings` in the receipt; other dispositions keep their normal
-validation. Fresh shadow and
+`ignored_prior_findings` in the receipt with reason `operator-withdrawn`.
+Extra `fixed` and `withdrawn` rows for already closed, unrequested findings are recorded there with
+reason `closed-unrequested` when dispositions are applied. The annotations are merged without duplicates
+in state and the evidence receipt on replay, and the original answer stays in the receipt.
+An applicable disposition for any other unrequested id triggers a correction naming the id and asking for
+exactly the requested dispositions. A second invalid or incomplete disposition answer HOLDs.
+Fresh shadow and
 gate turns receive only `operator decision: <reason>`, without finding ids or
 review history. The fresh-prompt scan accepts this operator decision channel
 like frozen project guidance; ordinary review history remains subject to the scan.
@@ -943,7 +954,9 @@ returns after launch, and the coordinator continues with a separate log. `stop`
 sends SIGTERM to that detached coordinator and stops its active CLI child.
 Inspect any interrupted CLI turn before retrying. If stopped during a quota
 wait, plain `resume` honors the saved UTC retry time and keeps the original
-budget charge. See [detached commands](docs/detach.md).
+budget charge. If the quota rejection occurred on a persistent reviewer correction, resume keeps the
+original correction and the spent answer attempt through a stopped wait or a rate-limited HOLD.
+See [detached commands](docs/detach.md).
 Plain `status` reads state under the run lease; while a coordinator owns it,
 it prints `HOLD: another coordinator currently owns this run` and exits 2.
 Use lease-free `status --brief [N]` (default 20 events) during a run. It shows the

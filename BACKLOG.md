@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-22
+**Last updated**: 2026-11-23
 
 ## P0 — blocker / must-do-now
 
@@ -6,12 +6,6 @@
 
 ## P2 — normal
 
-- WI-D reviewer answer retry edge cases (disposition and self_run_evidence guards; not seen in the field yet). (added 2026-11-22)
-  - v3.11.1 follow-up (Opus, WI-DISPFIX): a still_open row for a closed unexpected id, or an open id the reviewer was not asked about, still HOLDs at once without the protocol retry; make it InvalidDispositionIDs if it shows up in the field. (2026-11-22)
-  - v3.11.1 follow-up (Opus, WI-DISPFIX): record ignored dispositions in the receipt (ignored_prior_findings) for audit, like _ignore_operator_dispositions. (2026-11-22)
-  - v3.11.0 follow-up (Sol merge review): if a saved quota wait is stopped and resumed during a reviewer disposition retry, the retry instruction is lost and the reviewer gets the ordinary prompt (an extra protocol retry at most). (2026-11-22)
-  - v3.11.0 follow-up (Opus, WI-TESTEVID): reverting the change that caused a coordinator test-failure finding leaves that row open until the next reviewer disposition. (2026-11-22)
-  - v3.15.2 real run: a low-effort sonnet reviewer APPROVEd twice without self_run_evidence (guard HOLD, resume recovered); consider a retry with the guard reason before HOLD.
 - WI-E operator note semantics (design; the rejection item is a feature and needs owner OK during the trial). (added 2026-11-22)
   - v3.14.0 follow-up (Opus, WI-NOTE R3): a note's ledger ids reach fresh roles unmasked (withdraw-findings rejects ids in its reason, note does not); replace LEDGER_ID_RE matches with a neutral token in the fresh audience. (2026-11-22)
   - v3.14.0 follow-up (Opus, WI-NOTE R3/R4): a delivered note cannot be superseded; a later contradicting note shows both as standing decisions. (2026-11-22)
@@ -43,6 +37,10 @@
 - v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner 2026-11-22: deferred, quota is not tight; revisit when it is. quota_status.py is machine-local). (added 2026-11-22)
 
 ## Done (recent, trimmed quarterly)
+
+- ~~WI-D reviewer answer retry edge cases.~~ (added 2026-11-22, closed 2026-11-23 in v3.15.3)
+  - D1, D2, D3 and D5 shipped in v3.15.3.
+  - D4 characterized by a revert regression test; runtime change dropped because closing a test-failure row still requires a newer eligible pass or valid host verification.
 
 - ~~v3.13.0 accepted residual (gate R2): a hand-edited saved config binding is not re-sealed by a resume role change (the digest guard checks the manifest digest only).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted residual under the owner threat model)
 - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach.~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted: hard to reach, owner threat model)

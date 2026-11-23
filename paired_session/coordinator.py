@@ -4082,8 +4082,9 @@ class Coordinator:
 
     def apply_dispositions(self, dispositions: list[dict], origin_round: int,
                            expected_ids: Optional[list[str]] = None,
-                           owner_role: Optional[str] = None, *, validate_only=False) -> list[str]:
-        """Validate and apply dispositions, removing ignored rows from the working answer."""
+                           owner_role: Optional[str] = None, *, validate_only=False,
+                           ignored_rows: Optional[list[dict]] = None) -> list[str]:
+        """Validate and apply dispositions, returning any missing ids and collecting filtered rows when requested."""
         open_by_id = {finding['id']: finding for finding in self.open_findings()}
         all_by_id = {finding['id']: finding for finding in self.state['finding_ledger']}
         expected = set(expected_ids) if expected_ids is not None else set(open_by_id)
@@ -4104,14 +4105,15 @@ class Coordinator:
         if missing:
             return missing
         applicable = [row for row in dispositions if row['id'] not in ignored]
+        unrequested = sorted(supplied - ignored - expected)
+        if unrequested:
+            raise InvalidDispositionIDs('invalid finding dispositions: unrequested id: ' + ', '.join(unrequested))
         # The coordinator reconciles its test-failure findings from observed evidence.
         normalized = [{**row, 'disposition': 'still_open'} if all_by_id[row['id']].get('source') == 'test-failure'
                       else row for row in applicable]
         normalized_non_blocking = set()
         for index, row in enumerate(normalized):
             finding = all_by_id[row['id']]
-            if row['id'] not in expected:
-                raise RuntimeError('invalid finding dispositions: duplicate or unknown id')
             if ('owner_role' in finding and finding['owner_role'] != owner_role and
                     row['disposition'] in ('fixed', 'withdrawn')):
                 raise RuntimeError('finding disposition requires its owning specialist')
@@ -4127,6 +4129,8 @@ class Coordinator:
                 normalized_non_blocking.add(row['id'])
         if validate_only:
             return []
+        if ignored_rows is not None:
+            ignored_rows.extend(row for row in dispositions if row['id'] in ignored)
         if ignored or normalized_non_blocking:
             dispositions[:] = applicable
         if ignored:
@@ -4548,6 +4552,7 @@ class Coordinator:
         self.state.update(status='ABORTED', abort_kind='scope-change',
                           successor_spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest())
         self.state.pop('rate_limit_wait', None)
+        self.state.pop('reviewer_retry', None)
         self._reconcile_polish_reservation()
         self.save(); self.write_comparison(); self.write_open_findings(); self.write_usage()
         self._cleanup_scratch()
@@ -5118,11 +5123,20 @@ class Coordinator:
         result['answer']['prior_findings'] = [row for row in dispositions if row['id'] not in withdrawn]
         if result.get('open_finding_ids') is not None:
             result['open_finding_ids'] = [finding_id for finding_id in result['open_finding_ids'] if finding_id not in withdrawn]
-        if ignored:
-            receipt = next(row for row in self.state['turns'] if row['sequence'] == result['sequence'])
-            receipt['ignored_prior_findings'] = [{**row, 'ignored_reason': 'operator-withdrawn'} for row in ignored]
-            atomic_json(self.evidence / f"{receipt['sequence']:03d}-{receipt['phase'].lower()}-reviewer.receipt.json", receipt)
-            self.save()
+        self._audit_ignored_dispositions(result['sequence'], ignored, 'operator-withdrawn')
+
+    def _audit_ignored_dispositions(self, sequence: int, ignored: list[dict], reason: str) -> None:
+        if not ignored:
+            return
+        receipt = next(row for row in self.state['turns'] if row['sequence'] == sequence)
+        annotations = []
+        new_entries = [{**row, 'ignored_reason': reason} for row in ignored]
+        for entry in receipt.get('ignored_prior_findings', []) + new_entries:
+            if entry not in annotations:
+                annotations.append(entry)
+        receipt['ignored_prior_findings'] = annotations
+        atomic_json(self.evidence / f"{sequence:03d}-{receipt['phase'].lower()}-reviewer.receipt.json", receipt)
+        self.save()
 
     def reject(self, text: Optional[str], file: Optional[str]) -> str:
         refuse_removed_options(self.args)
@@ -8431,7 +8445,6 @@ class Coordinator:
         if turn is not None:
             turn['discarded'] = reason
             atomic_json(self.evidence / f"{turn['sequence']:03d}-{turn['phase'].lower()}-reviewer.receipt.json", turn)
-            self.save()
 
     def _save_test_evidence(self, turn: dict, proof: dict, *, validated=False) -> None:
         provenance = self._test_provenance(proof, turn['sequence'])
@@ -9689,24 +9702,33 @@ class Coordinator:
             statuses += ('REVISE_NEEDS_OPERATOR',)
         schema = review_schema(statuses=statuses, confirm_shadow=phase == 'EXEC' and any(
             row.get('needs_confirmation') for row in self._reviewer_open_findings()))
+        retry = self.state.get('reviewer_retry') or {}
+        if retry.get('phase') != phase:
+            retry = {}
+        empty_evidence_reason = 'EXEC APPROVE rejected: empty self_run_evidence'
         result = self._recorded_reviewer_result(phase)
-        if result is None:
-            if issue := self._review_only_start_issue():   # D-LG1: the first review sees exactly the frozen change
-                return self.hold(issue)
-            self.materialize_review_context()
-            snapshot, _ = git_snapshot(self.workspace)
-            result = self.invoke('reviewer', phase, self._review_prompt('reviewer', snapshot), schema)
-        self.state['pending_reviewer_result_sequence'] = result['sequence']
-        self.save()
-        snapshot = result['snapshot']
-        for attempt in range(2):
+        for attempt in range(int(bool(retry)), 2):
+            if result is None:
+                if issue := self._review_only_start_issue():   # D-LG1: first review sees the frozen change
+                    return self.hold(issue)
+                self.materialize_review_context()
+                snapshot, _ = git_snapshot(self.workspace)
+                prompt = self._review_prompt('reviewer', snapshot) + retry.get('correction', '')
+                result = self.invoke('reviewer', phase, prompt, schema)
+            self.state['pending_reviewer_result_sequence'] = result['sequence']
+            self.save()
             result['answer'] = copy.deepcopy(result['answer'])
             answer = result['answer']
             self._ignore_operator_dispositions(result)
             self._refuse_gate_item_withdrawals(answer)
+            empty_approval = (phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence']
+                              and not (self.args.test_command is None and self.state['config'].get('review_report')))
+            retry_empty = empty_approval and not attempt
+            ignored_rows = []
             try:
                 missing = self.apply_dispositions(answer['prior_findings'], result['sequence'],
-                                                  result.get('open_finding_ids'), 'persistent-reviewer')
+                                                  result.get('open_finding_ids'), 'persistent-reviewer',
+                                                  validate_only=retry_empty, ignored_rows=ignored_rows)
             except InvalidDispositionIDs as exc:
                 reason = 'invalid finding dispositions'
                 feedback = 'contained ' + str(exc)
@@ -9714,24 +9736,40 @@ class Coordinator:
             except RuntimeError as exc:
                 self._discard_reviewer_result(result, 'invalid finding dispositions')
                 self.state['pending_reviewer_result_sequence'] = None
+                self.state.pop('reviewer_retry', None)
                 suffix = ' after retry' if attempt else ''
                 self.hold(f'reviewer invalid finding dispositions{suffix}: ' + str(exc))
                 return
             else:
-                if not missing:
+                if missing:
+                    reason = 'missing finding dispositions'
+                    feedback = 'omitted dispositions for: ' + ', '.join(missing)
+                    hold_reason = 'reviewer omitted open finding dispositions after retry: ' + ', '.join(missing)
+                elif retry_empty:
+                    reason = empty_evidence_reason
+                    feedback = 'was rejected with this guard reason: ' + reason
+                else:
+                    self._audit_ignored_dispositions(result['sequence'], ignored_rows, 'closed-unrequested')
+                    # Keep the spent attempt replayable while a second empty approval goes through normal routing.
+                    if not empty_approval:
+                        self.state.pop('reviewer_retry', None)
                     break
-                reason = 'missing finding dispositions'
-                feedback = 'omitted dispositions for: ' + ', '.join(missing)
-                hold_reason = 'reviewer omitted open finding dispositions after retry: ' + ', '.join(missing)
             self._discard_reviewer_result(result, reason)
+            self.state['pending_reviewer_result_sequence'] = None
             if attempt:
-                self.state['pending_reviewer_result_sequence'] = None
+                self.state.pop('reviewer_retry', None)
                 self.hold(hold_reason)
                 return
-            retry_prompt = (self._review_prompt('reviewer', snapshot) +
-                            '\nYour rejected response ' + feedback +
-                            '. This is the one allowed protocol retry; include every open id.')
-            result = self.invoke('reviewer', phase, retry_prompt, schema)
+            correction = ('\nYour previous response ' + feedback +
+                          '. This is the one allowed protocol retry; return exactly the requested dispositions.')
+            if reason == empty_evidence_reason:
+                correction += ' If you approve, list the checks you actually ran in self_run_evidence.'
+                if self.args.test_command:
+                    correction += ' Rerun the configured test command and report it in self_run_evidence.'
+            retry = {'phase': phase, 'rejected_sequence': result['sequence'], 'correction': correction}
+            self.state['reviewer_retry'] = retry
+            self.save()
+            result = None
         reviewer_raw_verdict = answer['status']
         ruling = answer['status'] == 'REVISE_NEEDS_OPERATOR'
         if ruling:
@@ -9793,6 +9831,7 @@ class Coordinator:
                     answer['status'] = 'REVISE'
             self.render(shadow, 'shadow', phase)
             if self.state['config'].get('review_report') and shadow['answer']['status'] == 'HOLD':
+                self.state.pop('reviewer_retry', None)
                 self.state['pending_reviewer_result_sequence'] = None
                 self.hold(hold_explanation('shadow HOLD', shadow_rows, shadow['answer'].get('self_run_evidence')))
                 return
@@ -9802,6 +9841,7 @@ class Coordinator:
             # R5: the reviewer approved and only the configured test failed in its sandbox: no fix round is used; the
             # operator runs the test on the host and attaches the record (or fixes a real failure), then resume re-reviews
             self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
+            self.state.pop('reviewer_retry', None)
             self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
             self.hold(TEST_EVIDENCE_HOLD)
             return
@@ -9828,6 +9868,7 @@ class Coordinator:
                 and not replaying and not self.state['config'].get('review_report')):
             # R5: the test evidence is the only obstacle; the operator can rerun the command or address a real failure.
             self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, 'REVISE')
+            self.state.pop('reviewer_retry', None)
             self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
             reason = TEST_EVIDENCE_HOLD
             if failure := self._latest_completed_test_failure(answer.get('observed_commands', [])):
@@ -9889,6 +9930,7 @@ class Coordinator:
                 if row.get('review_sequence') != result['sequence']]
             self.state['exec_comparisons'].append(comparison)
         self.capture_review_baseline(result['sequence'], phase)
+        self.state.pop('reviewer_retry', None)
         if answer['status'] == 'HOLD':
             if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: not APPROVE
                 return
@@ -9897,8 +9939,10 @@ class Coordinator:
             return
         if phase == 'EXEC' and answer['status'] == 'APPROVE' and not answer['self_run_evidence'] and not (
                 self.args.test_command is None and self.state['config'].get('review_report')):   # LG2-b2: a static approval
+            if empty_approval:
+                self._discard_reviewer_result(result, empty_evidence_reason)
             self.state['pending_reviewer_result_sequence'] = None
-            self.hold('EXEC APPROVE rejected: empty self_run_evidence')
+            self.hold(empty_evidence_reason)
             return
         rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
         if (rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status'])
@@ -11529,6 +11573,7 @@ def _execute_locked(args: argparse.Namespace) -> int:
             return 0
         suffix = ('; a prior CLI child may still be running; inspect uncertain_active before retry'
                   if co.state.get('active') or co.state.get('uncertain_active') else '')
+        co.state.pop('reviewer_retry', None)
         co.hold('aborted by operator' + suffix)
         co._cleanup_scratch()
         print('HOLD: ' + co.state['hold_reason'])

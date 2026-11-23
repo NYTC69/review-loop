@@ -1,5 +1,17 @@
 # Changelog
 
+### v3.15.3：修复持久评审答复重试的边界情况（WI-D）
+
+- 持久评审员为未请求的发现提交适用处置时，协调器会列出编号并要求在同一会话中纠正一次。已关闭且未请求的 `fixed` 和 `withdrawn` 行仍被忽略，原始行以 `closed-unrequested` 为原因写入回执。操作者撤回的行以 `operator-withdrawn` 记录，两类记录重放时合并去重。
+- 纠正回合遇到配额拒绝时，停止等待或进入配额 HOLD 都会保留纠正提示和已用掉的答复机会。恢复时沿用原等待计费和调用上限，已落盘的纠正答复按原回执序号重放。
+- 首次 EXEC APPROVE 缺少 `self_run_evidence` 时，在应用处置前丢弃该答复，并在同一会话中提示原因。丢弃的答复不提供可复用测试证明，重试提示要求重跑已配置的测试命令并报告。处置错误与证据错误共用一次重试。第二个空证据 APPROVE 仍经过原有裁定流程，最终仍为 APPROVE 时才按原原因 HOLD。
+- D4 仅补测试。恢复故障前的代码树仍需较新的合格测试通过记录或有效的宿主机验证，才能关闭协调器登记的测试失败。
+
+**按意图更新的测试断言**
+
+- `test_v324_test.test_reuse_observed_pass_on_same_tree` 保留原有 HOLD 原因和测试证明复用断言，补充断言两次空证据 APPROVE 的回执均标为丢弃。
+- `test_real_coordinator.test_exec_approve_without_self_run_evidence_holds` 预期调用两次 reviewer，原有 HOLD 断言未改。无断言被删除或放宽，调用上限保持原值。
+
 ### v3.15.2：修复门审修复后普通发现误填 `non_blocking` 导致的 HOLD（WI-NBFIX）；补充回归测试（WI-C）
 
 - `non_blocking` 仅用于持久评审员确认标有 “shadow finding to confirm” 的发现。普通发现误用该处置时按 `still_open` 记录，保留原有阻塞性，并通过一条 NOTE 列出受影响的编号。重放同一答复不会重复提示。仍有阻塞项时，APPROVE 继续转为 REVISE。

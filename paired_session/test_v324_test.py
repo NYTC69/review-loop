@@ -90,6 +90,37 @@ class FailedTestApprovalTests(unittest.TestCase):
                 else:
                     self.assertEqual(co.state['status'], 'DONE')
 
+    def test_reverted_tree_waits_for_passing_review_to_close_test_failure(self):
+        co = self.coordinator()
+        path = self.workspace / 'tracked.txt'
+        original = path.read_bytes()
+        original_tree = rc.git_snapshot(self.workspace)[0]
+        path.write_text('change that causes the test failure\n')
+        self.failing_review(co)
+        [row] = co.blocking_open_findings()
+        self.assertEqual(row['source'], 'test-failure')
+
+        path.write_bytes(original)
+        self.assertEqual(rc.git_snapshot(self.workspace)[0], original_tree)
+        self.assertEqual(row['status'], 'open')
+        self.assertEqual(len(row['status_history']), 1)
+        co.state.update(status='ACTIVE', hold_reason='')
+        collect = co._collect
+
+        def still_open(*args):
+            parsed = collect(*args)
+            [prior] = parsed[0]['prior_findings']
+            self.assertEqual(prior['id'], row['id'])
+            prior.update(disposition='still_open', evidence='left open by the reviewer')
+            return parsed
+
+        with patch.object(co, '_collect', side_effect=still_open):
+            co.reviewer_turn()
+        self.assertEqual(co.state['status'], 'DONE')
+        self.assertTrue(co.configured_test_succeeded(self.receipt(co, 'reviewer')))
+        self.assertEqual([entry['status'] for entry in row['status_history']], ['open', 'still_open', 'fixed'])
+        self.assertEqual(row['status_history'][-1]['evidence'], 'configured test command: observed successful run')
+
     def test_missing_and_unfinished_runs_keep_old_hold(self):
         for env, suffix in (({'FAKE_MISSING_OBSERVED': '1'}, ''),
                             ({'FAKE_CODEX_LONG': 'started-only'},
@@ -330,6 +361,9 @@ class FailedTestApprovalTests(unittest.TestCase):
             self.assertEqual(co._drive_loop(), 'HOLD')
         self.assertEqual(co.state['hold_reason'], 'EXEC APPROVE rejected: empty self_run_evidence')
         self.assert_reused(co, self.receipt(co, 'reviewer'), 'reused_test_evidence', reviewer['sequence'])
+        rejected = [turn for turn in co.state['turns'] if turn['role'] == 'reviewer'
+                    and turn['sequence'] > reviewer['sequence']]
+        self.assertEqual([turn['discarded'] for turn in rejected], [co.state['hold_reason']] * 2)
 
     def test_shadow_confirmation_reuses_the_repair_reviews_passing_test_on_the_same_tree(self):
         co = self.coordinator('--shadow', 'on', '--adversarial-gate', 'on')
