@@ -6,15 +6,14 @@
 
 ## P2 — normal
 
-- WI-E operator note semantics (design; the rejection item is a feature and needs owner OK during the trial). (added 2026-11-22)
-  - v3.14.0 follow-up (Opus, WI-NOTE R3): a note's ledger ids reach fresh roles unmasked (withdraw-findings rejects ids in its reason, note does not); replace LEDGER_ID_RE matches with a neutral token in the fresh audience. (2026-11-22)
-  - v3.14.0 follow-up (Opus, WI-NOTE R3/R4): a delivered note cannot be superseded; a later contradicting note shows both as standing decisions. (2026-11-22)
+- WI-E remaining: E3 (feature, needs owner OK during the trial). (added 2026-11-22)
   - v3.14.0 follow-up: rejections (reject --text) reach only the EXEC author; consider showing delivered rejections to the reviewer and gate like notes. (2026-11-22)
-  - v3.12.0 follow-up (Opus, WI-SPEC plan review): if specialist A later withdraws a row that B's claim was attached to, B's claim goes with it; B raises it again only when a later delta touches that file. (2026-11-22)
+  - v3.15.5 note (Opus, WI-E plan/code review): fresh roles get finding ids masked in notes, but review-history or vendor-attribution phrases in a note (e.g. "Codex approved") still reach them; withdraw-findings refuses those. Low risk under the threat model. (2026-11-24)
 - WI-F gemini / agy runtime follow-ups. (added 2026-11-22)
   - v3.11.0 follow-up (WI-TURNFAIL note 7): an agy exit > 0 without a quota line is a terminal ERROR; consider one retry. (2026-11-22)
   - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (2026-11-21)
   - v3.11.0 follow-up (WI-TURNFAIL): the unknown-reset backoff slot count is per run, not reset per invoke. (2026-11-22)
+- CI: two macOS test groups hit the 20-minute job timeout on the v3.15.5 candidate (cancelled, passed on rerun); rebalance the groups or raise the job timeout before more tests land. (added 2026-11-24)
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
@@ -33,16 +32,12 @@
 - Cosmetic polish follow-ups (wording or duplication only; no behavior change). (added 2026-11-24)
   - v3.15.4 note (Opus, WI-G/H R1): when both disposition and evidence errors occur, the correction says "rejected" twice; could merge into one sentence. (2026-11-24)
   - v3.15.4 note (Opus, WI-G/H R1): scenario_matrix re-splits each hint candidate with LABEL_SEPARATOR, close to _label_and_content; minor duplication in a diagnostic. (2026-11-24)
+  - v3.15.5 note (Opus, WI-E R1): README "When delivering a new clarification after an earlier note, the author follows…" reads as if the operator delivers; say "When a new clarification is delivered after an earlier note…". (2026-11-24)
+  - v3.15.5 note (Opus, WI-E R1): no test combines a withdrawal with two delivered notes (precedence line placement); optional. (2026-11-24)
 
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-B operator message wording (text only, no behavior change). Next up (owner 2026-11-22, with WI-A as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
-  - ~~Field (poker-tools gemini trial, 2026-11-21): the allowed_models refusal should name the profile key to edit. (2026-11-22)~~
-  - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the stop-after-plan HOLD says "PLAN approved" after a fast skip; the resume fast_plan check at run creation is a dead branch for resume. (2026-11-22)~~
-  - ~~v3.14.0 follow-up (Opus, WI-NOTE R1): an ACCEPTED run still prints "Pending operator note" without saying it was never delivered; no test pins omitting the ruling sentence on a writer replay. (2026-11-22)~~
-  - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 5): role flags passed again on every operator action are restored from the saved run; consider a NOTE when an explicit flag is ignored. (2026-11-22)~~
-  - ~~v3.12.0 follow-up (Opus, WI-SPEC): `resume --skip-quality-polish true` is silently unsaved when resume stops before the save point (round-limit HOLD without --add-rounds, past deadline, DONE, uncertain-turn HOLD); documented, consider a NOTE. (2026-11-22)~~
 - ~~WI-C regression tests only (no product code). After WI-A/B if there is room (owner 2026-11-22).~~ (added 2026-11-22) (closed 2026-11-22, see v3.15.2 WI-C)
   - ~~v3.14.0 follow-up (Opus, WI-NOTE R4): restore a test that the delivery turn carries the note once (no decisions block), and cover a later EXEC author turn after delivery. (2026-11-22)~~
   - ~~v3.11.1 follow-up (Opus, WI-DISPFIX): tests for an invalid answer followed by a retry that omits an id, replay through _recorded_reviewer_result, and the discarded marker on the rejected first turn. (2026-11-22)~~
@@ -57,3 +52,7 @@
   - G2 dropped: a bold Files-to-change entry falls back to ordinary PLAN review (safe direction); only glob fallback is pinned by a test, the bold case is not.
 - ~~WI-H reviewer retry record follow-ups.~~ (added 2026-11-23, closed 2026-11-24, see v3.15.4)
   - H1 fixed: a later author turn expires the saved reviewer correction. H2 fixed: a late-guard blocked approval is recorded as approval_blocked_reason (receipt and report), not discarded.
+- ~~WI-E operator note semantics (E1, E2, E4).~~ (added 2026-11-22, closed 2026-11-24, see v3.15.5)
+  - E1 fixed: fresh review roles (shadow, gate, POLISH-Q specialist, DOCS, SECURITY) see delivered notes with finding ids masked as [finding ID]; authors and the persistent reviewer keep the original text.
+  - E2 fixed: a later delivered note takes precedence on conflicting points (handoff line on the second delivery, precedence line when two or more notes are delivered).
+  - E4 dropped with a characterization test: a withdrawn covering row takes the attached report with it; the other specialist files a new row on a later eligible delta. E3 stays open (feature).
