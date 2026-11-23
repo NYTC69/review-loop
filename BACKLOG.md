@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-23
+**Last updated**: 2026-11-24
 
 ## P0 — blocker / must-do-now
 
@@ -15,16 +15,6 @@
   - v3.11.0 follow-up (WI-TURNFAIL note 7): an agy exit > 0 without a quota line is a terminal ERROR; consider one retry. (2026-11-22)
   - v3.10.0 follow-up (Sol review): README/ADR-21 wording on read-only recovery: a gemini reviewer that changes an existing ignored file HOLDs and leaves the edit on disk; automatic re-dispatch only follows a successful restore. (2026-11-21)
   - v3.11.0 follow-up (WI-TURNFAIL): the unknown-reset backoff slot count is per run, not reset per invoke. (2026-11-22)
-- WI-G cosmetic message and test-helper polish (no behavior change). (added 2026-11-22)
-  - v3.15.1 (Opus): the A3 near-miss hint can quote a numbered or bold prose line under a dimension (e.g. "1. Run the tool twice") as the unrecognised label; message only, pass/fail unchanged.
-  - v3.15.1 (Opus): a top-level Files-to-change entry written with ** emphasis (e.g. **`a.py`**) counts as a glob and falls back to PLAN review (pre-existing, conservative).
-  - v3.15.2 (Opus): the normalization NOTE says "findings that need no confirmation" even when a non-persistent owner answered non_blocking on a needs_confirmation row; cosmetic.
-  - v3.15.2 (Opus): test_wi_dispfix builds trc.RealCoordinatorTests() by hand for its setUp; a mixin or helper would be sturdier.
-  - v3.15.3 note (Opus, WI-D R1): the D5 correction also says "return exactly the requested dispositions", slightly off-topic for an evidence-only error. (2026-11-23)
-  - v3.15.3 note (Opus, WI-D R1): _discard_reviewer_result no longer saves; add a one-line docstring so new callers save themselves. (2026-11-23)
-- WI-H reviewer retry record follow-ups (low reachability; at most one lost retry). (added 2026-11-23)
-  - v3.15.3 note (Opus, WI-D R1): reviewer_retry is keyed only by phase; a non-quota HOLD inside the retry followed by a route back to the author leaves a stale correction for the next reviewer turn. Clear it when next leaves reviewer, or bind it to rejected_sequence. (2026-11-23)
-  - v3.15.3 note (Opus, WI-D R1): a second empty-evidence approval is marked discarded after its dispositions and verdict were applied, so the receipt reads both discarded and applied (audit wording only). (2026-11-23)
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
@@ -40,15 +30,13 @@
     - A run/resume pre-flight check that each vendor CLI is logged in under the run's CODEX_HOME / Claude config, refusing early with a refresh hint instead of a mid-run HOLD (gg-pipeline WI-282a, 2026-10-24; deferred).
 - Deferred Windows items after v3.3.0 (ADR-20): map Git Bash `/c/...` operands through `winplat.windows_abs_path` in `evidence_guard` (log-only on Windows today); decode PowerShell `-EncodedCommand` if a real Codex sample shows it; `--detach` on Windows; Linux/WSL support. (added 2026-10-27)
 - v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner 2026-11-22: deferred, quota is not tight; revisit when it is. quota_status.py is machine-local). (added 2026-11-22)
+- Cosmetic polish follow-ups (wording or duplication only; no behavior change). (added 2026-11-24)
+  - v3.15.4 note (Opus, WI-G/H R1): when both disposition and evidence errors occur, the correction says "rejected" twice; could merge into one sentence. (2026-11-24)
+  - v3.15.4 note (Opus, WI-G/H R1): scenario_matrix re-splits each hint candidate with LABEL_SEPARATOR, close to _label_and_content; minor duplication in a diagnostic. (2026-11-24)
 
 ## Done (recent, trimmed quarterly)
 
 
-- ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach.~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted: hard to reach, owner threat model)
-- ~~WI-A plan scan false HOLDs: shadow plan-path exemption on Codex/gemini + fast-plan polish. Next up (owner 2026-11-22, with WI-B as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
-  - ~~v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (2026-11-21)~~
-  - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): nested sub-bullets under "## Files to change" count as files (conservative fallback to PLAN review). (2026-11-22)~~
-  - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the matrix "missing rows for X" error could name an unrecognised near-miss label. (2026-11-22)~~
 - ~~WI-B operator message wording (text only, no behavior change). Next up (owner 2026-11-22, with WI-A as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
   - ~~Field (poker-tools gemini trial, 2026-11-21): the allowed_models refusal should name the profile key to edit. (2026-11-22)~~
   - ~~v3.15.0 follow-up (Opus, WI-FASTPLAN R1): the stop-after-plan HOLD says "PLAN approved" after a fast skip; the resume fast_plan check at run creation is a dead branch for resume. (2026-11-22)~~
@@ -64,3 +52,8 @@
 - ~~WI-D reviewer answer retry edge cases.~~ (added 2026-11-22, closed 2026-11-23 in v3.15.3)
   - D1, D2, D3 and D5 shipped in v3.15.3.
   - D4 characterized by a revert regression test; runtime change dropped because closing a test-failure row still requires a newer eligible pass or valid host verification.
+- ~~WI-G cosmetic message and test-helper polish.~~ (added 2026-11-22, closed 2026-11-24, see v3.15.4)
+  - G1, G3-G6 fixed in v3.15.4 (matrix near-miss hint takes the label prefix, normalization NOTE wording, retry correction matches the error kind, coordinator_fixture helper, discard docstring).
+  - G2 dropped: a bold Files-to-change entry falls back to ordinary PLAN review (safe direction); only glob fallback is pinned by a test, the bold case is not.
+- ~~WI-H reviewer retry record follow-ups.~~ (added 2026-11-23, closed 2026-11-24, see v3.15.4)
+  - H1 fixed: a later author turn expires the saved reviewer correction. H2 fixed: a late-guard blocked approval is recorded as approval_blocked_reason (receipt and report), not discarded.
