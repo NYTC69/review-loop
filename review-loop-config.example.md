@@ -26,6 +26,9 @@
 # and its files deleted).
 # entry: paired-session
 
+# For work about tool-state directories, declare the applicable subjects in the work item:
+# history-scan-subject: claude codex gemini
+
 # soft_limit_plan: 3            # --max-plan-rounds; a blocking review at the cap HOLDs and `resume --add-rounds N`
                                 # continues it; an eligible advisory-only review at the cap is approved with its rows
                                 # left open as advisory

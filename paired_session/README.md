@@ -160,9 +160,22 @@ commit are exempt. Repository quotations in `plan.md` and `workitem.md` get the 
 backticks or fenced code blocks, with the matched text present in a file at the base commit.
 Bare Claude, Codex, Opus and Astra names have separate prose exceptions. For added product text, name the model in the frozen work item
 as a whole word or a numeric model ID such as `claude-opus-5-5` or `gpt-6-astra`.
-Names such as `pre-Opus` and paths such as `/opt/claude-opus-5-5/` do not establish this exception. In `plan.md`, a slash chain of three or more plain words is prose when every part is a model name or a word of at least three letters that the frozen work item uses on its own (`terra/Opus/sol roles`), since v3.8.6; `readers/opus/cache` stays a path. Attribution, vendor paths, finding IDs and verdict words remain subject to the scan, with three exceptions since v3.8.5: a tool-named directory path (`runs_live/codex_0166/`) passes in the delta patches and in `plan.md` when the frozen work item names that tool as a word of its own (a model ID such as `claude-opus-5-5` does not count), unless a tool-named component is a dot directory (`.codex/`) or the sandbox scratch root (`claude-501`); a tool name as the last path component (`node_modules/.bin/codex`) counts as a file name for the work-item exception unless a directory before it is the tool's own (`codex/`, `.codex/`, `claude-501/`) or an attribution verb follows it (`GPT/Codex signed off`); and in the delta patches, linter rule codes after `# noqa:` are not finding IDs. A refusal lists only the added lines that hold the matched text. Without a
+Names such as `pre-Opus` and paths such as `/opt/claude-opus-5-5/` do not establish this exception. In `plan.md`, a slash chain of three or more plain words is prose when every part is a model name or a word of at least three letters that the frozen work item uses on its own (`terra/Opus/sol roles`), since v3.8.6; `readers/opus/cache` stays a path. Attribution, vendor paths, finding IDs and verdict words remain subject to the scan, with three exceptions since v3.8.5: a tool-named directory path (`runs_live/codex_0166/`) passes in the delta patches and in `plan.md` when the frozen work item names that tool as a word of its own (a model ID such as `claude-opus-5-5` does not count), unless a tool-named component is a dot directory or the sandbox scratch root (`claude-501`). Tool-state dot directories use the explicit declaration below. A tool name as the last path component (`node_modules/.bin/codex`) counts as a file name for the work-item exception unless a directory before it is the tool's own (`codex/`, `.codex/`, `claude-501/`) or an attribution verb follows it (`GPT/Codex signed off`). In the delta patches, linter rule codes after `# noqa:` are not finding IDs. A refusal lists only the added lines that hold the matched text. Without a
 `base_commit`, the old scan applies. The same helper applies to fresh shadow,
 gate, PLAN approval and review-only creation inputs.
+
+When the work is about tool-state directories, add `history-scan-subject: claude codex gemini` to the work item
+with the applicable vendor IDs. Each plain or Markdown-list declaration takes whitespace-separated,
+case-insensitive IDs. Valid declarations combine. An empty or malformed declaration grants no exception.
+The frozen declaration allows the corresponding complete components in `plan.md` and in added lines of
+`delta.patch` and `delta-since-last-review.patch`. It covers `.claude`, `.codex`, `.codex-paired` (including
+suffixed roots and literal `.codex-paired*`), and `.gemini`, including quoted path components such as
+`joinpath(".claude", "projects")`. A valid declaration also names its vendors for the existing bare-name
+exception. Finding IDs, verdict words, review attributions, and review-history phrases remain subject to the scan.
+
+To recover a held run, `abort` it (the workspace stays untouched), then start a new run with the declaration in
+its work item. On a dirty lane, the new run uses HEAD as its base. Its change includes the earlier uncommitted
+edits, and the new PLAN author sees the already-implemented tree.
 When a shadow or gate is
 on, a plan that the reviewer approves while it still carries ledger ids or such
 wording is sent back to the author for a restatement without them, so the gate

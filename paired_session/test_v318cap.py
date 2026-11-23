@@ -106,6 +106,7 @@ class DispatchBudgetTests(unittest.TestCase):
             baseline = old._gate_prompt('snapshot') if role == 'gate' else old._review_prompt(role, 'snapshot')
             for name in ('REVIEW_SEVERITY_GUIDANCE', 'LEDGER_DISPOSITION_GUIDANCE', 'APPROVE_CONVERSION_NOTE'):   # v3.8.1: the
                 baseline = baseline.replace(getattr(released, name), getattr(rc, name))                          # security rule text only
+            baseline = baseline.replace(released.REVIEW_HISTORY_GUIDANCE, rc.REVIEW_HISTORY_GUIDANCE)
             if role == 'gate':   # WI-GATE1: the gate reports FAIL items, not class-labelled findings
                 baseline = baseline.replace('\n' + released.CLASS_LABEL_GUIDANCE.format(field='body'), '')
             baseline = baseline.replace('to that Bash call.', 'to a Bash call.').replace(

@@ -1,5 +1,16 @@
 # Changelog
 
+### v3.15.6：修复工具状态目录被独立性扫描误判为审查历史（WI-HISTSCAN）
+
+- token-meter 的 shadow HOLD 由 `adapters/claude.py:96` 中 `joinpath(".claude", "projects")` 的目录组件触发。诊断现在只指出遮蔽后仍命中的新增行。产品供应商裸名继续沿用 FIELD-30 的规则。
+- 在 work item 中加入 `history-scan-subject: claude codex gemini`，按需列出供应商。启动时冻结的声明允许 PLAN 和两份 delta 补丁的新增行使用对应工具状态目录。发现编号、裁决词、评审归因和评审历史措辞继续接受扫描。
+- 已经 HOLD 的 run 先用 `abort`（工作区不变），再带上声明启动新 run。在有未提交改动的 lane 中，新 run 以 HEAD 为基线，改动包含此前未提交的编辑，PLAN 作者看到的是已经实现的工作树。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 第 93、99、105、111 行的四个版本断言与发布清单同步从 `3.15.5` 更新为 `3.15.6`。文案 lint 断言没有变动。
+- `paired_session/test_v318cap.py` 的评审提示字节对照基线更新为本版的独立性扫描指导词，继续完整比较其余提示文本。
+
 ### v3.15.5：修复操作者备注的编号遮蔽与冲突优先级（WI-E）
 
 - E1：shadow、gate、POLISH-Q specialist、DOCS review 和 SECURITY review 收到的已交付备注将发现编号替换为 `[finding ID]`。shadow 和 gate 的独立性审计输入也保存遮蔽后的提示。交付作者、后续作者、持久评审员和备注证据保留原文。

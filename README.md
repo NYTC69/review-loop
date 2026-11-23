@@ -518,6 +518,16 @@ delivery, files the run never touched included (a hit there is a NOTE, not a HOL
 ids, GitHub, Slack, Google and Stripe live tokens), and the marker does not exempt those; the JWT, `sk-` and
 key-named-literal rules apply only to lines the run adds and to a review-pr post body.
 
+**History scan subjects** — For work that reads vendor session logs or otherwise uses tool-state directories, add
+`history-scan-subject: claude codex gemini` to the work item with the applicable IDs. Use a plain line or a Markdown list item.
+IDs are case-insensitive and whitespace-separated. Valid lines combine, and a line with an unknown ID or path is ignored.
+The declaration lets the plan and added lines in both delta patches name the listed vendors' state directories.
+The scan still checks review attributions, finding IDs, verdict words, and review-history wording.
+
+The run freezes the declaration when it starts. For a held run, use `abort` (the workspace stays untouched),
+then start a new run with the declaration in its work item. On a dirty lane, the new run uses HEAD as its base.
+Its change includes the earlier uncommitted edits, and the new PLAN author sees the already-implemented tree.
+
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory under `<repo>/.review-loop/runs/<UUID>/` (gitignored); legacy `.review-loop/sessions/` files are left on disk and never read.
 

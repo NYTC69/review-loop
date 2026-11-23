@@ -286,7 +286,17 @@ DOTTED_PATH_RE = re.compile(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=
 BARE_MODEL_NAME_RE = re.compile(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', re.I)
 REVIEW_HISTORY_GUIDANCE = ('Flag accidental review-history carry-over, but do not flag bare vendor/model names '
                            'when the frozen work item is about them (contains the same whole word, case-insensitively). '
-                           'Review attributions, vendor-named directory paths, finding ids and verdict words remain review-history markers.')
+                           'Allow tool-state directory components for vendors declared as work-item subjects. '
+                           'Review attributions, other vendor-named directory paths, finding ids and verdict words remain markers.')
+HISTORY_SUBJECT_LINE_RE = re.compile(r'^[ \t]*(?:(?:[-+*]|\d+[.)])[ \t]+)?history-scan-subject:[ \t]*(.*)$', re.M)
+HISTORY_SUBJECT_VENDORS = {'claude', 'codex', 'gemini'}
+HISTORY_SUBJECT_PATCHES = ('context/delta.patch', 'context/delta-since-last-review.patch')
+# Keep the attribution-shaped slash forms used by the legacy prose classifier.
+HISTORY_SUBJECT_DIR_RE = re.compile(
+    r'''(?<![\w.-])\.(claude|codex|gemini)(?:(?<=codex)-paired(?:\*|-[\w-]+)?)?'''
+    r'''(?=[/\\\s'"`\])},;:>]|\.(?=\s|$)|$)'''
+    r'(?!(?:[/\\][\w.-]+)*\s+(?:approved?|said|requested|signed|rejected)\b)',
+    re.I)
 # FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
 AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
                        '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
@@ -5871,11 +5881,11 @@ class Coordinator:
             prose = re.sub(r'(?<![\w/])' + re.escape(path) + r'(?!\w)', '<run-path>', prose)
         return prose
 
-    def _history_markers(self, name: str, content: str) -> list[str]:
+    def _history_markers(self, name: str, content: str, subjects: Optional[set[str]] = None) -> list[str]:
         """The review-history markers the fresh shadow/gate scan finds in one input, in scan order (as reported)."""
-        return [shown for shown, _ in self._history_matches(name, content)]
+        return [shown for shown, _ in self._history_matches(name, content, subjects)]
 
-    def _history_matches(self, name: str, content: str) -> list[tuple[str, str]]:
+    def _history_matches(self, name: str, content: str, subjects: Optional[set[str]] = None) -> list[tuple[str, str]]:
         """(reported marker, whole matched text) per review-history match; a vendor pattern reports its name group
         ("Claude") while the whole match ("Claude approved") is what a FIELD-23 exemption must find at the base."""
         def findall(pattern, text, flags=0):
@@ -5884,17 +5894,18 @@ class Coordinator:
         # Role/rubric instructions in prompts/templates are not prior verdicts.
         matches = findall(FRESH_HISTORY_RE, content)
         prose = self._run_path_prose(name, content)
+        subject_prose = self._mask_subject_dirs(prose, subjects)
         # Unknown vendor-named directory paths remain subject to the scan.
         matches += findall(r'\b(Claude|Codex|Opus|Astra)\s+(?:approved|said|requested)\b', prose, re.I)
-        matches += findall(r'(?<![\w/>])/(?:[\w.-]+/)*?[\w.-]*?(claude|codex|opus|astra)[\w.-]*/',
-                           prose, re.I)
+        matches += [(match.group(1), prose[match.start():match.end()])
+                    for match in re.finditer(r'(?<![\w/>])' + self.TOOL_PATH_RE.pattern, subject_prose, re.I)]
         # Keep attribution prose visible when a vendor-dot token resembles a filename.
         matches += findall(
             r'\b((?:Claude|Codex|Opus|Astra))\.(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\s+'
             r'(?:approved|requested|said|signed|reviewed|found|asked|rejected)\b', prose, re.I)
         matches += findall(r'\b(?:Per|By|From)\s+((?:Claude|Codex|Opus|Astra))\.'
                            r'(?:(?-i:[A-Z])[A-Za-z0-9]*|ai|app|com)\b', prose, re.I)
-        prose = DOTTED_PATH_RE.sub('<path>', prose)
+        prose = DOTTED_PATH_RE.sub('<path>', subject_prose)
         matches += findall(self._bare_name_re(), prose)
         if name not in ('prompt', 'gate-template'):
             matches += findall(r'\b(?:APPROVE|REVISE|needs-attention)\b', content)
@@ -5921,6 +5932,27 @@ class Coordinator:
         commands = {c.strip() for c in (self.args.test_command, *(self.args.reviewer_command or ()), *frozen) if c and c.strip()}
         return sorted(commands, key=len, reverse=True)
 
+    def _history_workitem(self) -> tuple[str, set[str]]:
+        try:
+            text = (self.context / 'workitem.md').read_text(encoding='utf-8')
+        except OSError:
+            return '', set()   # No frozen work item yet at run creation.
+        subjects = set()
+        for value in HISTORY_SUBJECT_LINE_RE.findall(text):
+            vendors = set(value.lower().split())
+            if vendors <= HISTORY_SUBJECT_VENDORS:
+                subjects.update(vendors)
+        return HISTORY_SUBJECT_LINE_RE.sub('', text), subjects
+
+    @staticmethod
+    def _mask_subject_dirs(text: str, subjects: Optional[set[str]]) -> str:
+        if not subjects:
+            return text
+        # Keep offsets and path separators for the path matcher. Hard markers read the original text.
+        return HISTORY_SUBJECT_DIR_RE.sub(
+            lambda match: '.' + 'x' * (len(match.group(0)) - 1) if match.group(1).lower() in subjects else match.group(0),
+            text)
+
     def _fresh_history_text(self, name: str, content: str, base: Optional[str] = None) -> str:
         """One repository-text exemption helper for fresh scans, PLAN approval and review-only creation."""
         record = (getattr(self, 'state', None) or {}).get('review_only') or {}
@@ -5939,10 +5971,8 @@ class Coordinator:
         def repo_word(text):   # the same text as a whole word: "APPROVE" is not in "approved", "F042" not in "9af042bc"
             return re.compile(r'(?<![\w-])' + re.escape(text) + r'(?![\w-])', re.I)
 
-        try:
-            workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
-        except OSError:
-            workitem_text = ''   # No frozen work item yet at run creation.
+        workitem_text, subjects = self._history_workitem()
+        subjects = subjects if name in HISTORY_SUBJECT_PATCHES else set()
 
         def model_id_component(whole):   # V312: any component of a hyphenated model id with a digit component
             # (claude-opus-5-5 names Claude and Opus, gpt-6-astra names Astra); prose ("pre-Opus", "Claude-based") and
@@ -5954,24 +5984,37 @@ class Coordinator:
             return False
 
         def workitem_name(whole, text):
-            named = repo_word(whole).search(workitem_text) or model_id_component(whole)
+            named = (repo_word(whole).search(workitem_text) or model_id_component(whole)
+                     or whole.lower() in subjects)
             return bool(self._bare_name_re().fullmatch(whole) and named
                         and name != 'context/plan.md' and self._plan_tool_name(whole, text))
 
         def mask(text, exists):
             # Replace an exempt whole match as a whole word; unrelated markers in the same quote/line remain visible, and
             # so does a non-exempt match that contains exempt text ("Claude approved" when only "Claude" is base text).
-            wholes = {whole: exists(whole) or workitem_name(whole, text) for _, whole in self._history_matches(name, text)}
+            subject_text = self._mask_subject_dirs(text, subjects)
+            wholes = {whole: exists(whole) or workitem_name(whole, subject_text)
+                      for _, whole in self._history_matches(name, text, subjects)}
             kept = [whole.lower() for whole, exempt in wholes.items() if not exempt]
             for whole, exempt in wholes.items():
-                if exempt and not any(whole.lower() in other for other in kept):
+                if not exempt:
+                    continue
+                # A path exposed by the subject scan can contain a kept marker in one of its components.
+                word = whole.lower()
+                overlaps_subject = self._mask_subject_dirs(whole, subjects) != whole
+                if not any(word in other or (overlaps_subject and other in word) for other in kept):
                     # V328-MASK: mask every occurrence the bare-name scan can find, including hyphen compounds.
                     pattern = (re.compile(r'\b' + re.escape(whole) + r'\b', re.I)
                                if self._bare_name_re().fullmatch(whole)
                                # V385-PATH: a path match ends with '/', and the path goes on after it (node_modules/)
                                else re.compile(re.escape(whole), re.I) if self.TOOL_PATH_RE.fullmatch(whole)
                                else repo_word(whole))
-                    text = pattern.sub('<repo-text>', text)
+                    if subjects and self._bare_name_re().fullmatch(whole):
+                        subject_text = self._mask_subject_dirs(text, subjects)
+                        text = pattern.sub(lambda match: '<repo-text>' if subject_text[match.start():match.end()]
+                                           == match.group(0) else match.group(0), text)
+                    else:
+                        text = pattern.sub('<repo-text>', text)
             return text
 
         if name.endswith('.patch'):
@@ -6158,10 +6201,7 @@ class Coordinator:
         # work item uses on its own ("terra/Opus/sol roles" for a work item about the terra and sol readers);
         # readers/opus/cache stays a path because the work item does not use "readers" and "cache" as words, and a part shorter
         # than three letters ("a/codex/b") never counts as a work-item word
-        try:
-            workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
-        except OSError:
-            workitem_text = ''
+        workitem_text, _ = self._history_workitem()
         def named(part):
             return bool(re.fullmatch(model, part) or len(part) >= 3 and re.search(r'(?<![\w-])' + re.escape(part) + r'(?![\w-])', workitem_text, re.I))
         pairs += [match.span() for match in re.finditer(r'(?<![\w/.-])[A-Za-z][\w-]*(?:/[A-Za-z][\w-]*){2,}(?![\w/-]|\.\w)', text)
@@ -6190,36 +6230,38 @@ class Coordinator:
     def _introduced_history_matches(self, name: str, content: str, base: Optional[str] = None) -> list[tuple[str, str]]:
         """(reported marker, whole matched text) for every review-history match the fresh scans refuse."""
         text = self._fresh_history_text(name, content, base)
+        workitem_text, subjects = '', set()
+        if name == 'context/plan.md' or (name in HISTORY_SUBJECT_PATCHES and content.startswith('diff --git ')
+                                         and (base if base is not None else self.state.get('base_commit'))):
+            workitem_text, subjects = self._history_workitem()
         if name == 'context/plan.md':
             text = self.SANDBOX_SCRATCH_RE.sub('/sandbox-scratch/', text)   # no '>': a tool-named directory below it is still
             # caught; since v3.8.5 a bare tool name as the last component below it (/tmp/claude-501/codex) reads as a file
-        matches = self._history_matches(name, text)
+        matches = self._history_matches(name, text, subjects)
         if name in self.WORKITEM_SOURCES:
             matches = [(shown, whole) for shown, whole in matches
                        if not (self.OPERATOR_TOOL_NAME_RE.fullmatch(whole) or self._bare_name_re().fullmatch(whole))]   # ADR-21: gemini
         elif name == 'context/plan.md':
-            try:   # V385-PATH: a plan for work about a tool quotes the paths the work item is about, as the change does
-                workitem_text = (self.context / 'workitem.md').read_text(encoding='utf-8')
-            except OSError:
-                workitem_text = ''
+            # V385-PATH: a plan can quote paths the work item is about, as the change does.
+            subject_text = self._mask_subject_dirs(text, subjects)
             matches = [(shown, whole) for shown, whole in matches
-                       if not (self._plan_tool_name(whole, text) or ('/sandbox-scratch/' not in whole   # FIELD-33 root
-                                                                      and self._workitem_tool_path(whole, workitem_text)))]
+                       if not (self._plan_tool_name(whole, subject_text) or ('/sandbox-scratch/' not in whole
+                                                                            and self._workitem_tool_path(whole, workitem_text)))]
         return matches
 
     def _delta_history_hits(self, patch: str) -> list[tuple[str, str]]:
         """FIELD-31b: (path:line, marker) for every review-history match on an added line of the patch, every file."""
         hits = []
+        base = self.state.get('base_commit')
+        _, subjects = self._history_workitem() if base and patch.startswith('diff --git ') else ('', set())
+        scan_name = 'context/delta.patch'
         for section in re.split(r'(?m)^(?=diff --git )', patch):
-            if not (found_matches := list(dict.fromkeys(self._introduced_history_matches('context/delta.patch', section)))):
+            masked = self._fresh_history_text(scan_name, section)
+            if not (markers := list(dict.fromkeys(self._history_markers(scan_name, masked, subjects)))):
                 continue
-            markers = list(dict.fromkeys(marker for marker, _ in found_matches))
-            added = [line.lower() for line in section.splitlines() if line.startswith('+')]
-            # V385-LOC: look for the whole match ("/runs_live/codex_0166/"), so a line that only names the bare tool, which
-            # the scan exempted, is not listed; the marker itself is the fallback when the whole text is not on one line
-            needles = {marker: [whole.lower() for m, whole in found_matches if m == marker
-                                and any(whole.lower() in line for line in added)] or [marker.lower()]
-                       for marker in markers}
+            # The base-aware scan yields one masked line per addition. The legacy scan returns the whole patch.
+            added = (iter(masked.split('\n')) if base else
+                     (line[1:] for line in masked.partition('\n@@')[2].splitlines() if line.startswith('+')))
             # git ends the header of a path that contains a space with a tab: a separator, not the name (as leak_scan)
             name = next((line[4:].rstrip('\t') for line in section.splitlines() if line.startswith('+++ ')), '')
             if name.startswith('"') and name.endswith('"'):
@@ -6231,8 +6273,8 @@ class Coordinator:
                     number = int(hunk.group(1)) - 1
                 elif line.startswith(('+', ' ')):
                     number += 1
-                    for marker in markers if line.startswith('+') else ():
-                        if any(needle in line.lower() for needle in needles[marker]):
+                    if line.startswith('+'):
+                        for marker in dict.fromkeys(self._history_markers(scan_name, next(added, ''), subjects)):
                             hits.append((f'{name}:{number}', marker))
                             found.add(marker)
             hits += [(name, marker) for marker in markers if marker not in found]   # a match that spans lines

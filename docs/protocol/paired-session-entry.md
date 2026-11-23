@@ -147,6 +147,9 @@ workspace while a run is active: it would delete the run.
 The first line is the title, `# <one-line summary of the task>`: `accept` uses it as the commit title and the delivery report names the work item with it, so never a generic heading such as `# Work item`.
 Add a `secret-scan-allow: <path or glob>` line (one per path) only when the user says a secret-like literal under that path is a deliberate test fixture; the coordinator's secret scan otherwise blocks it.
 Declare exemptions before starting the run. If a deliberate fixture or false positive appears later, start a new run with the exemption; resume uses the frozen work item.
+For an approved work item about tool-state directories, add a line such as `history-scan-subject: claude codex gemini` with only the applicable IDs.
+The frozen declaration applies to the plan and added lines in both delta patches. For a held run, use `abort` and start a new run with the declaration in its work item.
+On a dirty lane, the new run starts from HEAD, includes the earlier uncommitted edits in its change, and presents the already-implemented tree to the PLAN author.
 Include only user-approved requirements; mark uncertainties as questions
 instead of inventing acceptance criteria. Set the test command from the loaded
 profile or the verified project command and pass it as one quoted argument;
