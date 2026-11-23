@@ -6,11 +6,12 @@
 
 ## P2 — normal
 
-- WI-I PLAN round cap: continue automatically like the post-gate-FAIL repair rounds (feature; owner request 2026-11-24 via token-meter). (added 2026-11-24)
+- WI-I PLAN round cap: continue automatically like the post-gate-FAIL repair rounds (feature, owner-approved 2026-11-24; request via token-meter). (added 2026-11-24)
   - Owner: "我觉得就是要给 rl report 这个需求. 让他实现. 因为这个逻辑和门审没过很像." / "为什么每次还是需要问我. 我以为这个流程是自动化的."
   - Proposal: at max_plan_rounds with blockers open, run one more PLAN round automatically, then one final round; if still open, split the remaining findings into a follow-up work item (BACKLOG with ids, shown in the delivery report) and proceed to EXEC as if the plan passed.
   - Field evidence: token-meter run 2f6f0112 (v3.15.5): F001 (data-loss class) stayed open r1-r4, r4 added F007-F009, plan grew 324 -> 456 lines; operator used note --scope-change.
-  - Design questions: today carrying PLAN findings needs an explicit owner withdraw-findings; how the auto-split records consent; whether data-loss/security/money leftovers still HOLD; whether "two consecutive rounds add new blockers" triggers the split early.
+  - Owner-approved design (2026-11-24): PLAN: rounds 4 and 5 run automatically; two consecutive rounds that add new blockers trigger the cut early; after round 5 (or the early trigger) the author writes a reduced plan that moves the contested parts into a follow-up WI (finding ids to BACKLOG and the delivery report), the reviewer checks only the reduced plan (at most 1 round), then EXEC on the reduced scope; HOLD only if the blocker is in the core and nothing implementable remains. EXEC: after 5 review rounds the run passes and leftovers split into a new WI. Data-loss/security/money leftovers are listed first and highlighted in the delivery report. The coordinator records an "auto-split by rule" entry (finding ids, target WI) in place of the operator withdraw-findings.
+  - Timing: after the Claude reset (11-28); send Yuan the plan summary for confirmation before EXEC (large feature).
 - WI-E remaining: E3 (feature, needs owner OK during the trial). (added 2026-11-22)
   - v3.14.0 follow-up: rejections (reject --text) reach only the EXEC author; consider showing delivered rejections to the reviewer and gate like notes. (2026-11-22)
   - v3.15.5 note (Opus, WI-E plan/code review): fresh roles get finding ids masked in notes, but review-history or vendor-attribution phrases in a note (e.g. "Codex approved") still reach them; withdraw-findings refuses those. Low risk under the threat model. (2026-11-24)
