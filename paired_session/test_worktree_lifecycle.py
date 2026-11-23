@@ -1210,6 +1210,57 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         recheck.assert_called_once()
         self.assertEqual(recheck.call_args.args[0], a)
 
+    def test_withdrawing_a_shared_specialist_row_leaves_no_open_attached_claim(self):
+        co = self.polish_at(approve_first=False)
+        a, b = 'python-reviewer', 'code-reviewer'
+        first = {'severity': 'MAJOR', 'file': 'sum_ints.py:1', 'summary': 'first report', 'failure_scenario': 'x'}
+        second = {**first, 'summary': 'second report'}
+
+        def run_pass(findings):
+            co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=rc.git_snapshot(self.workspace)[0])
+            with mock.patch.object(co, 'invoke', side_effect=self.polish_invoke(co, findings)):
+                co.worktree_polish_turn()
+            return co.state['lifecycle']['receipts'][-1]
+
+        with mock.patch.object(co, 'materialize_review_context'), mock.patch.object(co, 'render'):
+            run_pass({a: [first], b: [second]})
+            [shared] = co.state['finding_ledger']
+            self.assertEqual(shared['owner_role'], 'specialist:' + a)
+            self.assertEqual(co.blocking_open_findings(), [shared])
+            attached = shared['status_history'][-1]
+            self.assertEqual(attached['evidence'], 'also reported by specialist:code-reviewer: second report')
+            self.assertEqual(co.state['next'], 'polish-fix')
+            (self.workspace / 'other.py').write_text('VALUE = 2\n')
+            stub = self.polish_invoke(co)
+
+            def withdraw(*args, **kwargs):
+                result = stub(*args, **kwargs)
+                result['answer']['prior_findings'] = [
+                    {'id': shared['id'], 'disposition': 'withdrawn', 'evidence': 'no longer applies'}]
+                return result
+
+            with mock.patch.object(co, 'invoke', side_effect=withdraw) as invoke:
+                co.worktree_polish_recheck_turn()
+            self.assertEqual([call.args[2].split('Role: specialist ', 1)[1].split(',', 1)[0]
+                              for call in invoke.call_args_list], [a])
+            self.assertEqual(shared['status'], 'withdrawn')
+            self.assertIn(attached, shared['status_history'])
+            self.assertEqual(co.state['finding_ledger'], [shared])
+            self.assertEqual(co.blocking_open_findings(), [])
+            self.assertEqual(co.state['next'], 'reviewer')
+
+            out_of_scope = run_pass({})
+            self.assertEqual(out_of_scope['delta_paths'], ['other.py'])
+            self.assertIn(b, out_of_scope['specialists'])
+            self.assertEqual(co.state['finding_ledger'], [shared])
+
+            (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values, 0)\n')
+            eligible = run_pass({b: [second]})
+            self.assertEqual(eligible['delta_paths'], ['sum_ints.py'])
+            [new] = co.blocking_open_findings()
+            self.assertNotEqual(new['id'], shared['id'])
+            self.assertEqual((new['owner_role'], new['summary']), ('specialist:' + b, second['summary']))
+
     def test_specialist_location_boundaries(self):
         co = self.polish_at(approve_first=False)
         base = {'severity': 'MAJOR', 'file': 'sum_ints.py:12', 'summary': 'first report'}

@@ -5083,6 +5083,8 @@ class Coordinator:
         rulings = self.state.get('operator_rulings', [])
         notes = [(row['id'], self._read_operator_note(row)) for row in self.state.get('operator_notes', [])
                  if row['status'] == 'delivered']
+        precedence = ('Delivered notes follow in oldest-first order. '
+                      'If two notes conflict, follow the later note on that point.\n' if len(notes) > 1 else '')
         if audience == 'author':
             withdrawals = ''
             if rulings:
@@ -5097,21 +5099,22 @@ class Coordinator:
                                'body. Never write these ids into the workspace.\n')
             decisions = ('\n## Operator decisions\n'
                          'Implement and document these in-scope decisions as decided; do not reopen them.\n' +
-                         '\n'.join('- ' + note for _, note in notes) + '\n' if notes else '')
+                         precedence + '\n'.join('- ' + note for _, note in notes) + '\n' if notes else '')
             return withdrawals + decisions
         if audience == 'fresh':
-            decisions = [row['reason'] for row in rulings] + [note for _, note in notes]
+            withdrawals = ''.join(f"operator decision: {row['reason']}\n" for row in rulings)
+            decisions = ''.join('operator decision: ' + LEDGER_ID_RE.sub('[finding ID]', note) + '\n' for _, note in notes)
             return ('\n## Operator decisions\n'
                     'The operator owns the work item. Treat these decisions as part of the approved scope; '
                     'do not report the decided point itself as a finding. Review everything else, including '
                     'implementation of the approved behavior, as usual.\n' +
-                    '\n'.join('operator decision: ' + decision for decision in decisions) + '\n' if decisions else '')
+                    withdrawals + precedence + decisions if rulings or notes else '')
         withdrawals = ('\n## Operator withdrawals\n' + '\n'.join(self.operator_ruling_lines()) +
                        '\nNo disposition is due for these withdrawn ids. Do not raise the same objection again as a new finding.\n'
                        if rulings else '')
         decisions = ('\n## Operator decisions\nApply these decisions within the approved scope. '
                      'Do not request an operator ruling again on a decided point.\n' +
-                     '\n'.join(f'{note_id}: {note}' for note_id, note in notes) + '\n' if notes else '')
+                     precedence + '\n'.join(f'{note_id}: {note}' for note_id, note in notes) + '\n' if notes else '')
         return withdrawals + decisions
 
     def _ignore_operator_dispositions(self, result: dict) -> None:
@@ -7264,11 +7267,13 @@ class Coordinator:
             if operator_note['target_phase'] != phase and phase not in NOTE_WRITER_PHASES:
                 raise RuntimeError('undelivered operator note targets another phase')
             repeat = 'Repeat: ' if operator_note.get('attempts') else ''
+            handoff = ('If this clarification conflicts with an earlier operator note, follow this clarification on that point.\n'
+                       if any(row['status'] == 'delivered' for row in self.state['operator_notes']) else '')
             prompt += (f"\n\n## {repeat}Operator in-scope clarification [{operator_note['id']}]"
                        + (f" supersedes {operator_note['replaces_id']}" if operator_note.get('replaces_id') else '')
                        + ('\nDo not expand the work item.\n' if phase == 'PLAN' else
                           '\nDo not expand the review scope.\n' if self.state.get('review_only') else '\nDo not expand the approved plan.\n')
-                       + self._read_operator_note(operator_note))
+                       + handoff + self._read_operator_note(operator_note))
             operator_note['attempts'] = operator_note.get('attempts', 0) + 1
         exec_author = role == 'author' and phase in ('EXEC', 'FINISH', 'DOCS')
         timeout_seconds = self.args.exec_turn_timeout if exec_author else self.args.timeout

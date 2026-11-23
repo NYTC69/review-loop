@@ -1,7 +1,9 @@
 """WI-NOTE: persistent EXEC ruling windows and queued note delivery."""
 from contextlib import contextmanager
+import hashlib
 import json
 import os
+from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -180,6 +182,103 @@ class OperatorNoteTests(unittest.TestCase):
             self.assertIn('## Operator decisions\n'
                           'Implement and document these in-scope decisions as decided; do not reopen them.\n'
                           '- ' + note, self.prompt(h, repair))
+
+    def test_delivered_note_masks_finding_ids_in_fresh_prompts(self):
+        with self.harness(lifecycle=True) as h:
+            (h.workspace / 'test_feature.py').write_text(
+                'import unittest\n\nclass Smoke(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n')
+            flags = (*ON, '--shadow', 'on', '--quality-writers', 'tests')
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'ruling'), 'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'}
+            note = 'Reject bool before the integer check (F987).\nPreserve the behavior in F1234 and keep f987 as written.'
+            masked = 'Reject bool before the integer check ([finding ID]).\nPreserve the behavior in [finding ID] and keep f987 as written.'
+            self.assert_result(h.run_coordinator(*flags, env=env), 2, 'HOLD: reviewer requests an operator ruling: ' + QUESTION)
+            self.assert_result(h.run_operator_action('note', *flags, '--text', note), 0, 'N001 queued')
+            self.assert_result(h.run_operator_action('resume', *flags, env=env), 0, twl.DONE)
+            state = self.state(h)
+            [record] = state['operator_notes']
+            self.assertEqual(record['status'], 'delivered')
+            self.assertEqual(Path(record['evidence']).read_bytes(), note.encode('utf-8'))
+            self.assertEqual(record['sha256'], hashlib.sha256(note.encode('utf-8')).hexdigest())
+            delivery = next(turn for turn in state['turns'] if turn['sequence'] == record['delivered_sequence'])
+            self.assertEqual((delivery['role'], delivery['phase'], delivery['operator_note_id']), ('author', 'EXEC', 'N001'))
+            self.assertIn(note, self.prompt(h, delivery))
+            later = [turn for turn in state['turns'] if turn['sequence'] > delivery['sequence']]
+            writers = [turn for turn in later if turn['role'] == 'author']
+            self.assertEqual([turn['phase'] for turn in writers], ['FINISH', 'POLISH-Q', 'DOCS'])
+            for writer in writers:
+                self.assertIn('- ' + note, self.prompt(h, writer))
+            [reviewer] = [turn for turn in later if (turn['role'], turn['phase']) == ('reviewer', 'EXEC')]
+            self.assertIn('N001: ' + note, self.prompt(h, reviewer))
+
+            audiences = (('shadow', 'shadow', 'EXEC'), ('gate', 'gate', 'EXEC'),
+                         ('POLISH-Q specialist', 'reviewer', 'POLISH-Q'), ('DOCS review', 'reviewer', 'DOCS'),
+                         ('SECURITY review', 'reviewer', 'SECURITY'))
+            for audience, role, phase in audiences:
+                with self.subTest(audience=audience):
+                    turns = [turn for turn in later if (turn['role'], turn['phase']) == (role, phase)]
+                    self.assertTrue(turns, f'missing {audience} turn')
+                    for turn in turns:
+                        self.assertTrue(turn['fresh'])
+                        prompt = self.prompt(h, turn)
+                        self.assertIn('operator decision: ' + masked, prompt)
+                        self.assertNotIn('F987', prompt)
+                        self.assertNotIn('F1234', prompt)
+                        self.assertNotIn('N001', prompt)
+                        self.assertNotIn(record['sha256'], prompt)
+                        if role in ('shadow', 'gate'):
+                            audit = h.run_dir / 'evidence' / f"{turn['sequence']:03d}-{role}.independence-inputs.json"
+                            content = json.loads(audit.read_text())['inputs']['prompt']['content']
+                            self.assertIn('operator decision: ' + masked, content)
+                            self.assertNotIn('F987', content)
+                            self.assertNotIn('F1234', content)
+
+    def test_later_delivered_note_takes_precedence_on_conflict(self):
+        with self.harness() as h:
+            first = 'Reject bool explicitly. Keep accepting negative integers.'
+            second = 'Accept bool as an integer.'
+            handoff = 'If this clarification conflicts with an earlier operator note, follow this clarification on that point.'
+            precedence = 'Delivered notes follow in oldest-first order. If two notes conflict, follow the later note on that point.'
+            hold = 'HOLD: reviewer requests an operator ruling: ' + QUESTION
+            env = {'FAKE_EXEC_RULING_ONCE': str(h.root / 'first-ruling')}
+            self.assert_result(h.run_coordinator(*WITH_GATE, env=env), 2, hold)
+            self.assert_result(h.run_operator_action('note', *WITH_GATE, '--text', first), 0, 'N001 queued')
+            env['FAKE_EXEC_RULING_ONCE'] = str(h.root / 'second-ruling')
+            self.assert_result(h.run_operator_action('resume', *WITH_GATE, env=env), 2, hold)
+            before = self.state(h)
+            [first_record] = before['operator_notes']
+            self.assertEqual(first_record['status'], 'delivered')
+            first_delivery = next(turn for turn in before['turns'] if turn['sequence'] == first_record['delivered_sequence'])
+            self.assertNotIn(handoff, self.prompt(h, first_delivery))
+
+            self.assert_result(h.run_operator_action('note', *WITH_GATE, '--text', second), 0, 'N002 queued')
+            env['FAKE_GATE_BLOCK'] = '1'
+            self.assert_result(h.run_operator_action('resume', *WITH_GATE, env=env), 0, twl.DONE)
+            after = self.state(h)
+            turns = after['turns'][len(before['turns']):]
+            [delivery, repair] = [turn for turn in turns if (turn['role'], turn['phase']) == ('author', 'EXEC')]
+            self.assertEqual(delivery['operator_note_id'], 'N002')
+            self.assertNotIn('operator_note_id', repair)
+            prompt = self.prompt(h, delivery)
+            decisions, clarification = prompt.split('## Operator in-scope clarification [N002]', 1)
+            self.assertIn('- ' + first, decisions.split('## Operator decisions\n', 1)[1])
+            self.assertNotIn(second, decisions)
+            self.assertNotIn(precedence, decisions)
+            self.assertEqual(prompt.count(second), 1)
+            [gate] = [turn for turn in turns if turn['role'] == 'gate']
+            self.assertEqual(gate['answer']['verdict'], 'FAIL')
+            self.assertLess(delivery['sequence'], gate['sequence'])
+            self.assertLess(gate['sequence'], repair['sequence'])
+            self.assertEqual([(row['id'], row['status'], row['delivered_sequence']) for row in after['operator_notes']],
+                             [('N001', 'delivered', first_delivery['sequence']), ('N002', 'delivered', delivery['sequence'])])
+            with self.subTest(audience='delivery author'):
+                self.assertIn(handoff + '\n' + second, clarification)
+            reviewer = next(turn for turn in turns if (turn['role'], turn['phase']) == ('reviewer', 'EXEC'))
+            for turn, prefix1, prefix2 in ((reviewer, 'N001: ', 'N002: '),
+                                           (gate, 'operator decision: ', 'operator decision: '),
+                                           (repair, '- ', '- ')):
+                with self.subTest(audience=turn['role']):
+                    decisions = self.prompt(h, turn).split('## Operator decisions\n', 1)[1]
+                    self.assertIn(f'{precedence}\n{prefix1}{first}\n{prefix2}{second}', decisions)
 
     def test_delivered_ruling_reaches_lifecycle_writers(self):
         with self.harness(lifecycle=True) as h:

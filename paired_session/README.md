@@ -759,8 +759,9 @@ specialist pass; none when the tree is the one that pass reviewed); the run stay
 until `resume`. A pass the budget stopped mid-way is dropped when its blockers are withdrawn.
 Specialists, DOCS reviewers and SECURITY reviewers receive the decision reason. They continue to review the
 implementation and unrelated defects, including defects at the same location.
-When another specialist's covered report is attached to the same ledger row, withdrawing that row also
-withdraws the attached claim. The other specialist can raise it again when a later delta touches that file.
+When another specialist's covered report is attached to the same ledger row, the recheck calls the row's owner.
+Withdrawing the row closes the blocker and preserves the attached report in its history.
+The other specialist can open a new finding by reporting it again when a later delta touches that file.
 Example: a specialist reports that the configured test fails in its sandbox (a
 database that cannot start there) while an attached host run passed on that tree. Phrase the reason as approved behavior,
 without finding ids, review-history phrases or model/vendor approval attributions;
@@ -863,6 +864,11 @@ turn. A newer note replaces a pending one. Once delivered, the hash-verified
 note appears as an operator decision in subsequent reviewer prompts, with its
 ID shown only to the persistent reviewer.
 Subsequent EXEC, FINISH, DOCS and POLISH-Q writers also receive the decision and implement and document it as decided.
+Shadow, gate, POLISH-Q specialists, DOCS review and SECURITY review receive the note with finding IDs such as
+`F123` replaced by `[finding ID]`. Describe the approved behavior in words so those reviewers can apply it.
+When delivering a new clarification after an earlier note, the author follows the new clarification on any
+conflicting point. Later prompts list delivered notes oldest first. Within approved scope, the later note takes
+precedence on each conflicting point, and unrelated points in earlier notes still apply.
 Since v3.7.2 a note is also queued at a round-limit HOLD (it reaches the author turn after `resume --add-rounds N`)
 and, with lifecycle on, while the run waits for the gate, FINISH, DOCS or a POLISH-Q step: it reaches the next newly
 dispatched author-role turn (EXEC author, FINISH writer, DOCS writer or POLISH-Q writer). A recorded writer turn that
