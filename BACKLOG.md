@@ -20,6 +20,11 @@
   - v3.15.1 (Opus): a top-level Files-to-change entry written with ** emphasis (e.g. **`a.py`**) counts as a glob and falls back to PLAN review (pre-existing, conservative).
   - v3.15.2 (Opus): the normalization NOTE says "findings that need no confirmation" even when a non-persistent owner answered non_blocking on a needs_confirmation row; cosmetic.
   - v3.15.2 (Opus): test_wi_dispfix builds trc.RealCoordinatorTests() by hand for its setUp; a mixin or helper would be sturdier.
+  - v3.15.3 note (Opus, WI-D R1): the D5 correction also says "return exactly the requested dispositions", slightly off-topic for an evidence-only error. (2026-11-23)
+  - v3.15.3 note (Opus, WI-D R1): _discard_reviewer_result no longer saves; add a one-line docstring so new callers save themselves. (2026-11-23)
+- WI-H reviewer retry record follow-ups (low reachability; at most one lost retry). (added 2026-11-23)
+  - v3.15.3 note (Opus, WI-D R1): reviewer_retry is keyed only by phase; a non-quota HOLD inside the retry followed by a route back to the author leaves a stale correction for the next reviewer turn. Clear it when next leaves reviewer, or bind it to rejected_sequence. (2026-11-23)
+  - v3.15.3 note (Opus, WI-D R1): a second empty-evidence approval is marked discarded after its dispositions and verdict were applied, so the receipt reads both discarded and applied (audit wording only). (2026-11-23)
 - Owner decision pending: whether to use a paid agy plan for gemini roles (the free quota reset was 164 h in the poker-tools trial). (added 2026-11-22)
 
 ## P3 — nice to have / someday
@@ -38,11 +43,7 @@
 
 ## Done (recent, trimmed quarterly)
 
-- ~~WI-D reviewer answer retry edge cases.~~ (added 2026-11-22, closed 2026-11-23 in v3.15.3)
-  - D1, D2, D3 and D5 shipped in v3.15.3.
-  - D4 characterized by a revert regression test; runtime change dropped because closing a test-failure row still requires a newer eligible pass or valid host verification.
 
-- ~~v3.13.0 accepted residual (gate R2): a hand-edited saved config binding is not re-sealed by a resume role change (the digest guard checks the manifest digest only).~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted residual under the owner threat model)
 - ~~v3.13.0 follow-up (Opus, WI-RESUME R1 note 4): a workspace profile with a different vendor is now refused on every restoring action except status (at v3.12.0 it was ignored); hard to reach.~~ (added 2026-11-22) (closed 2026-11-22, see backlog cleanup: accepted: hard to reach, owner threat model)
 - ~~WI-A plan scan false HOLDs: shadow plan-path exemption on Codex/gemini + fast-plan polish. Next up (owner 2026-11-22, with WI-B as v3.15.1). (added 2026-11-22)~~ (closed 2026-11-22, see v3.15.1 WI-POLISH)
   - ~~v3.10.1 follow-up (Opus review): on Codex or gemini the shadow inlines the whole plan, so a scenario-matrix tool path in the plan is scanned as prompt text without the context/plan.md exemption and can falsely HOLD the shadow like the gate did before v3.10.1. (2026-11-21)~~
@@ -60,3 +61,6 @@
   - ~~v3.11.0 follow-up (Opus, WI-TESTEVID): add a test that a confirmation review reuses the passing test result of the same tree. (2026-11-22)~~
   - ~~v3.10.0 follow-up (Sol review): add a regression test combining a gemini author, the default gemini gate and gate-FAIL repair (covered only by ad hoc fake-CLI runs so far). (2026-11-21)~~
   - ~~v3.11.0 follow-up: the Windows end-to-end helper branches on review_report to pick its assertion; brittle if more report shapes appear. (2026-11-22)~~
+- ~~WI-D reviewer answer retry edge cases.~~ (added 2026-11-22, closed 2026-11-23 in v3.15.3)
+  - D1, D2, D3 and D5 shipped in v3.15.3.
+  - D4 characterized by a revert regression test; runtime change dropped because closing a test-failure row still requires a newer eligible pass or valid host verification.
