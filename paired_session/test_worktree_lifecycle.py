@@ -413,17 +413,26 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                          {'tree': tree, 'reviewer_sequence': 1, 'gate_sequence': 2})
         self.assertEqual(co._approval_manifest(convergence), dict(rc.git_snapshot(self.workspace)[1]))
         other = 'f' * 64
+        initial_state = (self.run_dir / 'state.json').read_text()
         for turns in ([{'role': 'gate', 'phase': 'EXEC', 'snapshot_before': tree, 'sequence': 1}],   # gate alone
                       [{'role': 'reviewer', 'phase': 'EXEC', 'snapshot_before': other, 'sequence': 1},
                        {'role': 'gate', 'phase': 'EXEC', 'snapshot_before': tree, 'sequence': 2}],   # reviewer saw another tree
                       [{'role': 'reviewer', 'phase': 'EXEC', 'snapshot_before': other, 'sequence': 1},
                        {'role': 'gate', 'phase': 'EXEC', 'snapshot_before': other, 'sequence': 2}]):   # both stale
             with self.subTest(turns=turns):
+                (self.run_dir / 'state.json').write_text(initial_state)
                 stale = rc.Coordinator(self.args(action='resume'))
                 stale.state['lifecycle'].update(stage='EXEC', candidate_oid=None)
-                stale.state.update(turns=turns, gate_ran=True, next='gate')
+                stale.state.update(turns=turns, gate_ran=True, next='gate', phase='EXEC',
+                                   status='ACTIVE', pending_reviewer_result_sequence=1)
+                self.assertEqual(stale.start_polish_or_done(), 'ACTIVE')
+                self.assertEqual((stale.state['lifecycle']['stage'], stale.state['lifecycle']['candidate_oid'],
+                                  stale.state['gate_ran'], stale.state['next']), ('EXEC', None, True, 'reviewer'))
+                self.assertIsNone(stale.state['pending_reviewer_result_sequence'])
+                stale = rc.Coordinator(self.args(action='resume'))
                 self.assertEqual(stale.start_polish_or_done(), 'HOLD')
-                self.assertIn('stale EXEC approval', stale.state['hold_reason'])
+                self.assertEqual(stale.state['hold_reason'],
+                                 'stale EXEC approval: the reviewer did not review the current tree')
                 self.assertEqual((stale.state['lifecycle']['stage'], stale.state['lifecycle']['candidate_oid'],
                                   stale.state['gate_ran'], stale.state['next']), ('EXEC', None, True, 'reviewer'))   # WI-GATE1: gate stays spent
 

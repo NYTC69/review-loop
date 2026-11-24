@@ -180,8 +180,9 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   the owner closes them). Until then those findings gate only SECURITY and DONE: the EXEC reviewer cannot see
   or close them, so EXEC, POLISH-Q and DOCS do not count them as blockers. `reject` on a W DONE is refused
   until W3b, like `accept`.
-- Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot and HOLDs (stale EXEC approval)
-  when the tree differs; the docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs` (removed in 3.0),
+- Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot. Since v3.16.4, a tree mismatch
+  routes to the EXEC reviewer once per tree and then HOLDs on a repeat mismatch (stale EXEC approval).
+  The docs/skip/polish keys (`docs_file`, `docs_allowlist`, `skip_globs` (removed in 3.0),
   `skip_quality_polish`) are operator-only for W run/resume (E-4); the FINISH turn HOLDs when
   it changes HEAD, its branch or the staged index against a baseline persisted per attempt (tags, remotes,
   stash and other branches are shared across worktrees and not checked; HEAD equal to the run parent is a

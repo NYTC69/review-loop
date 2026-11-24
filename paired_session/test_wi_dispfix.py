@@ -405,7 +405,8 @@ class DispositionRetryTests(unittest.TestCase):
         self.assertEqual(prompt.count(RETRY_MARKER), 1)
         self.assertIn('omitted dispositions for: ' + co.state['finding_ledger'][-1]['id'], prompt)
         self.assertIn('return exactly the requested dispositions', prompt)
-        self.assertIn(EMPTY_EVIDENCE, prompt)
+        self.assertIn('omitted dispositions for: ' + co.state['finding_ledger'][-1]['id'] +
+                      ' and had empty self_run_evidence.', prompt)
         self.assertIn('Rerun the configured test command and report it in self_run_evidence.', prompt)
 
     def test_second_empty_approval_leaving_blockers_routes_to_author(self):

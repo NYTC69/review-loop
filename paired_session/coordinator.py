@@ -5339,6 +5339,16 @@ class Coordinator:
         if self.state.get('exec_comparisons'):
             self.state['exec_comparisons'][-1]['effective_verdict'] = verdict
 
+    def _rereview_stale_exec_approval(self, tree: str, hold_reason: str) -> str:
+        self.state.update(next='reviewer', phase='EXEC', pending_reviewer_result_sequence=None)
+        retried = self.state.setdefault('stale_rereview_trees', [])
+        if tree in retried:
+            return self.hold(hold_reason)
+        retried.append(tree)
+        print('NOTE: the tree changed after the EXEC reviewer approved. The reviewer will review the current tree.')
+        self.save()
+        return 'ACTIVE'
+
     def start_polish_or_done(self) -> str:
         if worktree_lifecycle.is_worktree(self.state):   # EXEC converged: FINISH next, bound to the reviewed tree
             if blocking := self.blocking_open_findings():   # repair round: author fix, then the reviewer (the gate ran once)
@@ -5351,8 +5361,8 @@ class Coordinator:
             reviewed = git_snapshot(self.workspace)[0]
             reviewer, gate = worktree_lifecycle.reviewed_turns(self.state['turns'])   # gate: the one original gate turn
             if reviewer.get('snapshot_before') != reviewed:   # WI-GATE1: only the reviewer's tree binds; no second gate
-                self.state.update(next='reviewer')   # resume re-reviews this tree
-                return self.hold('stale EXEC approval: the reviewer did not review the current tree')
+                return self._rereview_stale_exec_approval(
+                    reviewed, 'stale EXEC approval: the reviewer did not review the current tree')
             self.set_effective_verdict('APPROVE')
             if self._automatic_initial_exec():
                 self.state['initial_exec_converged'] = True
@@ -6780,8 +6790,8 @@ class Coordinator:
                     where = (' (' + ', '.join(f'{marker!r} at {spot}' for spot, marker in hits[:5])
                              + (f', +{len(hits) - 5} more' if len(hits) > 5 else '')
                              + '); the change adds it: reword those lines in the workspace (no finding ids or review '
-                               'narrative), then resume. The edit changes the reviewed tree, so the run may stop once more '
-                               "at 'stale EXEC approval'; resume again and the reviewer and the gate review the edited tree")
+                               'narrative), then resume. The EXEC reviewer and any configured shadow review the edited '
+                               'tree on resume. The gate runs only if still pending')
                 raise RuntimeError(f'{role} independence check rejected history in {name}: {matches[0]}{where}')
             checked[name] = {'sha256': hashlib.sha256(content.encode()).hexdigest(),
                              'content': content}
@@ -9045,6 +9055,7 @@ class Coordinator:
                          and counts.get(name, 0) + 2 > budget_policy.BUDGET_CAPS['specialist'][0]]
             can_recheck = exhausted and life.get('polish_calls', 0) + 2 * len(owners) <= self._worktree_run_cap('POLISH-Q')
             last_fix = (life.get('polish_fixes') or [{}])[-1]
+            # An operator fix was rechecked this epoch and left blockers on the current fix base.
             operator_hold = last_fix.get('operator') and last_fix['tree'] == base and last_fix['epoch'] == life['epoch']
             if can_recheck or operator_hold:
                 tree = git_snapshot(self.workspace)[0]
@@ -10119,14 +10130,14 @@ class Coordinator:
                 self.state.pop('reviewer_retry', None)
                 self.hold(hold_reason)
                 return
+            if retry_empty and reason != empty_evidence_reason:
+                feedback += ' and had empty self_run_evidence'
             correction = '\nYour previous response ' + feedback + '. This is the one allowed protocol retry'
             if reason == empty_evidence_reason:
                 correction += '.'
             else:
                 correction += '; return exactly the requested dispositions.'
             if retry_empty:
-                if reason != empty_evidence_reason:
-                    correction += ' Approval was also rejected with this guard reason: ' + empty_evidence_reason + '.'
                 correction += ' If you approve, list the checks you actually ran in self_run_evidence.'
                 if self.args.test_command:
                     correction += ' Rerun the configured test command and report it in self_run_evidence.'
@@ -10470,9 +10481,8 @@ class Coordinator:
                 return
             if stopped:
                 return
-        elif answer['reviewed_snapshot'] != git_snapshot(self.workspace)[0]:
-            self.state['pending_reviewer_result_sequence'] = None
-            self.hold('stale EXEC approval')
+        elif answer['reviewed_snapshot'] != (live_tree := git_snapshot(self.workspace)[0]):
+            self._rereview_stale_exec_approval(live_tree, 'stale EXEC approval')
             return
         elif awaiting_confirmation:
             # S3 R2 F2: the shadow's blockers in the gate repair wait for the persistent reviewer's confirmation, on the same

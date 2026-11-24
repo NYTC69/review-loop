@@ -171,7 +171,7 @@ The frozen declaration allows the corresponding complete components in `plan.md`
 `delta.patch` and `delta-since-last-review.patch`. It covers `.claude`, `.codex`, `.codex-paired` (including
 suffixed roots and literal `.codex-paired*`), and `.gemini`, including quoted path components such as
 `joinpath(".claude", "projects")`. A valid declaration also names its vendors for the existing bare-name
-exception. Finding IDs, verdict words, review attributions, and review-history phrases remain subject to the scan.
+exception in the delta patches. Finding IDs, verdict words, review attributions, and review-history phrases remain subject to the scan.
 
 To recover a held run, `abort` it (the workspace stays untouched), then start a new run with the declaration in
 its work item. On a dirty lane, the new run uses HEAD as its base. Its change includes the earlier uncommitted
@@ -724,6 +724,7 @@ This also works for runs saved on v3.15.6. You can attach host verification for 
 The run-wide POLISH-Q allowance must have room for two calls per owner. The owners recheck the edit
 directly. If they clear the blockers, the EXEC reviewer and configured shadow replay with the saved gate
 verdict, followed by the rest of the lifecycle. If blockers remain, the run HOLDs on the rechecked tree.
+The coordinator detects this post-recheck state as `operator_hold`.
 Resuming on the same tree dispatches nothing at either HOLD, including after attaching verification alone.
 Blocking security findings still require their owner's verification and cannot be withdrawn.
 
@@ -765,6 +766,9 @@ continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
 next author turn. For a saved legacy HOLD after a lifecycle write or writer rollback, the pending review is preserved.
 The gate runs once per work item (WI-GATE1) and returns PASS or FAIL with per-criterion results and evidence.
+If an EXEC approval is stale on resume, the run routes to the persistent reviewer for the current tree in
+the same resume. Configured shadow review follows the usual rules, and a completed gate verdict still applies.
+A repeat stale approval on the same tree can HOLD with `stale EXEC approval`.
 The four required parts of a FAIL item are the quoted unmet acceptance criterion or blocking class, evidence,
 the smallest change, and proof it is fixed. PASS requires every listed criterion met and an empty FAIL list.
 The EXEC reviewer checks each open FAIL item in full every round and may close it only as fixed.
@@ -930,7 +934,7 @@ ID shown only to the persistent reviewer.
 Subsequent EXEC, FINISH, DOCS and POLISH-Q writers also receive the decision and implement and document it as decided.
 Shadow, gate, POLISH-Q specialists, DOCS review and SECURITY review receive the note with finding IDs such as
 `F123` replaced by `[finding ID]`. Describe the approved behavior in words so those reviewers can apply it.
-When delivering a new clarification after an earlier note, the author follows the new clarification on any
+When a new clarification is delivered after an earlier note, the author follows the new clarification on any
 conflicting point. Later prompts list delivered notes oldest first. Within approved scope, the later note takes
 precedence on each conflicting point, and unrelated points in earlier notes still apply.
 Since v3.7.2 a note is also queued at a round-limit HOLD (it reaches the author turn after `resume --add-rounds N`)

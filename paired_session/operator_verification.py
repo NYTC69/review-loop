@@ -100,7 +100,8 @@ def carry_docs_only(co, from_trees, to_tree: str, paths: list, sequence: int, wr
 
 def prompt_block(co, tree_sha256: str, write_json, role: str = '') -> str:
     """'' when no current record is bound to this exact tree, else the block appended to a reviewer, shadow or gate prompt. The persistent
-    reviewer (role 'reviewer') also gets one Withdrawn line, id and reason only, for each voided record its thread was shown (OPV-M1)."""
+    reviewer (role 'reviewer') also gets one Withdrawn line, id and reason only, for each voided record its thread was shown (OPV-M1).
+    Call with the live workspace tree because this function voids records bound to other trees."""
     void_stale(co, tree_sha256, write_json)
     rows = co.state.get('operator_verifications', [])
     shown = [row for row in rows if row['status'] == 'current'][-SHOWN:]

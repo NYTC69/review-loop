@@ -410,6 +410,9 @@ DONE follows EXEC convergence and `accept --auto-commit false` returns the uncom
 `paired_session/paired-session-config.example.json` are examples, not the defaults (without a profile the gate
 uses the author's vendor, and the test command is the one the skill confirms with you).
 
+If the workspace changes after EXEC approval, the run automatically requests a fresh review of the current
+tree. A repeat stale approval on the same tree can still HOLD. A completed gate verdict still applies.
+
 | Key | Default | Description |
 |-----|---------|-------------|
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |

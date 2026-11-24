@@ -1,5 +1,22 @@
 # Changelog
 
+### v3.16.4：过期的 EXEC 批准直接转入复审（WI-STALEFIX）
+
+- 重放 EXEC 批准或进入 FINISH 前发现工作区已变化时，打印一行提示，并在同一次运行中交给持久审查员复审当前树。每棵树只自动转派一次，再次发现同一棵树的批准过期时沿用原 HOLD 原因。调用上限照常，已完成的门审裁定继续有效。
+- 已停在 `stale EXEC approval` 的运行可直接用 v3.16.4 执行普通 `resume`，无需额外操作。V323-LOC 提示已说明持久审查员和已配置的 shadow 会复审，门审仅在仍待执行时运行。
+- 合并问题处置有误且自测证据为空时的纠正提示。场景矩阵的诊断保留独立解析，避免改变候选标签的识别规则。
+- 澄清后续操作者说明的表述，以及工具状态目录声明在 delta 补丁中适用的供应商裸名例外。
+- 补记 WI-I v3.16.0 的 README 更新：`lifecycle_mode=off` 时，DONE 以 EXEC 收敛为准。
+- 在文档和代码注释中说明 POLISH-Q 的 `operator_hold` 状态，并在 `operator_verification.prompt_block` 的文档字符串中说明必须传入当前工作区的树。
+
+**按意图更新的测试断言**
+
+- `test_opv_replay.py` 改为断言删除未跟踪文件后一次 `resume` 到达 DONE，无过期批准 HOLD，并验证重放及复审中的 shadow 和持久审查员使用当前树的操作者验证。
+- `test_worktree_lifecycle.py` 改为断言首次发现过期批准时转派审查员并清除待处理结果，重载后对同一棵树再次检测才以原原因 HOLD。门审仍为已执行。
+- `test_v323_loc.py` 的提示断言更新为一次恢复的复审流程和待执行门审条件。
+- `test_wi_dispfix.py` 的双错误断言改为匹配合并后的问题处置和空自测证据提示。
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.3` 更新为 `3.16.4`。
+
 ### v3.16.3：修复重放 EXEC 审查时误作废当前树的操作者验证（WI-OPVVOID）
 
 - 查询历史审查快照的测试证据时，只读取与该快照匹配的有效记录。恢复 EXEC 审查或门审时按工作区的当前快照作废过期记录。shadow 可以使用当前树的操作者验证，过期的 EXEC 批准仍须重新审查。

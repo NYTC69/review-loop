@@ -42,6 +42,7 @@ class OperatorVerificationReplayTests(unittest.TestCase):
         reviewed = co.invoke('reviewer', 'EXEC', co._review_prompt('reviewer', old_tree), rc.review_schema())
         self.assertEqual((reviewed['answer']['status'], reviewed['answer']['reviewed_snapshot']), ('APPROVE', old_tree))
         self.assertEqual(self.state()['pending_reviewer_result_sequence'], reviewed['sequence'])
+        co.hold('fixture pause after approval')
 
         stray.unlink()
         live_tree = rc.git_snapshot(self.workspace)[0]
@@ -54,21 +55,18 @@ class OperatorVerificationReplayTests(unittest.TestCase):
         self.assertIn(f'VERIFICATION: V001 bound to tree {live_tree}', attached.stdout)
 
         env = {'FAKE_MISSING_OBSERVED': '1'}
-        self.run_operator_action('resume', *options, env=env)
-        replay = self.state()
-        self.run_operator_action('resume', *options, env=env)
+        resumed = self.run_operator_action('resume', *options, env=env)
         finished = self.state()
 
-        for state in (replay, finished):
-            with self.subTest(sequence=state['sequence']):
-                [record] = state['operator_verifications']
-                self.assertEqual((record['status'], record['tree_sha256']), ('current', live_tree),
-                                 (record.get('voided'), state.get('hold_reason')))
-        self.assertEqual((replay['status'], replay['hold_reason'], replay['next'],
-                          replay['pending_reviewer_result_sequence']),
-                         ('HOLD', 'stale EXEC approval', 'reviewer', None))
-        [shadow] = [turn for turn in replay['turns'] if turn['role'] == 'shadow']
-        self.assertEqual((shadow['snapshot_before'], shadow.get('operator_test_evidence')), (live_tree, 'V001'))
+        self.assertNotIn('HOLD: stale EXEC approval', resumed.stdout)
+        self.assertIn('NOTE: the tree changed after the EXEC reviewer approved', resumed.stdout)
+        [record] = finished['operator_verifications']
+        self.assertEqual((record['status'], record['tree_sha256']), ('current', live_tree),
+                         (record.get('voided'), finished['hold_reason']))
+        self.assertIsNone(finished['pending_reviewer_result_sequence'])
+        self.assertEqual([(turn['snapshot_before'], turn.get('operator_test_evidence'))
+                          for turn in finished['turns'] if turn['role'] == 'shadow'],
+                         [(live_tree, 'V001'), (live_tree, 'V001')])
         self.assertEqual(finished['status'], 'DONE', finished['hold_reason'])
         first, second = [turn for turn in finished['turns'] if turn['role'] == 'reviewer']
         self.assertEqual((first['sequence'], second['answer']['reviewed_snapshot'],
