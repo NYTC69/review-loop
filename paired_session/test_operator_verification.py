@@ -131,7 +131,7 @@ class OperatorVerificationTests(unittest.TestCase):
         co = self.coordinator()
         tree = rc.git_snapshot(self.workspace)[0]
         invokes = lambda command: command.strip() == 'xcodebuild test -scheme App'
-        find = lambda digest: opv.passing_test_record(co, digest, invokes, rc.atomic_json)
+        find = lambda digest: opv.passing_test_record(co, digest, invokes)
         self.attach(co)
         self.attach(co)
         self.assertEqual(find(tree)['id'], 'V002')                          # the newest qualifying record
@@ -140,8 +140,13 @@ class OperatorVerificationTests(unittest.TestCase):
         self.attach(co, exit_code=1)
         self.attach(co, command='xcodebuild build -scheme App')
         self.assertEqual(find(tree)['id'], 'V002')                          # a non-zero exit or another command never qualifies
-        self.assertIsNone(find('0' * 64))                                    # another tree: nothing, and the records are voided
-        self.assertEqual({row['status'] for row in co.state['operator_verifications']}, {'voided'})
+        other_tree = '0' * 64
+        self.assertIsNone(find(other_tree))
+        self.assertEqual(opv.current_for_acceptance(co, other_tree), [])
+        (co.evidence / 'operator-verification-V002.log').write_text('damaged copy\n')
+        self.assertEqual(find(tree)['id'], 'V001')                          # fall back to the newest intact passing record
+        self.assertEqual([row['id'] for row in opv.current_for_acceptance(co, tree)], ['V001', 'V003', 'V004'])
+        self.assertEqual({row['status'] for row in co.state['operator_verifications']}, {'current'})
 
     def test_damaged_operator_log_cannot_supply_proof(self):
         for damage in ('missing', 'modified'):

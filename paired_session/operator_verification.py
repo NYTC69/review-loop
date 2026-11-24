@@ -114,23 +114,22 @@ def prompt_block(co, tree_sha256: str, write_json, role: str = '') -> str:
     return block + ''.join(withdrawn)
 
 
-def current_for_acceptance(co, tree_sha256: str, write_json) -> list:
+def current_for_acceptance(co, tree_sha256: str) -> list:
     """N4-e: the records still current for the accepted tree, as acceptance.json lists them."""
-    void_stale(co, tree_sha256, write_json)
     keys = ('id', 'command', 'cwd', 'exit_code', 'log_sha256', 'log_evidence', 'note', 'time', 'tree_sha256')
     return [{**{key: row[key] for key in keys}, **({'carried': copy.deepcopy(row['carried'])} if 'carried' in row else {})}
-            for row in co.state.get('operator_verifications', []) if row['status'] == 'current']
+            for row in co.state.get('operator_verifications', [])
+            if row['status'] == 'current' and row['tree_sha256'] == tree_sha256 and _intact(row)]
 
 
-def passing_test_record(co, tree_sha256, invokes_test, write_json):
-    """The newest current record for this exact tree whose command invokes the configured test (invokes_test) with exit
-    code 0, or None. Stale records are voided first; an unknown tree (None) finds nothing and voids nothing."""
+def passing_test_record(co, tree_sha256, invokes_test):
+    """Read the newest current, intact record for this exact tree whose command invokes the configured test with exit code 0."""
     if not tree_sha256:
         return None
-    void_stale(co, tree_sha256, write_json)
     return next((row for row in reversed(co.state.get('operator_verifications', []))
                  if row['status'] == 'current' and row['tree_sha256'] == tree_sha256
-                 and type(row.get('exit_code')) is int and row['exit_code'] == 0 and invokes_test(row.get('command', ''))), None)
+                 and type(row.get('exit_code')) is int and row['exit_code'] == 0
+                 and invokes_test(row.get('command', '')) and _intact(row)), None)
 
 
 def _scan(co, text: str) -> None:   # the fresh-role history scan the shadow and gate prompts get, on the block alone

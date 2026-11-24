@@ -4712,7 +4712,8 @@ class Coordinator:
             record.update(rationale=None, round_limit_hold=self.state['round_limit_hold'],
                           open_findings=[{'id': row['id'], 'severity': row['severity'], 'source': row.get('source'), 'security': bool(row.get('security')),   # RLO LOW-1
                                           'summary': ' '.join(str(row.get('summary', '')).split())[:200]} for row in self.open_findings()])
-        if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'], atomic_json)):   # N4-e: operator evidence still valid for this tree
+        opv.void_stale(self, record['intent']['tree_sha256'], atomic_json)   # v3.16.3: lookups are read-only; the accepted (live) tree voids the rest here
+        if (verified := opv.current_for_acceptance(self, record['intent']['tree_sha256'])):   # N4-e: operator evidence still valid for this tree
             record['operator_verifications'] = verified
         self._append_repo_backlog()   # WI-GATE1 S3 (owner Q1): lifecycle off never commits: the rows stay in the working tree
         record['uncommitted'] = self._uncommitted_files()   # no commit on the lifecycle-off route
@@ -4790,7 +4791,8 @@ class Coordinator:
         record = {'author': 'operator', 'timestamp': datetime.now().astimezone().isoformat(), 'intent': intent,
                   'accepted_state': 'DONE', 'acceptance_state': 'ACCEPTED', 'reason': self.args.reason,
                   'override_rejection': False, 'delivery': delivery}
-        if (verified := opv.current_for_acceptance(self, intent['tree_sha256'], atomic_json)):
+        opv.void_stale(self, intent['tree_sha256'], atomic_json)   # v3.16.3: lookups are read-only; the accepted (live) tree voids the rest here
+        if (verified := opv.current_for_acceptance(self, intent['tree_sha256'])):
             record['operator_verifications'] = verified
         if not delivery.get('commit'):
             self._append_repo_backlog()   # WI-GATE1 S3: no commit: the rows stay in the working tree (listed as uncommitted)
@@ -8542,7 +8544,7 @@ class Coordinator:
         """The operator record that settles the EXEC configured-test check for this exact tree, or None (never in report mode)."""
         if self.state.get('config', {}).get('review_report') or not self.args.test_command:
             return None
-        return opv.passing_test_record(self, tree, lambda command: command_invokes_test(command, self.args.test_command), atomic_json)
+        return opv.passing_test_record(self, tree, lambda command: command_invokes_test(command, self.args.test_command))
 
     def _test_proof(self, tree: str, current: Optional[dict] = None, *, result: Optional[dict] = None) -> dict:
         """Passing proof for the exact tree and configured command. Only tool observations count."""
@@ -11135,6 +11137,10 @@ class Coordinator:
         if add is None and self.at_round_limit_hold() and (self.state['exec_rounds'] > self.exec_round_limit() or (
                 (self.state.get('round_limit_hold') or {}).get('phase') == 'EXEC' and not self.round_limit_hold_within_limit())):
             return 'HOLD'   # stage writes already used the next round (or the author would start one past it); an extension must authorize it
+        # Review replay can reach a proof check before a live prompt. Writers settle their own changes, including DOCS carry-over.
+        if (self.state['phase'] == 'EXEC' and self.state['next'] in ('reviewer', 'gate')
+                and any(row['status'] == 'current' for row in self.state.get('operator_verifications', []))):
+            opv.void_stale(self, git_snapshot(self.workspace)[0], atomic_json)
         if add is not None: self._add_rounds(add)
         self.state['status'] = 'ACTIVE'
         self.state['hold_reason'] = ''

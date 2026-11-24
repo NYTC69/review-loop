@@ -1,5 +1,15 @@
 # Changelog
 
+### v3.16.3：修复重放 EXEC 审查时误作废当前树的操作者验证（WI-OPVVOID）
+
+- 查询历史审查快照的测试证据时，只读取与该快照匹配的有效记录。恢复 EXEC 审查或门审时按工作区的当前快照作废过期记录。shadow 可以使用当前树的操作者验证，过期的 EXEC 批准仍须重新审查。
+- 已因此 HOLD 的运行可用 v3.16.3 继续。已作废的记录保持作废，请先对当前工作区重新执行 `attach-verification`，再执行 `resume`。
+
+**按意图更新的测试断言**
+
+- `paired_session/test_operator_verification.py` 的 `test_passing_test_record_lookup` 改为断言查询其他快照后记录仍为 current。
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.2` 更新为 `3.16.3`。
+
 ### v3.16.2：修复 POLISH-Q 专项预算耗尽后无法复查操作者修复（WI-POLBUDGET）
 
 - 交付运行因 POLISH-Q 专项审查员的当前 epoch 预算耗尽而 HOLD 时，在原工作区完成修复，用 v3.16.2 对原运行执行普通 `resume`。v3.15.6 保存的运行也可以原地继续。可先为修改后的代码树附上主机测试证据。
