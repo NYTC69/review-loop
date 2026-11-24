@@ -6,12 +6,6 @@
 
 ## P2 — normal
 
-- WI-I PLAN round cap: continue automatically like the post-gate-FAIL repair rounds (feature, owner-approved 2026-11-24; request via token-meter). (added 2026-11-24)
-  - Owner: "我觉得就是要给 rl report 这个需求. 让他实现. 因为这个逻辑和门审没过很像." / "为什么每次还是需要问我. 我以为这个流程是自动化的."
-  - Proposal: at max_plan_rounds with blockers open, run one more PLAN round automatically, then one final round; if still open, split the remaining findings into a follow-up work item (BACKLOG with ids, shown in the delivery report) and proceed to EXEC as if the plan passed.
-  - Field evidence: token-meter run 2f6f0112 (v3.15.5): F001 (data-loss class) stayed open r1-r4, r4 added F007-F009, plan grew 324 -> 456 lines; operator used note --scope-change.
-  - Owner-approved design (2026-11-24): PLAN: rounds 4 and 5 run automatically; two consecutive rounds that add new blockers trigger the cut early; after round 5 (or the early trigger) the author writes a reduced plan that moves the contested parts into a follow-up WI (finding ids to BACKLOG and the delivery report), the reviewer checks only the reduced plan (at most 1 round), then EXEC on the reduced scope; HOLD only if the blocker is in the core and nothing implementable remains. EXEC: after 5 review rounds the run passes and leftovers split into a new WI. Data-loss/security/money leftovers are listed first and highlighted in the delivery report. The coordinator records an "auto-split by rule" entry (finding ids, target WI) in place of the operator withdraw-findings.
-  - Timing: after the Claude reset (11-28); send Yuan the plan summary for confirmation before EXEC (large feature).
 - WI-E remaining: E3 (feature, needs owner OK during the trial). (added 2026-11-22)
   - v3.14.0 follow-up: rejections (reject --text) reach only the EXEC author; consider showing delivered rejections to the reviewer and gate like notes. (2026-11-22)
   - v3.15.5 note (Opus, WI-E plan/code review): fresh roles get finding ids masked in notes, but review-history or vendor-attribution phrases in a note (e.g. "Codex approved") still reach them; withdraw-findings refuses those. Low risk under the threat model. (2026-11-24)
@@ -41,17 +35,20 @@
   - v3.15.5 note (Opus, WI-E R1): README "When delivering a new clarification after an earlier note, the author follows…" reads as if the operator delivers; say "When a new clarification is delivered after an earlier note…". (2026-11-24)
   - v3.15.5 note (Opus, WI-E R1): no test combines a withdrawal with two delivered notes (precedence line placement); optional. (2026-11-24)
   - v3.15.6 note (Opus, WI-HISTSCAN R1): paired_session/README "A valid declaration also names its vendors for the existing bare-name exception" holds for the delta patches; say "in the delta patches" (plans exempt bare prose names by another route). (2026-11-24)
+  - v3.16.0 note (Opus R2): README "With off, DONE follows EXEC convergence" (was "gate approval") is accurate after WI-I but was not listed in the CHANGELOG. (2026-11-24)
 - History-scan subject follow-ups (optional; WI-HISTSCAN v3.15.6). (added 2026-11-24)
   - v3.15.6 note (Opus R1): `_history_workitem()` strips every `history-scan-subject:` line, so a malformed line (e.g. `claude unknown`) no longer counts as a mention of `claude` for FIELD-30 / tool-path lookups; consistent with "malformed grants nothing". (2026-11-24)
   - v3.15.6 note (Opus R1): `_history_workitem()` re-reads context/workitem.md per match; cache per scan if it ever matters. (2026-11-24)
   - v3.15.6 note (Opus R1): `HISTORY_SUBJECT_DIR_RE` attribution lookahead omits `reviewed`/`found` (`.codex reviewed it` is masked as a dir); the unmasked prose attribution regexes cover the realistic forms. (2026-11-24)
 
+- Auto-split rounds follow-ups (optional; WI-I v3.16.0). (added 2026-11-24)
+  - v3.16.0 note (Opus R1): the EXEC split's transferred-scope line is the reviewer finding summaries with ids stripped, not author-written work-item text, and it is excluded from the fresh-role independence scan. (2026-11-24)
+  - v3.16.0 note (Opus R1): data-loss/security/money first ordering exists only in the delivery report; run and repository backlog entries list transferred findings in ledger order. (2026-11-24)
+  - v3.16.0 note (Opus R1): automatic allowances for EXEC rounds 4-5 are granted even when --max-exec-rounds >= 5 already budgeted them (generous, harmless). (2026-11-24)
+  - v3.16.0 note (Opus R2): a round-5 shadow HOLD also stops an APPROVE; the resume re-dispatches reviewer and shadow and the fixed round-5 allowance (4) may not cover a second pass, so the operator may need resume --max-invocations. (2026-11-24)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-G cosmetic message and test-helper polish.~~ (added 2026-11-22, closed 2026-11-24, see v3.15.4)
-  - G1, G3-G6 fixed in v3.15.4 (matrix near-miss hint takes the label prefix, normalization NOTE wording, retry correction matches the error kind, coordinator_fixture helper, discard docstring).
-  - G2 dropped: a bold Files-to-change entry falls back to ordinary PLAN review (safe direction); only glob fallback is pinned by a test, the bold case is not.
 - ~~WI-H reviewer retry record follow-ups.~~ (added 2026-11-23, closed 2026-11-24, see v3.15.4)
   - H1 fixed: a later author turn expires the saved reviewer correction. H2 fixed: a late-guard blocked approval is recorded as approval_blocked_reason (receipt and report), not discarded.
 - ~~WI-E operator note semantics (E1, E2, E4).~~ (added 2026-11-22, closed 2026-11-24, see v3.15.5)
@@ -62,3 +59,6 @@
   - Fixed: a frozen work-item declaration `history-scan-subject: claude codex gemini` exempts the declared vendors' state dot dirs in the plan and both delta views; ledger ids, verdict words, attributions and history phrases stay caught; the diagnostic reports only the real hit.
 - ~~CI: two macOS test groups cancelled at 20 minutes on the v3.15.5 candidate.~~ (added 2026-11-24, closed 2026-11-24, supervisor CI tooling, no plugin change)
   - Root cause: GitHub found no macOS runner (capacity), not a timeout. ci_wait.sh now reruns cancelled jobs once and never counts a cancelled job green; workflow source d14 refreshes the macOS timings (timeout stays 60).
+- ~~WI-I PLAN round cap: continue automatically like the post-gate-FAIL repair rounds (owner request via token-meter).~~ (added 2026-11-24, closed 2026-11-24, see v3.16.0)
+  - PLAN: up to two automatic rounds after the cap; an early cut when two consecutive rounds add new blockers (may fire right after round 3, owner D-WII); the author writes a reduced plan reviewed once; a blocking REVISE on it HOLDs with the core ids.
+  - EXEC: ships at round 5; unresolved reviewer blockers or a gate FAIL go to a follow-up recorded as "auto-split by rule" (run backlog, delivery report with data-loss/security/money first, repository BACKLOG on accept). Default on; opt out with --auto-split-rounds false / "auto_split_rounds": false.
