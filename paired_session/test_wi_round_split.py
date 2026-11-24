@@ -46,6 +46,34 @@ class RoundSplitTests(unittest.TestCase):
             self.assertIn('## Mandatory gate checks', self.prompt(turn))
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'APPROVE')
 
+    def test_first_gate_fail_at_five_holds_without_shadow_evidence(self):
+        env = {**self.script('EXEC', 'correctness:unresolved reviewer blocker', 'keep', 'keep', 'keep', 'approve'),
+               **gate.FAIL}
+        co = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'off', '--shadow', 'on')[2:]))
+        invoke = co.invoke
+
+        def omit_shadow_evidence(role, phase, *args, **kwargs):
+            if (role, phase) == ('shadow', 'EXEC') and co.state['exec_rounds'] == 5:
+                with mock.patch.dict(os.environ, {'FAKE_EXEC_NO_EVIDENCE': '1'}):
+                    return invoke(role, phase, *args, **kwargs)
+            return invoke(role, phase, *args, **kwargs)
+
+        with mock.patch.dict(os.environ, env), mock.patch.object(co, 'invoke', side_effect=omit_shadow_evidence):
+            outcome = co.drive()
+        state = self.state()
+        [gate_turn] = gate.gates(state)
+        reviewer, shadow = state['turns'][-3:-1]
+        self.assertEqual((reviewer['role'], reviewer['answer']['status']), ('reviewer', 'APPROVE'))
+        self.assertEqual((shadow['role'], shadow['answer']['self_run_evidence']), ('shadow', []))
+        self.assertEqual(gate_turn['answer']['verdict'], 'FAIL')
+        self.assertEqual((outcome, state['status'], state['exec_rounds']), ('HOLD', 'HOLD', 5))
+        self.assertEqual(state['hold_reason'], rc.TEST_EVIDENCE_HOLD)
+        self.assertNotIn('round_splits', state)
+        self.assertFalse(any(row['source'] == 'auto-split by rule' for row in state.get('backlog', [])))
+        gate_ids = {item['id'] for item in state['gate_fail_items']}
+        self.assertTrue(gate_ids)
+        self.assertEqual({row['id'] for row in state['finding_ledger'] if row['status'] == 'open'}, gate_ids)
+
     def script(self, phase, *steps):
         path = self.root / f'{self.run_dir.name}-{phase}.txt'
         path.write_text('\n'.join(steps) + '\n')

@@ -9956,6 +9956,12 @@ class Coordinator:
         if self._automatic_initial_exec() and EXEC_HARD_ROUND_CAP - 2 < self.state['exec_rounds'] <= EXEC_HARD_ROUND_CAP:
             self._automatic_allowance('EXEC gate', 1)
 
+    def _exec_split_lacks_shadow_proof(self, shadow: Optional[dict], tree: str) -> bool:
+        answer = shadow['answer'] if shadow else {}
+        return bool(self._latest_completed_test_failure(answer.get('observed_commands', []))
+                    or (self.args.shadow == 'on' and (not answer.get('self_run_evidence')
+                        or answer.get('reviewed_snapshot') != tree)))
+
     def _stage_exec_split(self, result: dict, answer: dict, rows: list[dict]) -> None:
         self.state['pending_reviewer_result_sequence'] = None
         if self.args.adversarial_gate == 'on' and not self.state['gate_ran']:
@@ -10307,13 +10313,9 @@ class Coordinator:
                     if answer['reviewed_snapshot'] != tree or result.get('snapshot') != tree:
                         self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
                         return self.hold('stale EXEC review at automatic split')
-                    shadow_answer = shadow['answer'] if shadow else {}
-                    if confirming and (previous_shadow := self._recorded_shadow_result(phase, confirm_after)):
-                        shadow_answer = previous_shadow['answer']
+                    split_shadow = self._recorded_shadow_result(phase, confirm_after) if confirming else shadow
                     if (not tested or self._latest_completed_test_failure(answer.get('observed_commands', []))
-                            or self._latest_completed_test_failure(shadow_answer.get('observed_commands', []))
-                            or (self.args.shadow == 'on' and (not shadow_answer.get('self_run_evidence')
-                                or shadow_answer.get('reviewed_snapshot') != tree))):
+                            or self._exec_split_lacks_shadow_proof(split_shadow, tree)):
                         self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
                         return self.hold(TEST_EVIDENCE_HOLD)
                     if awaiting_confirmation:
@@ -10830,9 +10832,11 @@ class Coordinator:
             if tree != snapshot or tree != reviewer.get('snapshot_before') or tree != review_answer.get('reviewed_snapshot'):
                 self.state.update(next='reviewer', pending_exec_split=None)
                 return self.hold('stale EXEC review at automatic split')
+            shadow = self._recorded_shadow_result('EXEC', reviewed) if self.args.shadow == 'on' else None
             if (not review_answer.get('self_run_evidence') or not self._test_proof(tree)
                     or self._latest_completed_test_failure(review_answer.get('observed_commands', []))
-                    or self._latest_completed_test_failure(answer.get('observed_commands', []))):
+                    or self._latest_completed_test_failure(answer.get('observed_commands', []))
+                    or self._exec_split_lacks_shadow_proof(shadow, tree)):
                 self.state.update(next='reviewer', pending_exec_split=None)
                 return self.hold(TEST_EVIDENCE_HOLD)
             if not any(row.get('needs_confirmation') for row in rows):
