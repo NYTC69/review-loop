@@ -45,13 +45,13 @@
   - v3.16.1 note (Opus R1): TRANSIENT_PROVIDER_RE lacks Gemini-native overload wording (503 UNAVAILABLE / "The model is overloaded"); widen it from a real agy capture. (2026-11-24)
   - v3.16.1 note (Opus R1): a Gemini capacity failure made ineligible by an ignored-file edit HOLDs with the transient resume hint, not the "changed ignored files, check them by hand" note (path still in voided.ignored_changed); add that note when touched. (2026-11-24)
   - v3.16.1 note (Opus R1): no test for the Gemini context-digest condition or the Gemini writer Git guard on the transient path (the no-work guard is mutation-tested). (2026-11-24)
+- POLISH-Q operator-fix recovery follow-ups (optional; WI-POLBUDGET v3.16.2). (added 2026-11-24)
+  - v3.16.2 note (Opus R1): after an operator-recheck still_open HOLD the owner count is 1, so a second operator edit falls through to an author turn instead of a direct recheck (safe; owner closure still required); document it or grant a direct recheck whenever operator_hold sees a changed tree. (2026-11-24)
+  - v3.16.2 note (Opus R1): the operator grant does not pre-check the invocation limit like the author path; the recheck HOLDs at the limit and resume with a higher --max-invocations continues (clearer message possible). (2026-11-24)
+  - v3.16.2 note (Opus R1): the operator_hold state is not named in paired_session/README.md; add a one-line code comment (scenario row 3). (2026-11-24)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-E operator note semantics (E1, E2, E4).~~ (added 2026-11-22, closed 2026-11-24, see v3.15.5)
-  - E1 fixed: fresh review roles (shadow, gate, POLISH-Q specialist, DOCS, SECURITY) see delivered notes with finding ids masked as [finding ID]; authors and the persistent reviewer keep the original text.
-  - E2 fixed: a later delivered note takes precedence on conflicting points (handoff line on the second delivery, precedence line when two or more notes are delivered).
-  - E4 dropped with a characterization test: a withdrawn covering row takes the attached report with it; the other specialist files a new row on a later eligible delta. E3 stays open (feature).
 - ~~WI-HISTSCAN history scan blocks a repository whose subject is a tool (token-meter field HOLD on `.claude`).~~ (added 2026-11-24, closed 2026-11-24, see v3.15.6)
   - Fixed: a frozen work-item declaration `history-scan-subject: claude codex gemini` exempts the declared vendors' state dot dirs in the plan and both delta views; ledger ids, verdict words, attributions and history phrases stay caught; the diagnostic reports only the real hit.
 - ~~CI: two macOS test groups cancelled at 20 minutes on the v3.15.5 candidate.~~ (added 2026-11-24, closed 2026-11-24, supervisor CI tooling, no plugin change)
@@ -63,3 +63,5 @@
   - F1 fixed: an agy positive exit whose terminal JSON ERROR carries capacity/overload wording gets one transient retry (no-work attempts only; quota classification first).
   - F2 docs: READMEs and ADR-21 match the code (verified restore allows one re-dispatch; an ignored-file edit voids the verdict and HOLDs with the edit on disk).
   - F3 dropped: backoff slots are already per dispatch (cleared on success) with a run-wide wait budget; pinned by test_unknown_reset_backoff_restarts_for_next_dispatch.
+- ~~WI-POLBUDGET POLISH-Q specialist-budget HOLD has no exit after an operator fix (token-meter field blocker, run 1862edcf).~~ (added 2026-11-24, closed 2026-11-24, see v3.16.2)
+  - Fixed: at that HOLD a plain resume on a changed tree (operator edit) resets the exhausted owners' epoch counts and dispatches their recheck (no author turn); clear -> new epoch with EXEC replay; still open -> HOLD. Security rows stay owner-only; held runs resume in place.
