@@ -439,6 +439,8 @@ def main():
             if docs_rejection:
                 changelog = Path.cwd() / 'CHANGELOG.md'
                 changelog.write_text((changelog.read_text() if changelog.exists() else '') + '# rejection applied\n')
+            elif os.environ.get('FAKE_POLISH_BUDGET_OWNERS') and '"source": "polish-q"' in prompt:
+                module.write_text(module.read_text() + '# attempted specialist fix\n')
             elif not os.environ.get('FAKE_AUTHOR_NO_REJECTION_CHANGE') and not docs_fix:
                 if os.environ.get('FAKE_DOC_DELTA'):
                     (Path.cwd() / 'CLAUDE.md').write_text('Directory: sum_ints.py\n')
@@ -751,6 +753,15 @@ def main():
         disposition = 'fixed'
         prior = [{'id': finding_id, 'disposition': disposition,
                   'evidence': 'fake verified disposition'} for finding_id in open_ids]
+        budget_owners = os.environ.get('FAKE_POLISH_BUDGET_OWNERS', '').split(',')
+        if specialist in budget_owners and '# operator fix' not in (Path.cwd() / 'sum_ints.py').read_text():
+            revise = True
+            if open_ids:
+                prior = [{**row, 'disposition': 'still_open', 'evidence': 'operator fix is missing'} for row in prior]
+            else:
+                findings = [{'severity': 'MAJOR', 'file': f'sum_ints.py:{budget_owners.index(specialist) + 1}',
+                             'security': True, 'category': 'security', 'summary': f'{specialist} specialist blocker',
+                             'failure_scenario': 'The unsafe behavior remains reachable'}]
         if 'Role: docs reviewer,' in prompt and open_ids:   # v3.8.1: the docs reviewer disposes the open docs rows
             changelog = Path.cwd() / 'CHANGELOG.md'
             if changelog.exists() and '# corrected entry' in changelog.read_text():

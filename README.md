@@ -580,6 +580,10 @@ Under quota pressure, keep the configured fresh shadow and drop specialists firs
 batch is still unscheduled. Existing blockers still go through author fix and owner recheck, with one or two
 calls per owner, or eligible operator withdrawal at the POLISH-Q fix HOLD. See the [resume details](paired_session/README.md#skipping-quality-polish-on-resume).
 
+At a POLISH-Q specialist budget HOLD, apply the fix in the workspace and run plain `resume` on v3.16.2 or later.
+If the run-wide POLISH-Q allowance can cover the owner rechecks, the owners review the edit before EXEC replays.
+See [Recovering from a POLISH-Q specialist budget HOLD](paired_session/README.md#recovering-from-a-polish-q-specialist-budget-hold).
+
 ## File Structure
 
 ```

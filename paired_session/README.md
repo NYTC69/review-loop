@@ -716,6 +716,21 @@ resume that continues. A profile `skip_quality_polish` value never downgrades a 
 Existing blockers still go through author fix and owner recheck, with one or two calls per owner.
 An eligible blocker can also be withdrawn at the existing POLISH-Q fix HOLD.
 
+## Recovering from a POLISH-Q specialist budget HOLD
+
+When a blocking finding's owner has exhausted its per-epoch POLISH-Q budget, apply the fix in the
+workspace and use plain `resume` on v3.16.2 or later with the original workspace, work item, and run directory.
+This also works for runs saved on v3.15.6. You can attach host verification for the edited tree before resuming.
+The run-wide POLISH-Q allowance must have room for two calls per owner. The owners recheck the edit
+directly. If they clear the blockers, the EXEC reviewer and configured shadow replay with the saved gate
+verdict, followed by the rest of the lifecycle. If blockers remain, the run HOLDs on the rechecked tree.
+Resuming on the same tree dispatches nothing at either HOLD, including after attaching verification alone.
+Blocking security findings still require their owner's verification and cannot be withdrawn.
+
+The recheck and replay may need a higher `--max-invocations`. If the EXEC replay returns REVISE on a
+run that is already at or past its EXEC round limit, it enters a round-limit HOLD. Use
+`resume --add-rounds N` to continue from that HOLD.
+
 ## Acceptance, rejection and round limits
 
 Automatic continuation and splitting default to on for newly created delivery runs in both lifecycle modes.

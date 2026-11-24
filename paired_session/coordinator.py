@@ -9035,9 +9035,34 @@ class Coordinator:
         """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn). R5: it uses no
         EXEC round; the POLISH-Q stage budgets bound it."""
         owners = self._blocker_owners()   # every owner's re-review must fit before the author writes
+        life = self.state['lifecycle']
+        if (not self.state['config'].get('review_report') and life['stage'] == 'POLISH-Q'
+                and self.state['next'] == 'polish-fix' and (base := life.get('fix_base'))):
+            counts = life.get('specialist_counts', {})
+            exhausted = [name for name in owners if life.get('counts_epoch', life['epoch']) == life['epoch']
+                         and counts.get(name, 0) + 2 > budget_policy.BUDGET_CAPS['specialist'][0]]
+            can_recheck = exhausted and life.get('polish_calls', 0) + 2 * len(owners) <= self._worktree_run_cap('POLISH-Q')
+            last_fix = (life.get('polish_fixes') or [{}])[-1]
+            operator_hold = last_fix.get('operator') and last_fix['tree'] == base and last_fix['epoch'] == life['epoch']
+            if can_recheck or operator_hold:
+                tree = git_snapshot(self.workspace)[0]
+                if can_recheck and tree != base:
+                    life.setdefault('operator_fixes', []).append(
+                        {'tree': tree, 'base': base, 'owners': owners, 'sequence': self.state['sequence']})
+                    counts.update(dict.fromkeys(exhausted, 0))
+                    self.state['next'] = 'polish-recheck'
+                    self.save()
+                    print(f"NOTE: re-dispatching POLISH-Q owners for operator edit {base[:12]} -> {tree[:12]}: "
+                          + ', '.join(owners))
+                    return
+                if operator_hold and tree == base:
+                    remaining = self.blocking_open_findings()
+                    if remaining:
+                        self.hold('POLISH-Q blockers remain after the fix: ' + ', '.join(row['id'] for row in remaining))
+                        return
         for name in owners:
             self._specialist_budget(name)
-        if self.state['lifecycle'].get('polish_calls', 0) + len(owners) + 1 > self._worktree_run_cap('POLISH-Q'):
+        if life.get('polish_calls', 0) + len(owners) + 1 > self._worktree_run_cap('POLISH-Q'):
             raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
         if 1 + len(owners) > self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']:
             raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
@@ -9048,7 +9073,7 @@ class Coordinator:
             self.save()
 
     def worktree_polish_recheck_turn(self) -> None:
-        """The owning specialists re-review their blockers on the fixed tree; the write then replays EXEC + gate."""
+        """The owning specialists re-review their blockers on the fixed tree before EXEC replays."""
         life, tree = self.state['lifecycle'], git_snapshot(self.workspace)[0]
         if tree == life['fix_base']:   # the tree the blockers were raised or left open on
             self.state.update(next='polish-fix', delivered_review=worktree_lifecycle.delivered_findings(
@@ -9067,9 +9092,14 @@ class Coordinator:
                 self.save()
         author = next((turn['sequence'] for turn in reversed(self.state['turns']) if turn.get('role') == 'author'
                        and turn.get('phase') == 'EXEC' and not turn.get('error')), None)
-        life.setdefault('polish_fixes', []).append({
+        fix = {
             'epoch': life['epoch'], 'base_tree': life['fix_base'], 'tree': tree, 'author_sequence': author,
-            'recheck_turns': [progress['done'][name] for name in progress['owners']]})
+            'recheck_turns': [progress['done'][name] for name in progress['owners']]}
+        operator_fix = (life.get('operator_fixes') or [{}])[-1]
+        if (operator_fix.get('tree') == tree and operator_fix['base'] == life['fix_base']
+                and (author is None or author <= operator_fix['sequence'])):
+            fix.update(author_sequence=None, operator=True)
+        life.setdefault('polish_fixes', []).append(fix)
         life.pop('recheck')
         if remaining := self.blocking_open_findings():
             life['fix_base'] = tree

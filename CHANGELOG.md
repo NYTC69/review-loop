@@ -1,5 +1,15 @@
 # Changelog
 
+### v3.16.2：修复 POLISH-Q 专项预算耗尽后无法复查操作者修复（WI-POLBUDGET）
+
+- 交付运行因 POLISH-Q 专项审查员的当前 epoch 预算耗尽而 HOLD 时，在原工作区完成修复，用 v3.16.2 对原运行执行普通 `resume`。v3.15.6 保存的运行也可以原地继续。可先为修改后的代码树附上主机测试证据。
+- POLISH-Q 总额度须能为每位问题负责人预留两次调用。符合条件时直接派发负责人复查。阻塞项清除后重走 EXEC 审查和已配置的 shadow，沿用已有门审裁定。阻塞项仍开放则在复查过的代码树上 HOLD。两种 HOLD 在代码树未变时都不会派发，单独附加验证也一样。阻塞性安全问题仍不可撤回。
+- 复查和后续流程可能需要提高 `--max-invocations`。如果原运行已达到或超过 EXEC 轮次上限，重放时收到 EXEC REVISE 会进入轮次上限 HOLD，用 `resume --add-rounds N` 继续。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.1` 更新为 `3.16.2`。
+
 ### v3.16.1：修复 agy 临时错误重试并澄清只读恢复（WI-F）
 
 - F1：agy 以正退出码结束且终态 `ERROR` 匹配现有的容量不足或过载措辞时，尚未执行工具且通过工作区等检查的回合会退回调用额度，并在 60 秒后重试一次。明确的配额拒绝优先走配额等待流程。
