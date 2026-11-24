@@ -140,7 +140,7 @@ class QueuedNoteTests(unittest.TestCase):
 
     def test_a_note_at_the_exec_round_limit_hold_is_queued_and_delivered_after_add_rounds(self):
         # WI-GATE1 R5: a FINISH write no longer reaches the cap, so the R1 HOLD of a first-round REVISE stands in for it
-        flags = ('--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--exercise-revisions')
+        flags = ('--auto-split-rounds', 'false', '--lifecycle-mode', 'on', '--max-exec-rounds', '1', '--exercise-revisions')
         held = self.run_coordinator(*flags)
         self.assertIn('HOLD: EXEC round limit reached', held.stdout, held.stdout + held.stderr)
         noted = self.run_operator_action('note', *flags, '--text', 'Prefer the smaller fix.')

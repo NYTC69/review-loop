@@ -322,7 +322,8 @@ class ScenarioMatrixRunTests(unittest.TestCase):
         self.assertEqual(next(row['status'] for row in state['finding_ledger'] if row['id'] == item['id']), 'fixed')
 
     def test_exec_review_revises_for_a_row_without_passing_test_evidence(self):
-        result = self.run_coordinator(*tgo.OFF, '--max-exec-rounds', '1', env={'FAKE_EXEC_MATRIX_TEST_MISSING': '1'})
+        result = self.run_coordinator(*tgo.OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1',
+                                      env={'FAKE_EXEC_MATRIX_TEST_MISSING': '1'})
         self.assertIn('HOLD: EXEC round limit reached', result.stdout, result.stdout + result.stderr)
         state = self.state()
         self.assertEqual(state['review_verdicts'][-1]['effective_verdict'], 'REVISE')

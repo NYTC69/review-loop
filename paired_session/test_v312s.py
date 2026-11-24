@@ -583,7 +583,7 @@ class SecretScanEndToEndTests(unittest.TestCase):
     def test_public_off_run_holds_when_no_exec_round_is_left(self):
         with patch.dict(os.environ, {'FAKE_AUTHOR_SECRET': 'config_local.py'}):
             code, output = self.call_public(self.public_argv('run', '--skip-probe', '--auto-commit', 'false',
-                                                             '--max-exec-rounds', '1'))
+                                                             '--auto-split-rounds', 'false', '--max-exec-rounds', '1'))
         state = self.state()
         self.assertEqual(state['status'], 'HOLD', output)
         self.assertTrue(state['hold_reason'].startswith(

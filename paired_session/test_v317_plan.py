@@ -14,7 +14,8 @@ class PlanStillOpenTests(unittest.TestCase):
     locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in (*twl._HELPERS, 'setUp')})
 
     def review(self, severity='MINOR', rounds=3, rewrite=False, rows=True):
-        co = self.coordinator('--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'off')
+        flags = ('--auto-split-rounds', 'false') if not rows or severity == 'MAJOR' else ()
+        co = self.coordinator(*flags, '--lifecycle-mode', 'off', '--shadow', 'off', '--adversarial-gate', 'off')
         self.assertEqual(co.args.max_plan_rounds, 3)
         (co.context / 'plan.md').write_text('Implement the helper and run unittest.\n' + FAKE_SCENARIO_MATRIX)
         findings = co.record_findings('persistent-reviewer', 'PLAN', 1, [

@@ -36,7 +36,7 @@ class BlockClassTests(unittest.TestCase):
         self.assertEqual(state.get('unlabeled_blocking_findings'), 0)
 
     def test_unlabeled_blockers_are_counted_and_never_hold(self):
-        held = self.run_coordinator(*FLAGS, '--max-exec-rounds', '4', env={'FAKE_EXEC_MIXED_REVISE': '1'})
+        held = self.run_coordinator(*FLAGS, '--auto-split-rounds', 'false', '--max-exec-rounds', '4', env={'FAKE_EXEC_MIXED_REVISE': '1'})
         self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
         state = self.state()
         self.assertEqual(state['hold_reason'], 'EXEC round limit reached')
@@ -46,7 +46,7 @@ class BlockClassTests(unittest.TestCase):
         self.assertEqual([row.get('unlabeled_blocking_findings') for row in reviews], [1, 1, 1, 1])
 
     def test_the_round_limit_hold_keeps_precedence_and_its_owner_override(self):
-        held = self.run_coordinator(*FLAGS, '--max-exec-rounds', '3', env=LABEL)
+        held = self.run_coordinator(*FLAGS, '--auto-split-rounds', 'false', '--max-exec-rounds', '3', env=LABEL)
         self.assertEqual(held.returncode, 2, held.stdout + held.stderr)
         state = self.state()
         self.assertEqual(state['hold_reason'], 'EXEC round limit reached')   # three labeled blocks, but the round limit wins

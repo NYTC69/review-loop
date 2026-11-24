@@ -19,7 +19,7 @@ class AddRoundsTests(unittest.TestCase):
         return json.loads((self.run_dir / 'state.json').read_text())
 
     def held(self, *flags, reason):
-        held = self.run_coordinator('--exercise-revisions', *flags)   # the first review of each phase returns REVISE
+        held = self.run_coordinator('--auto-split-rounds', 'false', '--exercise-revisions', *flags)   # the first review of each phase returns REVISE
         self.assertIn('NEXT: resume --add-rounds N (1-10) continues this run', held.stdout, held.stdout + held.stderr)
         self.assertEqual(held.stdout.strip().splitlines()[-1], 'HOLD: ' + reason)
         return self.state()
@@ -53,7 +53,7 @@ class AddRoundsTests(unittest.TestCase):
                 self.assertIn('操作员追加轮次（resume --add-rounds）：EXEC +1', review_report.delivery_section(state))
 
     def w_hold_then_continue(self, env, reason, resume_env=None):
-        flags = ('--max-exec-rounds', '1', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        flags = ('--auto-split-rounds', 'false', '--max-exec-rounds', '1', '--lifecycle-mode', 'on', '--max-invocations', '60')
         held = self.run_coordinator(*flags, env=env)
         self.assertEqual(held.stdout.strip().splitlines()[-1], 'HOLD: ' + reason, held.stdout + held.stderr)
         before = self.state()
@@ -129,7 +129,7 @@ class AddRoundsTests(unittest.TestCase):
 
     def test_a_gate_hold_goes_to_the_author_and_a_write_hold_keeps_its_review(self):
         use_lifecycle_on(self, self)
-        co = self.coordinator('--max-exec-rounds', '1')
+        co = self.coordinator('--auto-split-rounds', 'false', '--max-exec-rounds', '1')
         [row] = co.record_findings('adversarial-gate', 'EXEC', 7, [{'severity': 'high', 'file': 'sum_ints.py', 'body': 'b',
                                                                     'summary': 'gate blocker', 'failure_scenario': 'x'}])
         for reason, nxt, expected in (('EXEC round limit reached after adversarial gate', 'gate', 'author'),
@@ -145,7 +145,7 @@ class AddRoundsTests(unittest.TestCase):
 
     def test_the_limits_count_an_extension_once_and_a_writer_replay_not_at_all(self):
         use_lifecycle_on(self, self)
-        co = self.coordinator('--max-exec-rounds', '1', '--max-plan-rounds', '2')
+        co = self.coordinator('--auto-split-rounds', 'false', '--max-exec-rounds', '1', '--max-plan-rounds', '2')
         co.state['round_extensions'] = [{'phase': 'EXEC', 'n': 2}, {'phase': 'PLAN', 'n': 3}]
         self.assertEqual((co.exec_round_limit(), co.plan_round_limit()), (3, 5))
         co.state['writer_replay_rounds'] = {'start': 3, 'used': 2}   # WI-GATE1 R5: a replay (saved by v3.8.x) adds no round

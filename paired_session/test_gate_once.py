@@ -167,18 +167,18 @@ class GateOnceTests(unittest.TestCase):
 
     # --- R2 (supersedes owner Q3): two post-gate fix rounds wherever the cap stood --------------------------------------------
     def test_a_gate_fail_at_the_round_cap_gets_its_fix_round(self):
-        result = self.run_coordinator(*OFF, '--max-exec-rounds', '1', env=FAIL)
+        result = self.run_coordinator(*OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1', env=FAIL)
         state = self.assert_one_gate_then_done(result)
         self.assertEqual(state['exec_rounds'], 2)
         self.assertEqual(state['gate_fail_round']['round'], 1)
 
     def test_a_gate_item_open_after_both_fix_rounds_holds_and_add_rounds_continues_without_a_gate(self):
         keep = {**FAIL, 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'}
-        held = self.run_coordinator(*OFF, '--max-exec-rounds', '1', env=keep)
+        held = self.run_coordinator(*OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1', env=keep)
         self.assertIn('HOLD: ' + rc.GATE_SPLIT_REASON, held.stdout, held.stdout + held.stderr)
         state = self.state()
         self.assertEqual((len(gates(state)), state['exec_rounds'], state['turns'][-1]['role']), (1, 3, 'reviewer'))
-        resumed = self.run_operator_action('resume', *OFF, '--max-exec-rounds', '1', '--add-rounds', '1', env=FAIL)
+        resumed = self.run_operator_action('resume', *OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1', '--add-rounds', '1', env=FAIL)
         self.assert_one_gate_then_done(resumed)
 
     # --- operator actions ----------------------------------------------------------------------------------------------------

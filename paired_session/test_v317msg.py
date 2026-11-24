@@ -36,7 +36,7 @@ class RecoveryHintTests(unittest.TestCase):
         self.assertNotIn('accept', hint)
 
     def round_limit(self, route, phase):
-        flags = ('--lifecycle-mode', route, '--shadow', 'off', '--exercise-revisions',
+        flags = ('--auto-split-rounds', 'false', '--lifecycle-mode', route, '--shadow', 'off', '--exercise-revisions',
                  '--max-' + phase.lower() + '-rounds', '1', '--max-invocations', '60')
         held = self.run_coordinator(*flags)
         self.assertEqual(held.returncode, 2, held.stdout + held.stderr)

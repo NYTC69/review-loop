@@ -80,6 +80,13 @@ path with `--config` on every call. `--config` replaces
 only; copy any desired non-program limits into the operator profile.
 Role/vendor/program/test-command settings belong in the operator profile,
 outside the workspace and run directory. CLI options override the profile.
+New delivery runs freeze automatic PLAN continuation and round-cap splits on by default.
+The JSON profile can set `"auto_split_rounds": false`, or the CLI can set `--auto-split-rounds false`.
+PLAN uses the configured cap, grants and up to two automatic rounds, with an early cut at the cap after two reviews
+with new blockers. The reduced PLAN gets one review. If the retained core remains blocked, plain resume
+keeps the HOLD and ordinary notes are saved without dispatch. `note --scope-change` starts a successor run.
+A scope-change successor must `abort` and start a new run.
+Initial delivery EXEC uses round five regardless of `--max-exec-rounds`.
 Models are operator-set (ADR-9); a role without one gets its vendor's default
 (`claude-opus-5-5` for Claude; `gpt-6.1-sol` for Codex), and the gate defaults
 to the author's vendor (ADR-10).

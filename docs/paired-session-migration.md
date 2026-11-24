@@ -163,7 +163,7 @@ Status values:
 | `reviewer_model`, `executor_model` | `--reviewer-model` / `--author-model` or the operator profile; warned when set to anything other than empty or `inherit`, not applied | covered |
 | `codex_reviewer_model`, `codex_executor_model` | `--reviewer-model` / `--author-model` or the operator profile; silently ignored | covered |
 | `judgment_model`, `cheap_model` | per-role models only; no tiering of specialists | retire (ADR-15) (L99) |
-| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: a HOLD at the cap, not a prompt; exec default 3. At that HOLD, `resume --add-rounds N` (1-10) continues the same run with N more rounds of the phase (the saved cap stays; `round_extensions` records it) | port (owner 2026-10-07, after ADR-15's "covered"): `resume --add-rounds N` (L100) |
+| `soft_limit_plan`, `soft_limit_exec` | `--max-plan-rounds` / `--max-exec-rounds`: PLAN cap plus up to two automatic rounds, with an early cut. Initial automatic delivery EXEC uses round five. With `--auto-split-rounds false`, the legacy caps can HOLD. At an eligible HOLD, `resume --add-rounds N` (1-10) continues the same run with N more rounds of the phase. The saved cap stays and `round_extensions` records the grant. | port (owner 2026-10-07, after ADR-15's "covered"): `resume --add-rounds N` (L100) |
 | `auto_commit` | review-only runs: `.review-loop/config.md` `auto_commit: false` keeps the accepted change uncommitted (default: one hook-free local commit on accept); main pipeline: operator-profile `auto_commit` | covered |
 | `commit_message_prefix` | none: the commit message is fixed | retire (ADR-15) (L102) |
 | `docs_file` | `--docs-file` | covered |

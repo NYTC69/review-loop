@@ -60,8 +60,10 @@ declined or unanswered worktree or test-command question; under handsfree any
 such question counts as unanswered) refuses with the reason, whether the key is set or not
 (unavailable background or outside-sandbox execution is reported as HOLD); nothing falls back.
 Once the coordinator has started, a refusal or HOLD is reported. Roles come from the
-operator profile you name or `~/.config/review-loop/paired-session.json`;
-without one, Codex is the author and gate and Claude the reviewer.
+operator profile you name or `~/.config/review-loop/paired-session.json`.
+Without a profile, Codex is the author and gate and Claude is the reviewer.
+New delivery runs freeze automatic PLAN continuation and round-cap splits on by default.
+Set `"auto_split_rounds": false` in the profile or pass `--auto-split-rounds false` to opt out.
 Gemini (Antigravity CLI `agy`) is an optional third vendor for any role on macOS (README.md, Configuration).
 Every run uses one mode: every sandbox applies and no permission probe exists (`permission-probe` and strict mode
 were removed in v3.7.0; `--strict` only prints a NOTE). A reviewer turn that changes the
@@ -113,8 +115,8 @@ Create `.review-loop/config.md` in your project to customize:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `entry` | absent (paired-session) | `paired-session` (`legacy` is refused since v2.13.0); routes every `/review-loop` (Claude) or review-loop skill (Codex) request, review-pr and code-quality-loop (see Entry above) |
-| `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (a hard cap that HOLDs blocking reviews) |
-| `soft_limit_exec` | unset → 3 | Becomes `--max-exec-rounds` (the pre-gate EXEC cap) |
+| `soft_limit_plan` | 3 | Becomes `--max-plan-rounds` (ordinary PLAN cap, plus up to two automatic rounds in delivery mode) |
+| `soft_limit_exec` | unset → 3 | Becomes `--max-exec-rounds` for the legacy pre-gate cap. Default initial delivery EXEC uses round five. |
 | `docs_file` | `CHANGELOG.md` | Becomes `--docs-file`; `""` to skip |
 | `skip_quality_polish` | false | Becomes `--skip-quality-polish` |
 | `review_focus` | "" | Project-specific review priorities (free text), given to the reviewer, shadow and gate |
@@ -154,9 +156,11 @@ review_focus: |
 ## Key features
 
 - **Independent review** — the reviewer, shadow and gate never share the author's session
-- **Round caps** — PLAN and pre-gate EXEC default to 3 rounds each. The gate gives one PASS/FAIL
-  verdict. FAIL allows one repair review and at most one more within the automatic 5-round EXEC hard cap.
-  At a round-limit HOLD, `resume --add-rounds N` (1–10) extends the run on the operator's decision.
+- **Round caps** — PLAN defaults to 3 rounds; in a delivery run up to two more PLAN rounds run automatically,
+  then the author cuts the contested part into a follow-up and the reduced plan gets one review. Initial EXEC
+  runs up to round 5; unresolved blockers or a gate FAIL at round 5 ship into a follow-up (`--auto-split-rounds
+  false` or `"auto_split_rounds": false` restores the old 3-round caps and HOLDs). The gate gives one PASS/FAIL
+  verdict. At a round-limit HOLD, `resume --add-rounds N` (1–10) extends the run on the operator's decision.
   Advisory-only reviews can pass, with open findings recorded in the run backlog and carried to acceptance.
   An advisory fix round is available only through code-quality-loop. EXEC needs a passed configured test,
   own run evidence and the current tree. See [round rules and gate repair](../../paired_session/README.md#acceptance-rejection-and-round-limits)

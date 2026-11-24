@@ -29,12 +29,11 @@
 # For work about tool-state directories, declare the applicable subjects in the work item:
 # history-scan-subject: claude codex gemini
 
-# soft_limit_plan: 3            # --max-plan-rounds; a blocking review at the cap HOLDs and `resume --add-rounds N`
-                                # continues it; an eligible advisory-only review at the cap is approved with its rows
-                                # left open as advisory
-# soft_limit_exec: 3            # --max-exec-rounds, before the single gate verdict
-                                # A FAIL allows up to two repair reviews. The automatic EXEC hard cap is 5.
-                                # See paired_session/README.md, Acceptance, rejection and round limits.
+# soft_limit_plan: 3            # Maps to --max-plan-rounds. Default delivery adds up to two PLAN rounds or cuts early
+# soft_limit_exec: 3            # Maps to --max-exec-rounds for the legacy pre-gate cap. Default initial delivery EXEC uses round five.
+# Delivery round policy is frozen at creation. Opt out with --auto-split-rounds false
+# or set "auto_split_rounds": false in the paired-session JSON profile.
+# See paired_session/README.md, Acceptance, rejection and round limits.
 # auto_commit: false            # review-only runs (/review-loop on existing code, code-quality-loop): false keeps the
                                 # accepted change uncommitted (with lifecycle on: normally one local commit at accept, never a push);
                                 # lifecycle off stops after the gate; acceptance returns the uncommitted tree;

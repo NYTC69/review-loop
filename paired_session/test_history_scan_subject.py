@@ -50,7 +50,7 @@ class HistoryScanSubjectTests(unittest.TestCase):
         return json.loads((self.h.run_dir / 'state.json').read_text())
 
     def test_last_exec_shadow_holds_without_subject(self):
-        result = self.run_adapter('--max-exec-rounds', '1')
+        result = self.run_adapter('--auto-split-rounds', 'false', '--max-exec-rounds', '1')
         state = self.state()
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(state['status'], 'HOLD')
@@ -155,7 +155,7 @@ class HistoryScanSubjectTests(unittest.TestCase):
         self.assertNotRegex(trc.rc.REVIEW_HISTORY_GUIDANCE, r'(?i)\b(?:claude|codex|gemini|opus|astra)\b|\.[a-z][\w-]*')
 
     def test_subject_is_frozen_across_resume_and_scope_change(self):
-        result = self.run_adapter('--max-exec-rounds', '1')
+        result = self.run_adapter('--auto-split-rounds', 'false', '--max-exec-rounds', '1')
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         with self.h.workitem.open('a') as handle:
             handle.write(DECLARATION + '\n')

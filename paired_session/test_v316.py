@@ -91,7 +91,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
                 self.assert_exit(state, 'MINOR')
 
     def test_a_gate_high_still_open_at_the_last_round_holds(self):   # WI-GATE1 R2: after the two post-gate fix rounds
-        held = self.gate_shaped(*OFF, '--max-exec-rounds', '2', keep='reject bool')
+        held = self.gate_shaped(*OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '2', keep='reject bool')
         self.assertEqual(held.stdout.strip().splitlines()[-1], 'HOLD: ' + rc.GATE_SPLIT_REASON, held.stdout + held.stderr)
         state = self.state()
         self.assertEqual(self.exec_verdicts(state)[-1], ('REVISE', 'REVISE'))
@@ -136,7 +136,7 @@ class RoundLimitStillOpenTests(unittest.TestCase):
         tree; `change` replaces answer fields."""
         self.run_dir = self.root / name
         lifecycle_on = '--lifecycle-mode' in flags and flags[flags.index('--lifecycle-mode') + 1] == 'on'
-        co = self.coordinator('--shadow', 'off', '--adversarial-gate', 'on' if lifecycle_on else 'off',
+        co = self.coordinator('--auto-split-rounds', 'false', '--shadow', 'off', '--adversarial-gate', 'on' if lifecycle_on else 'off',
                               '--max-exec-rounds', str(limit), '--max-plan-rounds', str(limit), *flags)
         if prepare:
             prepare(co)

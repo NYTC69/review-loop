@@ -2520,11 +2520,17 @@ def fresh_review_schema() -> dict:
     return schema
 
 
-def author_schema() -> dict:
-    return {'type': 'object', 'properties': {
+def author_schema(reduced=False) -> dict:
+    schema = {'type': 'object', 'properties': {
         'status': {'type': 'string', 'enum': ['READY', 'HOLD']},
         'body': {'type': 'string'},
     }, 'required': ['status', 'body'], 'additionalProperties': False}
+    if reduced:
+        schema['properties'].update(
+            retained_workitem={'type': 'string'}, deferred_scope={'type': 'string'},
+            transfer_ids={'type': 'array', 'items': {'type': 'string'}})
+        schema['required'] += ['retained_workitem', 'deferred_scope', 'transfer_ids']
+    return schema
 
 
 NOQA_CODES_RE = re.compile(r'(#\s*(?:ruff:\s*)?noqa:\s*)[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*', re.I)
@@ -3004,6 +3010,10 @@ class Coordinator:
                         self.state.get('item_blockers') != spec.get('item_blockers') or spec['item_blockers'] != pending_item_blockers(old, parent) or
                         self.state.get('item_blockers_complete') != spec.get('item_blockers_complete')):
                     raise ValueError('saved successor item identity or blockers differ')
+            saved_split = self.state['config'].get('auto_split_rounds')
+            if getattr(args, 'auto_split_rounds_explicit', False) and args.auto_split_rounds != bool(saved_split):
+                raise ValueError('resume configuration differs: auto_split_rounds')
+            args.auto_split_rounds = saved_split
             self._review_only_args(self.state['config'])
             saved_wait = resolve_max_rate_limit_wait(self.state['config'].get(
                 'max_rate_limit_wait', DEFAULT_MAX_RATE_LIMIT_WAIT))
@@ -3035,6 +3045,8 @@ class Coordinator:
             scope_request = args.action in ('note', 'reject') and getattr(args, 'scope_change', False)
             if self.state.get('scope_change_intent') and not scope_request:
                 raise ValueError('scope change is pending; finish that request')
+            if self.state.get('round_splits'):
+                self._render_round_splits()
             if self.state.get('status') == 'ABORTED' and not scope_request:
                 raise ValueError('run was ABORTED by scope change; start its successor')
         else:
@@ -3054,6 +3066,8 @@ class Coordinator:
                     raise ValueError(f'independence check rejected history in original-workitem: {markers[0]}; the fresh '
                                      'shadow and gate would hold on it. The phrase reads as this run\'s review history; say it another '
                                      'way, or put it in backticks when the repository already contains it')
+            if self.args.auto_split_rounds is None:
+                self.args.auto_split_rounds = not self.args.review_only and not self.args.review_report
             frozen_config = self._config()
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.rounds.mkdir(exist_ok=True)
@@ -3275,6 +3289,8 @@ class Coordinator:
                 'skip_quality_polish', 'allowed_models', 'auto_commit', 'external_delivery',
                 'safety_mode', 'quality_writers', 'advisory_fix_round')
         config = {key: getattr(self.args, key) for key in keys}
+        if self.args.auto_split_rounds is not None:
+            config['auto_split_rounds'] = self.args.auto_split_rounds
         config.update({key: (getattr(self.args, key, None) or '').strip() for key, _ in GUIDANCE_KEYS})   # L105
         if getattr(self.args, 'wi_deadline', None) is not None: config['wi_deadline'] = self.args.wi_deadline   # F2: only a run with a deadline saves the key
         if getattr(self.args, 'review_only', None): config.update(review_only=True, review_base=self.args.review_base)   # D-LG1, as F2
@@ -4197,6 +4213,8 @@ class Coordinator:
     def _progress_phase(self, role: str, phase: str) -> None:
         rounds = self.state.get(f'{phase.lower()}_rounds', 0) + (role == 'author')
         label = 'gate' if role == 'gate' else f'{phase} r{rounds}'
+        if phase == 'PLAN' and self._reduced_plan_status() in ('author', 'reviewer'):
+            label = 'PLAN reduced'
         if phase == 'PLAN' and role == 'author' and (self.state.get('plan_history_rewrite') or {}).get('status') == 'requested':
             label = 'PLAN rewrite'   # FIELD-11b: the extra turn is no PLAN round
         if label != self._progress_label:
@@ -4216,7 +4234,7 @@ class Coordinator:
             self._cleanup_scratch()
         reason = ' '.join(reason.split())
         if reason.startswith('implementer: '): reason = reason.split(':')[0] + ': (author text withheld)'
-        self.progress('terminal', status=status, reason=brief_reason(reason), invocations_used=self.state['invocations_used'], invocation_cap=self.args.max_invocations)
+        self.progress('terminal', status=status, reason=brief_reason(reason), invocations_used=self.state['invocations_used'], invocation_cap=self.invocation_limit())
 
     def _progress_dispatch(self, role: str, phase: str, fresh: bool, call):
         kind = 'dispatch'
@@ -4580,9 +4598,10 @@ class Coordinator:
         if self.state.get('terminal_hold_kind') == 'rejection_limit' and not self.state.get('rejected_tree_hold'):
             raise ValueError('rejection limit: accept, abort or use --scope-change')
         waiting = self.state.get('next')
+        core_held = self._reduced_plan_status() == 'held'
         # FIELD-23: an EXEC HOLD that waits for the reviewer (or its shadow) takes a note too, so an operator change made in
         # that HOLD is on record. The next EXEC author turn (a REVISE) delivers it.
-        if waiting == 'reviewer' and self.state['phase'] == 'PLAN':
+        if waiting == 'reviewer' and self.state['phase'] == 'PLAN' and not core_held:
             raise ValueError('run is waiting for reviewer in PLAN, and an approval moves it to EXEC, where a PLAN note is never '
                              'delivered. To put an operator change on record: resume with --stop-after-plan and add the note '
                              'at the EXEC HOLD, or note --scope-change (abort; the successor run carries the note)')
@@ -4591,7 +4610,7 @@ class Coordinator:
             raise ValueError(f'run is waiting for {waiting}; no author turn is due, so a note would not be delivered. To put '
                              'an operator change on record: note --scope-change (abort; the successor run carries the note); '
                              'resume only if the change needs no record')
-        if self.state.get('pending_author_result_sequence') is not None:
+        if not core_held and self.state.get('pending_author_result_sequence') is not None:
             raise ValueError('author READY receipt pending; resume first')
         phase = self.state['phase']
         unavailable = ''
@@ -4602,7 +4621,7 @@ class Coordinator:
             unavailable = ('an active or uncertain_active turn is recorded; wait for it to finish, or inspect the evidence '
                            'and confirm its process group has stopped before resume --retry-uncertain; '
                            'add the note at the next eligible PLAN/EXEC HOLD')
-        elif self.state['invocations_used'] >= self.args.max_invocations:
+        elif not core_held and self.state['invocations_used'] >= self.invocation_limit():
             unavailable = ('invocation budget exhausted; use resume --max-invocations N with a higher cap, '
                            'then add the note at the next eligible PLAN/EXEC HOLD')
         if unavailable:
@@ -4626,7 +4645,8 @@ class Coordinator:
             raise ValueError('note must be nonempty UTF-8 and at most 16384 bytes')
         at_limit = ((phase == 'PLAN' and self.state['plan_rounds'] >= self.plan_round_limit()) or
                     (phase == 'EXEC' and self.state['exec_rounds'] >= self.exec_round_limit()))
-        deliver_to = self._note_recipient(waiting, phase, lifecycle, at_limit)
+        deliver_to = ('the run record (the reduced PLAN review is closed)' if core_held else
+                      self._note_recipient(waiting, phase, lifecycle, at_limit))
         notes = self.state.setdefault('operator_notes', [])
         note_id = f'N{len(notes) + 1:03d}'
         previous = next((row for row in notes if row['id'] == self.state.get('pending_operator_note_id')), None)
@@ -5328,6 +5348,8 @@ class Coordinator:
                 self.state.update(next='reviewer')   # resume re-reviews this tree
                 return self.hold('stale EXEC approval: the reviewer did not review the current tree')
             self.set_effective_verdict('APPROVE')
+            if self._automatic_initial_exec():
+                self.state['initial_exec_converged'] = True
             self.state.pop('rejection_repair', None)   # R2 F5: the EXEC reviewer approved the rejection repair
             self.state['lifecycle'].pop('writer_replay', None)   # D09 §2: a converged writer replay has used its one chance
             self.state['lifecycle'].update(stage='FINISH', candidate_oid=reviewed, exec_convergence={
@@ -5345,6 +5367,8 @@ class Coordinator:
                 self.save()
                 return 'ACTIVE'
         self.state.pop('rejection_repair', None)
+        if self._automatic_initial_exec():
+            self.state['initial_exec_converged'] = True
         return self.done()
 
     def resume_polish(self) -> str:
@@ -5482,6 +5506,15 @@ class Coordinator:
                 task = ('Rewrite-only turn: return the approved plan as body with all review history removed (finding ids, '
                         'references to earlier reviews, response-to-reviewer narrative). Do not change the scope, the steps, or '
                         'the verification. This turn does not count as a PLAN round.')
+            if self._reduced_plan_status() == 'author':
+                split = self.state['reduced_plan']
+                task = ('Reduced PLAN author turn. Read the current draft at ' + str(plan) +
+                        '. Return a complete, independently implementable reduced plan in body, and the reduced work item '
+                        'with an Acceptance criteria section in retained_workitem. Describe deferred work and its verification '
+                        'in deferred_scope, and map it by listing the relevant IDs in transfer_ids. Address every open blocker '
+                        'by transferring it or correcting the retained draft. Keep matrix and independence defects in scope '
+                        'and fix them. Related advisories may be transferred. Return HOLD with the explanation in body if '
+                        'there is no viable core. Open blockers: ' + ', '.join(split['blocker_ids']))
             prior = self.state.get('delivered_review', '')
             return '\n'.join([
                 f'Role: persistent {self.args.author_vendor} plan author. Phase: PLAN.',
@@ -5515,7 +5548,7 @@ class Coordinator:
         return '\n'.join([
             f'Role: persistent {self.args.author_vendor} implementer. Phase: EXEC.',
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}', task,
-            *([f'Approved plan: {plan.resolve()}'] if replacement and not review_only else []),
+            *([f'Approved plan: {plan.resolve()}'] if (replacement or self._reduced_plan_status() == 'approved') and not review_only else []),
             *([f'The change under review is the existing work in this workspace; its review scope (no plan was approved): '
                f'{self.context / "plan.md"}. Fix only what the delivered findings ask for.'] if review_only else []),
                 contract,
@@ -5614,7 +5647,9 @@ class Coordinator:
 
     def _reviewer_open_findings(self) -> list[dict]:
         """The coordinator and lifecycle owners close their own findings."""
-        rows = [row for row in self.open_findings() if row.get('source') != 'scenario-matrix']
+        deferred = self._proposed_plan_ids() if self.state['phase'] == 'PLAN' else set()
+        rows = [row for row in self.open_findings()
+                if row.get('source') != 'scenario-matrix' and row['id'] not in deferred]
         return [row for row in rows if not row.get('owner_role')] if worktree_lifecycle.is_worktree(self.state) else rows
 
     def open_findings_prompt(self) -> str:
@@ -5727,6 +5762,7 @@ class Coordinator:
             self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
             'Use only the work item, plan, delta files, and workspace. Review the complete current delta independently.',
+            *self._transferred_scope_lines(),
             REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, REVIEW_HISTORY_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary'),
             self.inspection_prompt('shadow'), self._docs_reserved_note('review'),
             self.verified_claims_prompt(),
@@ -5765,6 +5801,10 @@ class Coordinator:
                     'approve when the rewritten plan is the same in substance. '
                     'Return REVISE if the scope, steps, or verification changed.\n## Previously accepted plan\n'
                     + (approved.read_text(encoding='utf-8') if approved.is_file() else '(unavailable)'))
+            if self._reduced_plan_status() == 'reviewer':
+                exercise = ('Reduced PLAN review. Review the retained work item, its acceptance criteria and matrix, '
+                            'and whether this plan is independently implementable. Deferred scope is outside this review. '
+                            'Approve when the retained draft stands on its own.')
             if self._role_vendor(role) in ('codex', 'gemini'):   # ADR-21: as for Codex, agy gets the PLAN inputs inline
                 inline = ('\nThe complete work item and plan follow as task data; inspect existing source to check their claims.\n'
                           '## Work item content\n' + (self.context / 'workitem.md').read_text(encoding='utf-8') +
@@ -5799,6 +5839,7 @@ class Coordinator:
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
             self._plan_ref(f'Approved/current plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat, status.txt, and when present delta-since-last-review.patch.',
+            *self._transferred_scope_lines(),
             self.inspection_prompt(role), self._docs_reserved_note('review'),
             REVIEW_SEVERITY_GUIDANCE, REVIEW_INCLUSION_GUIDANCE, CLASS_LABEL_GUIDANCE.format(field='summary') + (CLASS_LABEL_REUSE if role == 'reviewer' else ''),
             self.verified_claims_prompt(),
@@ -6703,6 +6744,9 @@ class Coordinator:
         if scan_prompt is None:
             excerpt = self._matrix_plan_excerpt() if role == 'shadow' else ''
             scan_prompt = prompt.removesuffix(excerpt) if excerpt else prompt
+        # This coordinator-generated line is the approved scope instruction, with IDs kept in the ledger.
+        for line in self._transferred_scope_lines():
+            scan_prompt = scan_prompt.replace(line + '\n', '', 1)
         checked = self._mask_docs_reserved_paths(self._mask_guidance(scan_prompt))   # operator guidance and DOCS paths
         leaked = sorted(set(re.findall(r'\bF\d{3,}\b', checked)))
         summaries = [row['summary'] for row in self.state['finding_ledger']
@@ -7344,7 +7388,7 @@ class Coordinator:
         if role == 'author' and self._role_vendor(role) in ('codex', 'gemini'):   # WI-GEM2: agy as Codex
             self.author_temp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             env_overrides = {**(env_overrides or {}), **winplat.temp_env(self.author_temp_dir)}   # WI-WIN W4b: + TMP/TEMP on Windows
-        limit = self.args.max_invocations - self.state.get('q_reserved', 0)
+        limit = self.invocation_limit() - self.state.get('q_reserved', 0)
         if self.state['config'].get('review_report'):
             limit = min(limit, self._report_budget())
         if self.state['invocations_used'] >= limit:
@@ -7710,6 +7754,12 @@ class Coordinator:
             old = self.state['sessions'].get(role)
             if not fresh and old and session and old != session:
                 raise ValueError(f'{role} resumed a different session')
+            if role == 'reviewer' and phase == 'PLAN' and self._reduced_plan_status() == 'reviewer':
+                if (answer.get('status') not in schema['properties']['status']['enum']
+                        or any(not isinstance(answer.get(field), list)
+                               or any(not isinstance(row, dict) for row in answer[field])
+                               for field in ('prior_findings', 'full_review', 'self_run_evidence'))):
+                    raise UnusableReply('invalid reduced PLAN review schema')
             approves_exec = (phase == 'EXEC' and not verified_claims_error(answer) and
                              ((role in ('reviewer', 'shadow') and answer.get('status') == 'APPROVE') or
                               (role == 'gate' and answer.get('verdict') == 'PASS'
@@ -7741,6 +7791,9 @@ class Coordinator:
         except Exception as exc:   # any other exception is recorded here only after a failed undo, which must lead the hold
             if not isinstance(exc, (ValueError, KeyError, json.JSONDecodeError)) and (voided is None or voided.restored): raise
             receipt['error'] = str(exc)
+            if (role == 'reviewer' and phase == 'PLAN' and self._reduced_plan_status() == 'reviewer'
+                    and isinstance(exc, UnusableReply) and voided is None):
+                receipt['unusable_reply'] = True
             if voided is not None and not voided.restored:   # the failed undo leads, whatever else this turn tripped
                 receipt['error'] = (('' if readonly_guard.NEWLY_IGNORED in str(voided) else   # WI-ROR: nothing to restore by hand
                                      'read-only turn changed the workspace and it could not be restored; manual restore needed: ')
@@ -7768,8 +7821,12 @@ class Coordinator:
             self.state.pop('pending_operator_note_id', None)
             if phase in ('PLAN', 'EXEC'):   # a lifecycle writer keeps its own stage flow
                 self.state['pending_author_result_sequence'] = seq   # WI-GATE1: reviewed again, never re-gated
-        if role == 'author' and phase == 'PLAN' and answer['status'] == 'READY' and self._fast_plan_draft(0):
-            self.state['pending_author_result_sequence'] = seq
+        if role == 'author' and phase in ('PLAN', 'EXEC'):
+            scheduled_round = f"{phase} round {self.state[f'{phase.lower()}_rounds'] + 1}"
+            automatic = scheduled_round in self.state.get('automatic_invocation_allowances', {})
+            if ((phase == 'PLAN' and self._reduced_plan_status() == 'author') or
+                    (answer['status'] == 'READY' and (automatic or (phase == 'PLAN' and self._fast_plan_draft(0))))):
+                self.state['pending_author_result_sequence'] = seq
         self.save()
         return {'answer': answer, 'snapshot': after, 'sequence': seq, 'role': role,
                 'open_finding_ids': receipt.get('open_finding_ids', [])}
@@ -7819,13 +7876,16 @@ class Coordinator:
     def author_turn(self) -> None:
         if self.state.get('acceptance_state') == 'PENDING': self.state['acceptance_state'] = 'IN_PROGRESS'
         phase = self.state['phase']
+        reduced = phase == 'PLAN' and self._reduced_plan_status() == 'author'
         pending = self.state.get('pending_author_result_sequence')
         receipt = next((row for row in self.state['turns'] if row['sequence'] == pending), None)
         result = ({'answer': receipt['answer'], 'snapshot': receipt['snapshot_after'],
                    'sequence': pending, 'role': 'author'} if receipt else
-                  self.invoke('author', phase, self._author_prompt(), author_schema()))
+                  self.invoke('author', phase, self._author_prompt(), author_schema(reduced)))
         self.render(result, 'implementer', phase)
         answer = result['answer']
+        if reduced:
+            return self._record_reduced_plan(answer, result['sequence'])
         rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
         rewriting = bool(rewrite) and rewrite.get('status') == 'requested'   # FIELD-11b: the extra turn is no PLAN round
         if rewriting and result['sequence'] not in rewrite.setdefault('attempt_sequences', []):
@@ -8296,8 +8356,41 @@ class Coordinator:
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
                 **self._test_provenance(proof, result['sequence'])}
 
+    def _record_round_split(self, phase: str, trigger: str, sequence: int, rows: list[dict], scope: str,
+                            **audit) -> None:
+        splits = self.state.setdefault('round_splits', {})
+        if phase in splits:
+            return
+        run_identity = uuid.uuid5(uuid.UUID(self.state['item_uuid']), str(self.run_dir)).hex[:12]
+        target = f'WI-{phase}-{run_identity}'
+        ids = [row['id'] for row in rows]
+        gate_ids = [item for item in self.state.get('gate_fail_items', []) if item['id'] in ids]
+        gate_record = (' Gate FAIL. ' + ' '.join(gate_item_text(item) for item in gate_ids)) if gate_ids else ''
+        finding_details = ' '.join(f"{row['id']} {row['summary']}. {row['failure_scenario']}" for row in rows)
+        summary = (f'{target} — auto-split by rule. Scope and verification: {scope}. '
+                   f'Finding IDs and repair evidence: {finding_details}{gate_record}')
+        splits[phase] = dict(phase=phase, trigger=trigger, sequence=sequence, target=target, ids=ids,
+                             scope=scope, summary=' '.join(summary.split()), **audit)
+        self.state.setdefault('backlog', []).append({
+            'source': 'auto-split by rule', 'phase': phase, 'sequence': sequence, 'id': target,
+            'severity': '', 'file': '', 'summary': splits[phase]['summary'], 'failure_scenario': ''})
+        for row in rows:
+            row['status'] = 'withdrawn'
+            row['status_history'].append({'round': sequence, 'status': 'withdrawn', 'actor': 'coordinator',
+                                          'reason': 'auto-split by rule', 'evidence': f'auto-split by rule → {target}'})
+
+    def _render_round_splits(self) -> None:
+        if (proposal := self.state.get('reduced_plan')) and proposal.get('status') == 'approved':
+            atomic_text(self.run_dir / 'plan-reduced.md', proposal['plan'] + '\n')
+            atomic_text(self.run_dir / 'plan.md', proposal['plan'] + '\n')
+            if not (self.context / 'plan.md').is_file() or not (self.context / 'workitem.md').is_file():
+                self._materialize_reduced_plan()
+        self._write_run_backlog()
+        self.write_ledger()
+        self.write_open_findings()
+
     def add_run_backlog(self, source: str, phase: str, sequence: int, rows: list[dict],
-                        note: str = 'observation(s) on paths the stage cannot edit') -> None:
+                        note: str = 'observation(s) on paths the stage cannot edit', *, publish: bool = True) -> None:
         """WI-GATE1 R1 F6 / S3: non-blocking rows kept for later: the state's `backlog` list and backlog.md in the run dir;
         accept carries them to the repository BACKLOG.md (_append_repo_backlog). Never a repair. A row may name its own
         source, phase, origin round and ledger id (the open non-blocking ledger rows at DONE)."""
@@ -8314,14 +8407,18 @@ class Coordinator:
                 known.add((entry['source'], entry['file'], entry['summary']))
                 entries.append(entry)
                 added.append(entry)
-        if not added:
+        if not added or not publish:
             return
-        atomic_text(self.run_dir / 'backlog.md', '# Run backlog (non-blocking)\n\n' + ''.join(
-            f"- [{row['source']} {row['phase']} #{row['sequence']}] " + (f"{row['id']} " if row.get('id') else '')
-            + f"{row['severity']} {row['file']}: {row['summary']}"
-            + (f" ({row['failure_scenario']})" if row['failure_scenario'] else '') + '\n' for row in entries))
+        self._write_run_backlog()
         print(f"NOTE: {len(added)} {source} {note} went to the run backlog "
               f"({self.run_dir / 'backlog.md'}): " + ', '.join(row.get('id') or row['file'] for row in added[:10]))
+
+    def _write_run_backlog(self) -> None:
+        entries = self.state['backlog']
+        atomic_text(self.run_dir / 'backlog.md', '# Run backlog (non-blocking)\n\n' + ''.join(
+            f"- [{row['source']} {row['phase']} #{row['sequence']}] " + (f"{row['id']} " if row.get('id') and row['source'] != 'auto-split by rule' else '')
+            + f"{row['severity']} {row['file']}: {row['summary']}"
+            + (f" ({row['failure_scenario']})" if row['failure_scenario'] else '') + '\n' for row in entries))
 
     def _backlog_open_nonblocking(self) -> None:
         """WI-GATE1 S3: every non-blocking row still open at DONE (or at an accept) is listed in the run backlog."""
@@ -8931,7 +9028,7 @@ class Coordinator:
             self._specialist_budget(name)
         if self.state['lifecycle'].get('polish_calls', 0) + len(owners) + 1 > self._worktree_run_cap('POLISH-Q'):
             raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
-        if 1 + len(owners) > self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']:
+        if 1 + len(owners) > self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']:
             raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
                                'resume with a higher --max-invocations, or abort')
         self.author_turn()
@@ -8999,7 +9096,7 @@ class Coordinator:
         if self.state['config'].get('skip_quality_polish'):
             names = tuple(done)
         if (need := len([name for name in names if name not in done])) > (
-                self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']):
+                self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']):
             raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; resume with a higher --max-invocations, or abort')
         if names:
             self.materialize_review_context()
@@ -9480,7 +9577,7 @@ class Coordinator:
     def _quality_writer_shortfall(self, writers: int, specialists: int) -> Optional[str]:
         """D09 §3 headroom: one replay (W writers, reviewer, shadow, gate, finisher, S specialists) and POLISH-Q room for
         the last specialist's two dispatches. None when it all fits. The replay's rounds have their own budget (F3)."""
-        room = self.args.max_invocations - self.state.get('q_reserved', 0) - self.state['invocations_used']
+        room = self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']
         if (need := writers + 4 + specialists) > room:
             return f'需要 {need} 次调用，剩余 {room} 次（约需再加 {need - room}）'
         if (used := self.state['lifecycle'].get('polish_calls', 0)) + writers + specialists + 1 > self._worktree_run_cap('POLISH-Q'):
@@ -9659,8 +9756,15 @@ class Coordinator:
                 'observed_test': self._observed_test(answer), 'status': answer['status'],
                 **self._test_provenance(proof, result['sequence'])}   # W2a-1 L-3: recorded, not enforced
 
+    def _transferred_scope_lines(self) -> list[str]:
+        scopes = [split['scope'] for split in self.state.get('round_splits', {}).values()]
+        return (['Transferred scope is out of scope, including under a new finding ID. Review new regressions within '
+                 'the retained scope as usual. Deferred work: ' + ' | '.join(scopes)] if scopes else [])
+
     def _review_protocol(self, paths: list[str]) -> str:
-        return '\n'.join([   # the EXEC reviewer's protocol: program review views, permissions, evidence contract
+        # The EXEC reviewer's protocol supplies program review views, permissions and evidence requirements.
+        return '\n'.join([
+            *self._transferred_scope_lines(),
             f'Workspace: {self.workspace}', f'Work item: {self.context / "workitem.md"}',
             self._plan_ref(f'Approved plan: {self.context / "plan.md"}'),
             f'Program-materialized review files: {self.context / "delta.patch"}, delta.stat and status.txt.',
@@ -9671,6 +9775,18 @@ class Coordinator:
             + ('your file reading and search tools' if self._role_vendor('reviewer') == 'gemini' else 'Read/Grep/Glob') + ' instead.',
             'Do not add cd, pipes, semicolons, &&, redirection, echo wrappers, or other text to a Bash call.',
             'Do not report exit codes; the coordinator reads tool results directly.'])
+
+    def invocation_limit(self) -> int:
+        return self.args.max_invocations + sum(self.state.get('automatic_invocation_allowances', {}).values())
+
+    def _automatic_allowance(self, transition: str, amount: int) -> None:
+        self.state.setdefault('automatic_invocation_allowances', {}).setdefault(transition, amount)
+
+    def _automatic_initial_exec(self) -> bool:
+        life = self.state.get('lifecycle') or {}
+        return bool(self.state['config'].get('auto_split_rounds') and not self.state.get('review_only')
+                    and not self.state['config'].get('review_report') and not self.state.get('initial_exec_converged')
+                    and not self.state.get('rejections') and not life.get('exec_convergence') and not life.get('writer_replay'))
 
     def _exec_round_extra(self) -> int:
         """Rounds the operator or an opted-in stage granted on top of a cap: resume --add-rounds, a counted rejection, ADVFIX."""
@@ -9686,6 +9802,8 @@ class Coordinator:
         R3: a hard cap of exactly 5 rounds in total, whatever --max-exec-rounds says; only an operator grant goes past it.
         Every operator grant (--add-rounds, a rejection, ADVFIX) lands on top of each."""
         extra = self._exec_round_extra()
+        if self._automatic_initial_exec():
+            return EXEC_HARD_ROUND_CAP + extra, 'R3'
         if fail := self.state.get('gate_fail_round'):
             limit, rule = fail['round'] + POST_GATE_FIX_ROUNDS + extra - fail['extra'], 'R2'   # grants after the FAIL only
         else:
@@ -9743,8 +9861,131 @@ class Coordinator:
             self.state.update(next='author', delivered_review=(self._writer_repair_review(rows, 'round-limit-extension')
                               if rolled_back else worktree_lifecycle.delivered_findings('round-limit-extension', rows)))
 
+    def _reduced_plan_status(self) -> Optional[str]:
+        return (self.state.get('reduced_plan') or {}).get('status')
+
+    def _proposed_plan_ids(self) -> set[str]:
+        return set(self.state['reduced_plan']['transfer_ids']) if self._reduced_plan_status() == 'reviewer' else set()
+
+    def _hold_reduced_plan(self, reason: str) -> None:
+        exit_route = ('abort and start a new run (this run is already a scope-change successor)'
+                      if self.state.get('scope_chain_depth', 0) >= 1
+                      else 'use note --scope-change to start a successor run, or abort and start a new run')
+        self.state['reduced_plan']['status'] = 'held'
+        self.state.update(pending_author_result_sequence=None, pending_reviewer_result_sequence=None)
+        self.hold(f'Reduced PLAN HOLD: {reason}. To change scope, {exit_route}. '
+                  'Plain resume and ordinary notes leave the review closed')
+
+    def _record_reduced_plan(self, answer: dict, sequence: int) -> None:
+        proposal = self.state['reduced_plan']
+        proposal.update(author_sequence=sequence, answer=copy.deepcopy(answer))
+        if answer['status'] == 'HOLD':
+            return self._hold_reduced_plan(answer['body'] + ' (' + ', '.join(proposal['blocker_ids']) + ')')
+        workitem, plan, scope = (str(answer.get(key) or '').strip()
+                                 for key in ('retained_workitem', 'body', 'deferred_scope'))
+        ids = answer.get('transfer_ids', [])
+        allowed = {row['id'] for row in self.open_findings() if row['phase'] == 'PLAN'
+                   and row['source'] == 'persistent-reviewer' and not row.get('owner_role')}
+        if (not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids)
+                or len(set(ids)) != len(ids) or set(ids) - allowed
+                or not (set(ids) & set(proposal['blocker_ids'])) or not scope or not plan
+                or not re.search(r'^## Acceptance criteria[ \t]*\n\s*[^#\s]', workitem, re.M)):
+            return self._hold_reduced_plan('invalid retained work item, plan, or transfer mapping')
+        if issue := self._plan_history_issue({'work item': workitem, 'plan': plan}):
+            return self._hold_reduced_plan(issue)
+        if issue := scenario_matrix.validation_error(scenario_matrix.section(plan)):
+            return self._hold_reduced_plan('invalid retained scenario matrix: ' + issue)
+        if LEDGER_ID_RE.search(scope) or FRESH_HISTORY_RE.search(scope):
+            return self._hold_reduced_plan('deferred scope must use plain work-item terms')
+        proposal.update(status='reviewer', workitem=workitem, plan=plan,
+                        scope=' '.join(scope.split()), transfer_ids=ids)
+        self.state.update(next='reviewer', delivered_review='', pending_author_result_sequence=None)
+        self.save()
+
+    def _reduced_review_failure(self) -> Optional[str]:
+        last = (self.state['turns'] or [{}])[-1]
+        if (last.get('role') == 'reviewer' and last.get('phase') == 'PLAN' and last.get('invocation_budget_counted')
+                and last['sequence'] > self.state['reduced_plan']['author_sequence']):
+            if last.get('unusable_reply'):
+                return last['error']
+            if isinstance(answer := last.get('answer'), dict):
+                return last.get('verified_claims_error') or verified_claims_error(answer)
+        return None
+
+    def _materialize_reduced_plan(self) -> None:
+        proposal = self.state['reduced_plan']
+        atomic_text(self.context / 'workitem.md', proposal['workitem'] + '\n')
+        atomic_text(self.context / 'plan.md', proposal['plan'] + '\n')
+
+    def _plan_auto_transition(self, sequence: int, rows: list[dict], revising: bool) -> bool:
+        if not self.state['config'].get('auto_split_rounds'):
+            return False
+        blockers = [row for row in rows if row['phase'] == 'PLAN']
+        transferable = [row for row in blockers if row['source'] == 'persistent-reviewer' and not row.get('owner_role')]
+        streak = self.state.setdefault('plan_blocker_streak', {'sequence': 0, 'count': 0})
+        if sequence > streak['sequence']:
+            count = streak['count'] + 1 if any(row['origin_round'] == sequence for row in blockers) else 0
+            streak.update(sequence=sequence, count=count)
+        rounds, limit = self.state['plan_rounds'], self.plan_round_limit()
+        if not revising or rounds < limit or not transferable:
+            return False
+        if streak['count'] >= 2 or rounds >= limit + 2:
+            self.state['reduced_plan'] = {
+                'status': 'author', 'trigger': 'new-blocker streak' if streak['count'] >= 2 else 'round cap',
+                'cut_sequence': sequence, 'blocker_ids': [row['id'] for row in blockers]}
+            self._automatic_allowance('reduced PLAN', 2)
+        else:
+            self._automatic_allowance(f'PLAN round {rounds + 1}', 2)
+        return True
+
+    def _exec_split_rows(self) -> list[dict]:
+        # Inspect owned lifecycle blockers too, including those excluded from ordinary EXEC convergence.
+        blockers = [row for row in self.open_findings() if blocks_by_severity(row) and not row.get('out_of_delta')]
+        if any(row['phase'] != 'EXEC' or row.get('owner_role') or row['source'] not in
+               ('persistent-reviewer', 'fresh-shadow', 'adversarial-gate') for row in blockers):
+            return []
+        return blockers
+
+    def _allow_next_exec_round(self) -> None:
+        rounds = self.state['exec_rounds']
+        if self._automatic_initial_exec() and EXEC_HARD_ROUND_CAP - 2 <= rounds < EXEC_HARD_ROUND_CAP:
+            # Author and persistent review, plus a shadow and same-tree confirmation when enabled.
+            self._automatic_allowance(f'EXEC round {rounds + 1}', 4 if self.args.shadow == 'on' else 2)
+
+    def _allow_initial_gate(self) -> None:
+        if self._automatic_initial_exec() and EXEC_HARD_ROUND_CAP - 2 < self.state['exec_rounds'] <= EXEC_HARD_ROUND_CAP:
+            self._automatic_allowance('EXEC gate', 1)
+
+    def _stage_exec_split(self, result: dict, answer: dict, rows: list[dict]) -> None:
+        self.state['pending_reviewer_result_sequence'] = None
+        if self.args.adversarial_gate == 'on' and not self.state['gate_ran']:
+            self.state.update(next='gate', pending_exec_split={'review_sequence': result['sequence'],
+                                                              'tree': answer['reviewed_snapshot']})
+            self._allow_initial_gate()
+            self.save()
+        else:
+            self._finish_exec_split(result['sequence'], rows)
+
+    def _finish_exec_split(self, sequence: int, rows: list[dict], gate_sequence: Optional[int] = None) -> None:
+        descriptions = [CLASS_LABEL_RE.sub('', row['summary']).removeprefix('[gate FAIL] ') for row in rows]
+        scope = ' | '.join(dict.fromkeys(' '.join(LEDGER_ID_RE.sub('', text).split()) for text in descriptions))
+        self._record_round_split('EXEC', 'round cap', sequence, rows, scope,
+                                 gate_sequence=gate_sequence or (self._gate_verdict_turn() or {}).get('sequence'))
+        if fail := self.state.get('gate_fail_round'):
+            if fail.get('closed_at') is None:
+                fail['closed_at'] = gate_sequence or sequence
+        verdict = next(row for row in self.state['review_verdicts'] if row['sequence'] == sequence)
+        verdict.update(effective_verdict='APPROVE', round_split=True)
+        self.set_effective_verdict('APPROVE')
+        self.state.pop('pending_exec_split', None)
+        self.start_polish_or_done()
+        self._render_round_splits()
+
     def reviewer_turn(self) -> None:
         phase = self.state['phase']
+        reduced = phase == 'PLAN' and self._reduced_plan_status() == 'reviewer'
+        if reduced:
+            self._materialize_reduced_plan()
         failed = (self.state.get('plan_history_rewrite') or {}) if phase == 'PLAN' else {}
         if failed.get('status') == 'failed':   # FIELD-11b: a resume does not draw a new reviewer to get past a failed rewrite
             return self.hold(failed['hold_reason'])
@@ -9762,14 +10003,24 @@ class Coordinator:
             retry = {}
         empty_evidence_reason = 'EXEC APPROVE rejected: empty self_run_evidence'
         result = self._recorded_reviewer_result(phase)
-        for attempt in range(int(bool(retry)), 2):
+        if reduced and result is None and (failure := self._reduced_review_failure()):
+            return self._hold_reduced_plan(failure)
+        for attempt in range(int(bool(retry)), 1 if reduced else 2):
             if result is None:
                 if issue := self._review_only_start_issue():   # D-LG1: first review sees the frozen change
                     return self.hold(issue)
                 self.materialize_review_context()
                 snapshot, _ = git_snapshot(self.workspace)
                 prompt = self._review_prompt('reviewer', snapshot) + retry.get('correction', '')
-                result = self.invoke('reviewer', phase, prompt, schema)
+                try:
+                    options = {'evidence_retry': False} if reduced else {}
+                    result = self.invoke('reviewer', phase, prompt, schema, **options)
+                except RuntimeError:
+                    if reduced and (failure := self._reduced_review_failure()):
+                        return self._hold_reduced_plan(failure)
+                    raise
+                if reduced and result.get('evidence_error'):
+                    return self._hold_reduced_plan(result['evidence_error'])
             self.state['pending_reviewer_result_sequence'] = result['sequence']
             self.save()
             result['answer'] = copy.deepcopy(result['answer'])
@@ -9793,6 +10044,8 @@ class Coordinator:
                 self.state['pending_reviewer_result_sequence'] = None
                 self.state.pop('reviewer_retry', None)
                 suffix = ' after retry' if attempt else ''
+                if reduced:
+                    return self._hold_reduced_plan(str(exc))
                 self.hold(f'reviewer invalid finding dispositions{suffix}: ' + str(exc))
                 return
             else:
@@ -9811,6 +10064,8 @@ class Coordinator:
                     break
             self._discard_reviewer_result(result, reason)
             self.state['pending_reviewer_result_sequence'] = None
+            if reduced:
+                return self._hold_reduced_plan(feedback)
             if attempt:
                 self.state.pop('reviewer_retry', None)
                 self.hold(hold_reason)
@@ -9923,7 +10178,9 @@ class Coordinator:
         passing = (self.configured_test_succeeded(answer) and not self.configured_test_failed(answer)
                    if report_mode else bool(proof))
         tested = phase == 'PLAN' or (passing and bool(answer.get('self_run_evidence')))
-        advisory_exit = advisory_only and tested and not self.blocking_open_findings()
+        deferred = self._proposed_plan_ids() if reduced else set()
+        blocking = [row for row in self.blocking_open_findings() if row['id'] not in deferred]
+        advisory_exit = advisory_only and tested and not blocking
         if (phase == 'EXEC' and advisory_only and not tested and not self.blocking_open_findings()
                 and not replaying and not self.state['config'].get('review_report')):
             # R5: the test evidence is the only obstacle; the operator can rerun the command or address a real failure.
@@ -9947,7 +10204,7 @@ class Coordinator:
             answer['status'] = 'APPROVE'
         new_rows = list(answer['full_review'])   # this verdict's own findings (incl. shadow blockers), before RF-5 merges older ones
         refusal = None
-        if answer['status'] == 'APPROVE' and (blocking := self.blocking_open_findings()):
+        if answer['status'] == 'APPROVE' and blocking:
             # RF-5: an APPROVE that leaves blocking findings open is a REVISE routed to the author (round limit and its HOLD apply), never DONE
             refusal = ('PLAN APPROVE rejected: ' + matrix_findings[0]['summary'] if matrix_findings else
                        'APPROVE rejected with open blocking findings: ' + ', '.join(finding['id'] for finding in blocking))
@@ -9966,7 +10223,10 @@ class Coordinator:
         effective_verdict = 'REVISE' if plan_history else 'APPROVE_WITH_ADVISORY' if advisory_exit else answer['status']
         self.record_review_verdict(result['sequence'], phase, reviewer_raw_verdict, effective_verdict, rf5=bool(refusal) and not plan_history)
         new_blocking = [row for row in new_rows if blocks_by_severity(row)]   # WI-GATE1 S3
-        awaiting_confirmation = (phase == 'EXEC' and answer['status'] == 'APPROVE'
+        auto_exec = phase == 'EXEC' and self._automatic_initial_exec()
+        awaiting_confirmation = (phase == 'EXEC' and (answer['status'] == 'APPROVE' or
+                                 (auto_exec and self.state['exec_rounds'] >= limit and not ruling and not secrets
+                                  and not failures and not leak and answer['status'] == 'REVISE'))
                                  and any(row.get('needs_confirmation') for row in self.open_findings()))
         stop_rule = (self._update_stop_rules(result['sequence'], answer, effective_verdict)
                      if phase == 'EXEC' and not awaiting_confirmation and not self.state['config'].get('review_report') else None)
@@ -9989,8 +10249,21 @@ class Coordinator:
                 row for row in self.state['exec_comparisons']
                 if row.get('review_sequence') != result['sequence']]
             self.state['exec_comparisons'].append(comparison)
-        self.capture_review_baseline(result['sequence'], phase)
+        if not reduced:
+            self.capture_review_baseline(result['sequence'], phase)
         self.state.pop('reviewer_retry', None)
+        if reduced and (answer['status'] != 'APPROVE' or plan_history):
+            reason = (hold_explanation('reviewer HOLD', persistent_findings, answer.get('self_run_evidence'))
+                      if answer['status'] == 'HOLD' else plan_history or
+                      ('; '.join(f"{row['id']} {row['summary']}" for row in blocking) or 'reviewer requested changes'))
+            return self._hold_reduced_plan(reason)
+        if auto_exec and self.state['exec_rounds'] >= limit and shadow and shadow['answer']['status'] == 'HOLD':
+            self.state['pending_reviewer_result_sequence'] = None
+            return self.hold(hold_explanation('shadow HOLD', shadow['answer']['full_review'],
+                                              shadow['answer'].get('self_run_evidence')))
+        rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
+        auto_plan = (phase == 'PLAN' and not reduced and not (rewrite and rewrite.get('status') == 'written')
+                     and self._plan_auto_transition(result['sequence'], blocking, answer['status'] == 'REVISE'))
         if answer['status'] == 'HOLD':
             if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: not APPROVE
                 return
@@ -10004,7 +10277,6 @@ class Coordinator:
             self.state['pending_reviewer_result_sequence'] = None
             self.hold(empty_evidence_reason)
             return
-        rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
         if (rewrite and rewrite.get('status') == 'written' and 'REVISE' in (reviewer_raw_verdict, answer['status'])
                 and not (advisory_exit and only_prior_open)):
             # FIELD-11b: the reviewer's own REVISE counts, even if advisory_exit or out-of-phase findings turned it into APPROVE;
@@ -10027,7 +10299,34 @@ class Coordinator:
             if phase == 'EXEC' and self._writer_review_rollback('reviewer', result['sequence']):   # D09 §2: no fix round
                 return
             rounds = self.state[f'{phase.lower()}_rounds']
-            if rounds >= limit and (secrets or not stop_rule):   # a stop rule (R4) names the cause better than the cap
+            split_rows = self._exec_split_rows() if auto_exec and not ruling and not structural else []
+            if split_rows:
+                stop_rule = None
+                if rounds >= limit and not (secrets or failures or leak):
+                    tree = git_snapshot(self.workspace)[0]
+                    if answer['reviewed_snapshot'] != tree or result.get('snapshot') != tree:
+                        self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
+                        return self.hold('stale EXEC review at automatic split')
+                    shadow_answer = shadow['answer'] if shadow else {}
+                    if confirming and (previous_shadow := self._recorded_shadow_result(phase, confirm_after)):
+                        shadow_answer = previous_shadow['answer']
+                    if (not tested or self._latest_completed_test_failure(answer.get('observed_commands', []))
+                            or self._latest_completed_test_failure(shadow_answer.get('observed_commands', []))
+                            or (self.args.shadow == 'on' and (not shadow_answer.get('self_run_evidence')
+                                or shadow_answer.get('reviewed_snapshot') != tree))):
+                        self.state.update(pending_reviewer_result_sequence=None, next='reviewer')
+                        return self.hold(TEST_EVIDENCE_HOLD)
+                    if awaiting_confirmation:
+                        self.state.update(delivered_review='', next='reviewer', confirm_shadow_rows=result['sequence'],
+                                          pending_reviewer_result_sequence=None)
+                        self.save()
+                        return
+                    if not any(row.get('needs_confirmation') for row in split_rows):
+                        self._stage_exec_split(result, answer, split_rows)
+                        return
+                elif rounds < limit:
+                    self._allow_next_exec_round()
+            if rounds >= limit and not auto_plan and (secrets or not stop_rule):   # a stop rule (R4) names the cause better than the cap
                 self.state['pending_reviewer_result_sequence'] = None
                 if secrets:
                     self.hold(self._secret_scan_hold_reason())
@@ -10106,10 +10405,25 @@ class Coordinator:
             if rewrite and rewrite.get('status') == 'written':
                 rewrite.update(status='passed', passed_sequence=result['sequence'])
                 self.progress('plan_rewrite', status='passed')
+            if reduced:
+                proposal = self.state['reduced_plan']
+                rows = [row for row in self.open_findings() if row['id'] in deferred]
+                self._record_round_split('PLAN', proposal['trigger'], result['sequence'], rows, proposal['scope'],
+                                         cut_sequence=proposal['cut_sequence'])
+                proposal['status'] = 'approved'
+                self.state['pending_reviewer_result_sequence'] = None
             advisory = self.nonblocking_open_findings()
-            self.state['delivered_review'] = (self.advisory_message(advisory)
-                                              if advisory else '')
-            if self._enter_exec_from_plan():
+            if reduced:
+                self.add_run_backlog('persistent-reviewer', 'PLAN', result['sequence'],
+                                     [row for row in advisory if row['phase'] == 'PLAN'], publish=False)
+            self.state['delivered_review'] = self.advisory_message(advisory) if advisory else ''
+            stopped = self._enter_exec_from_plan()
+            if reduced:
+                if not stopped:
+                    self.save()
+                self._render_round_splits()
+                return
+            if stopped:
                 return
         elif answer['reviewed_snapshot'] != git_snapshot(self.workspace)[0]:
             self.state['pending_reviewer_result_sequence'] = None
@@ -10124,6 +10438,7 @@ class Coordinator:
             self.state['delivered_review'] = (self.advisory_message(advisory)
                                               if advisory else '')
             self.state['next'] = 'gate'
+            self._allow_initial_gate()
         else:
             if post_gate and self.state['gate_fail_round'].get('closed_at') is None:
                 self.state['gate_fail_round']['closed_at'] = result['sequence']   # S3 R2 F2: the gate repair review passed
@@ -10467,6 +10782,14 @@ class Coordinator:
             self.state['next'] = 'author'
             self.save()
             return
+        pending = self.state.get('pending_exec_split')
+        if pending and not verdict and (pending['review_sequence'] != reviewed or
+                                        pending['tree'] != git_snapshot(self.workspace)[0]):
+            self.state.pop('pending_exec_split')
+            self.state['next'] = 'reviewer'
+            return self.hold('stale EXEC review at automatic split')
+        if pending and not verdict and not self._test_proof(pending['tree']):
+            return self.hold(TEST_EVIDENCE_HOLD)
         if not (verdict and verdict['sequence'] > reviewed) and self._gate_lacks_test_proof(reviewed):
             self.hold(TEST_EVIDENCE_HOLD)   # S3 R2 F10: the gate would end on the same missing record; it is not dispatched
             return
@@ -10495,10 +10818,30 @@ class Coordinator:
         if self.state['config'].get('review_report'):
             self._gate_report_transition(snapshot)
             return
+        structural = self._structural_block_hold('gate', result['sequence'], recorded) if recorded else None
+        rows = self._exec_split_rows() if self._automatic_initial_exec() and not structural else []
+        if rows and self.state['exec_rounds'] >= self.exec_round_limit():
+            reviewer = next((turn for turn in self.state['turns'] if turn['sequence'] == reviewed), {})
+            tree = git_snapshot(self.workspace)[0]
+            review_answer = reviewer.get('answer') or {}
+            if recorded:
+                self.state['gate_fail_round'] = {'round': self.state['exec_rounds'],
+                                                 'extra': self._exec_round_extra(), 'sequence': result['sequence']}
+            if tree != snapshot or tree != reviewer.get('snapshot_before') or tree != review_answer.get('reviewed_snapshot'):
+                self.state.update(next='reviewer', pending_exec_split=None)
+                return self.hold('stale EXEC review at automatic split')
+            if (not review_answer.get('self_run_evidence') or not self._test_proof(tree)
+                    or self._latest_completed_test_failure(review_answer.get('observed_commands', []))
+                    or self._latest_completed_test_failure(answer.get('observed_commands', []))):
+                self.state.update(next='reviewer', pending_exec_split=None)
+                return self.hold(TEST_EVIDENCE_HOLD)
+            if not any(row.get('needs_confirmation') for row in rows):
+                return self._finish_exec_split(reviewed, rows, result['sequence'])
+        self.state.pop('pending_exec_split', None)
         if not recorded:
             self.start_polish_or_done()
             return
-        self._route_gate_fail(recorded, result['sequence'], self._structural_block_hold('gate', result['sequence'], recorded))
+        self._route_gate_fail(recorded, result['sequence'], structural)
 
     def _gate_report_transition(self, snapshot: str) -> None:
         """Report mode: the gate verdict is reported, never delivered; POLISH-Q runs next."""
@@ -10528,6 +10871,8 @@ class Coordinator:
         if structural:   # FIELD-5, after the round-limit HOLD above (it keeps precedence)
             self._structural_hold(structural)
             return
+        if self._automatic_initial_exec() and self._exec_split_rows():
+            self._allow_next_exec_round()
         self.save()
 
     def _structural_block_hold(self, source: str, sequence: int, blocking: list) -> Optional[dict]:
@@ -10696,6 +11041,8 @@ class Coordinator:
                 return self.hold('DONE state rejected with open blocking findings: ' +
                                  ', '.join(row['id'] for row in blocking))
             return 'DONE'
+        if self.state['status'] == 'HOLD' and self._reduced_plan_status() == 'held':
+            return 'HOLD'
         self._settle_saved_gate()   # WI-GATE1: a state an earlier version saved never gates a second time
         self._settle_saved_rounds()   # S3 R2 F5: and its EXEC rounds are counted by R1-R5
         if not (self.state.get('active') or self.state.get('uncertain_active') or self.state.get('rate_limit_wait')):
@@ -10905,7 +11252,7 @@ class Coordinator:
                               'wall_seconds': turn.get('wall_seconds', 0)})
         report = {'status': self.state['status'], 'waiting_model_calls': self.state['waiting_model_calls'],
                   'invocations_used': self.state.get('invocations_used', len(self.state['turns'])),
-                  'max_invocations': self.args.max_invocations,
+                  'max_invocations': self.invocation_limit(),
                   'total_cli_turns': len(self.state['turns']), 'by_role_phase': list(groups.values()),
                   'by_role': role_totals, 'overall': overall, 'turns': turn_rows,
                   'abandoned_turn_usage': abandoned_usage,
@@ -10964,7 +11311,7 @@ def cli_env(timeout_seconds: int = 0) -> dict:
     return env
 
 
-class StoreExplicitInteger(argparse.Action):
+class StoreExplicit(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values)
         setattr(namespace, self.dest + '_explicit', True)
@@ -11015,7 +11362,7 @@ def parser() -> argparse.ArgumentParser:
                    help=argparse.SUPPRESS)
     p.add_argument('--docs-file', default=None, help="default: CHANGELOG.md; empty string skips the docs entry")
     p.add_argument('--docs-allowlist', action='append', default=[])
-    p.add_argument('--skip-quality-polish', type=config_bool, action=StoreExplicitInteger, default=False)
+    p.add_argument('--skip-quality-polish', type=config_bool, action=StoreExplicit, default=False)
     for flag, help_text in (('--review-focus', 'project review priorities for the reviewer, shadow and gate (config.md review_focus)'),
                             ('--review-style', 'tone and rules for every review role (config.md review_style)'),
                             ('--quality-focus', 'priorities for the POLISH-Q specialists (config.md quality_focus)')):
@@ -11031,19 +11378,22 @@ def parser() -> argparse.ArgumentParser:
                    help='push/PR/merge after acceptance; refused by the worktree lifecycle (D8)')
     p.add_argument('--gate-prompt', default=str(DEFAULT_GATE_PROMPT))
     p.add_argument('--max-plan-rounds', type=int, default=3)
+    p.set_defaults(auto_split_rounds_explicit=False)
+    p.add_argument('--auto-split-rounds', type=config_bool, default=None, action=StoreExplicit,
+                   help='automatically continue and split delivery rounds (default true for new delivery runs)')
     p.set_defaults(max_exec_rounds_explicit=False)
-    p.add_argument('--max-exec-rounds', type=int, default=3, action=StoreExplicitInteger)   # WI-GATE1 R1
+    p.add_argument('--max-exec-rounds', type=int, default=3, action=StoreExplicit)   # WI-GATE1 R1
     p.set_defaults(max_invocations_explicit=False)
-    p.add_argument('--max-invocations', type=int, default=25, action=StoreExplicitInteger)
+    p.add_argument('--max-invocations', type=int, default=25, action=StoreExplicit)
     p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT_SECONDS,
                    help=f'per-dispatch timeout for turns other than EXEC/FINISH/DOCS author turns, and for the coordinator\'s own test runs '
                         f'(default {DEFAULT_TIMEOUT_SECONDS}, at most {MAX_TIMEOUT_SECONDS} seconds)')
     p.set_defaults(exec_turn_timeout_explicit=False)
-    p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicitInteger,
+    p.add_argument('--exec-turn-timeout', type=int, default=None, action=StoreExplicit,
                    help=f'EXEC/FINISH/DOCS author turn timeout (default max({DEFAULT_EXEC_TURN_TIMEOUT_SECONDS}, --timeout), '
                         f'capped at {MAX_EXEC_TURN_TIMEOUT_SECONDS} seconds)')
     p.set_defaults(max_rate_limit_wait_explicit=False)
-    p.add_argument('--max-rate-limit-wait', type=int, default=DEFAULT_MAX_RATE_LIMIT_WAIT, action=StoreExplicitInteger,
+    p.add_argument('--max-rate-limit-wait', type=int, default=DEFAULT_MAX_RATE_LIMIT_WAIT, action=StoreExplicit,
                    metavar='SECONDS', help=f'run-wide auto-wait budget for quota rejections '
                    f'(default {DEFAULT_MAX_RATE_LIMIT_WAIT} seconds; 0 holds immediately); fixed at run start')
     p.add_argument('--add-rounds', type=int, choices=range(1, 11), metavar='N', default=None,
@@ -11117,7 +11467,7 @@ CONFIGURABLE_DESTS = {
     'reviewer_command', 'codex_bin', 'claude_bin', 'gemini_bin', 'author_subagents',
     'lifecycle_mode', 'docs_file', 'docs_allowlist', 'skip_quality_polish', 'auto_commit', 'external_delivery',
     'safety_mode', 'quality_writers', 'advisory_fix_round', 'review_focus', 'review_style', 'quality_focus',
-    'extra_writable_roots',
+    'extra_writable_roots', 'auto_split_rounds',
 }
 
 

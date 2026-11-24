@@ -40,7 +40,7 @@ class D09F2Tests(unittest.TestCase):
         self.assertFalse(co._test_cases_dropped(leg))   # touching a file without dropping a case is fine
 
     def test_a_writer_replay_uses_no_round_so_the_limit_stays_ordinary(self):   # MINOR 2, replaced by WI-GATE1 R5
-        co = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--max-exec-rounds', '4')[2:]))
+        co = rc.Coordinator(rc.parser().parse_args(self.command('--auto-split-rounds', 'false', '--lifecycle-mode', 'on', '--max-exec-rounds', '4')[2:]))
         for rounds, replay in ((3, {'start': 1, 'used': None}), (5, {'start': 4, 'used': None}), (4, {'start': 1, 'used': 2})):
             co.state.update(exec_rounds=rounds, writer_replay_rounds=replay)   # a v3.8.x state: the record is ignored
             self.assertEqual(co.exec_round_limit(), 4)

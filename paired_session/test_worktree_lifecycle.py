@@ -2146,7 +2146,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertNotEqual(co.state['status'], 'ACCEPTED')
 
     def test_open_blocker_at_convergence_starts_a_repair_round(self):
-        co = rc.Coordinator(self.args())
+        co = rc.Coordinator(self.args('--auto-split-rounds', 'false'))
         co.state['gate_ran'] = True
         with mock.patch.object(co, 'blocking_open_findings', return_value=[{'id': 'F007', 'summary': 'gate blocker'}]):
             self.assertEqual(co.start_polish_or_done(), 'ACTIVE')   # the author repairs; the reviewer follows (WI-GATE1: no new gate)

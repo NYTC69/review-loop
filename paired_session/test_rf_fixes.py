@@ -102,7 +102,7 @@ class ApproveWithOpenBlockingFindingsTests(unittest.TestCase):
         for limit in ('1', '3'):
             with self.subTest(limit=limit):
                 self.run_dir = self.root / ('limit-' + limit)
-                result = self.run_coordinator('--max-plan-rounds', limit, env={'FAKE_PLAN_APPROVE_SECURITY': 'always'})
+                result = self.run_coordinator('--auto-split-rounds', 'false', '--max-plan-rounds', limit, env={'FAKE_PLAN_APPROVE_SECURITY': 'always'})
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 state = self.state()
                 self.assertEqual((state['status'], state['hold_reason'], state['plan_rounds']), ('HOLD', 'PLAN round limit reached', int(limit)))

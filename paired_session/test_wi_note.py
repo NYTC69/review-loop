@@ -119,7 +119,7 @@ class OperatorNoteTests(unittest.TestCase):
 
         for kind in ('cap', 'cap extension', 'stop rule', 'structural'):
             with self.subTest(kind=kind), self.harness() as h:
-                flags = OFF if kind == 'structural' else (*OFF, '--max-exec-rounds', '1')
+                flags = OFF if kind == 'structural' else (*OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1')
                 self.assert_result(h.run_coordinator(*flags, '--stop-after-plan'), 2, 'HOLD: ' + rc.PLAN_STOP_REASON)
                 state = self.state(h)
                 if kind == 'stop rule':

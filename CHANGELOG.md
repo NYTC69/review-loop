@@ -1,5 +1,24 @@
 # Changelog
 
+### v3.16.0：审查达到轮次上限后自动继续并拆分工作项（WI-I）
+
+- 新交付运行默认开启自动继续和拆分，两种 lifecycle 模式均适用。启动时可传 `--auto-split-rounds false`，或在 JSON profile 中设 `"auto_split_rounds": false`。已有运行沿用冻结值，只有显式传入冲突的命令行值才会拒绝。旧状态没有该键时沿用原规则。review-only、code-quality-loop 和报告模式沿用原有轮次策略。
+- PLAN 在配置上限和操作者追加轮次之后最多自动加两轮。连续两轮带来新阻塞时可以提前拆，默认上限下最早在第 3 轮后。作者提交可独立实现的精简计划，只接受一次审查答复。CLI 或供应商调用失败时按常规 HOLD 处理，resume 重试该审查。核心仍阻塞时 HOLD，普通 note 存档且不触发调用。`note --scope-change` 可启动后继运行，已经是后继运行时须 `abort` 后新开。
+- 初次 EXEC 收敛的默认上限固定为第 5 轮，不受 `--max-exec-rounds` 影响。门审只跑一次。第 5 轮的 shadow HOLD 会暂停运行。当前树的测试、独立性和 lifecycle 检查通过后，第 5 轮未解决的审查阻塞问题和有效的门审 FAIL 都随交付转入后续工作项。原始判定和未满足的验收标准保留。
+- 自动轮次在切换时保存额外调用额度，默认 25 次基础额度不变。每个拆分阶段在运行 backlog 登记一项 `auto-split by rule` 后续工作。报告把数据丢失、安全和资金问题加粗排在最前。accept 将后续工作写入仓库 backlog。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.15.6` 更新为 `3.16.0`。文案 lint 断言无改动。
+- 新增 `test_wi_round_split.py` 检查默认开启时的 PLAN 自动加轮、提前切分和精简审查、EXEC 第五轮的转移、证据检查、调用额度、恢复、lifecycle 提示和 accept。另覆盖 profile 与冻结值冲突时的操作者操作、精简审查调用失败后的重试，以及代码树变更和密钥扫描阻止 EXEC 拆分。原有行为断言保持原样。
+
+**测试 fixture 调整**
+
+- `test_l100.py` 的旧上限与追加轮次场景、`test_v325_note.py` 的 EXEC 轮次 HOLD 备注、`test_v317_plan.py` 的阻塞或无行 PLAN HOLD，以及 `test_rf_fixes.py` 的 RF-5 上限用显式 opt-out 保留原轮次。
+- `test_rounds_threshold.py` 的分类阈值、R1/R2/R3、门审后回归与 R4b/R4c 停止场景，`test_gate_once.py` 的门审修复轮次，以及 `test_v316.py` 的旧上限和直接 guard fixtures 使用 opt-out。发布版保存状态使用原 launcher，门审项只能经验证修复的断言照常运行。
+- `test_block_class.py`、`test_d09_f.py`、`test_d09_f2.py`、`test_scenario_matrix.py`、`test_v317fc.py`、`test_v317g1.py`、`test_v317msg.py`、`test_wi_deadline.py`、`test_wi_note.py` 和 `test_worktree_lifecycle.py` 中依赖旧 EXEC 上限的用例显式 opt-out。
+- `test_real_coordinator.py` 的混合等级和 shadow 阻塞场景、`test_history_scan_subject.py` 的末轮独立性检查及 `test_v312s.py` 的末轮密钥检查使用显式 opt-out。
+
 ### v3.15.6：修复工具状态目录被独立性扫描误判为审查历史（WI-HISTSCAN）
 
 - token-meter 的 shadow HOLD 由 `adapters/claude.py:96` 中 `joinpath(".claude", "projects")` 的目录组件触发。诊断现在只指出遮蔽后仍命中的新增行。产品供应商裸名继续沿用 FIELD-30 的规则。

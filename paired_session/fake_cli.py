@@ -467,6 +467,15 @@ def main():
                                                      + 'Qm9kZ3hKc2lPa1pXN2VyYm5' + 'aZ3kQ9mP2xL7vN4bR8tY6wC1' + '"\n')
             body = 'Implemented sum_ints and ran fake checks.'
         answer = {'status': 'READY', 'body': os.environ.get('FAKE_AUTHOR_RATIONALE', body)}
+        if 'Reduced PLAN author turn.' in prompt:
+            ids = re.search(r'Open blockers: ([^\n]+)', prompt).group(1).split(', ')
+            answer.update(retained_workitem=os.environ.get('FAKE_RETAINED_WORKITEM',
+                          '# Retained scope\n\nImplement the integer sum helper.\n\n## Acceptance criteria\n\n- Reject bool.'),
+                          deferred_scope='Handle the deferred unsafe input path and verify with a regression test.',
+                          transfer_ids=ids)
+            if os.environ.get('FAKE_REDUCED_NO_CORE'):
+                answer.update(status='HOLD', body='The shared input path cannot be separated.')
+
         if 'Phase: EXEC' in prompt and (author_test := os.environ.get('FAKE_AUTHOR_OBSERVED_TEST')):
             command_events = [{'command': author_test, 'exit_code': 0, 'output': 'OK'}]
             extra_observed_commands = [{'command': author_test}]
@@ -818,6 +827,30 @@ def main():
             revise, findings = True, []   # V317: re-review leaves prior PLAN rows open, no new finding
             prior = [{'id': finding_id, 'disposition': 'still_open', 'evidence': 'fake: not addressed'}
                      for finding_id in open_ids]
+        if role == 'reviewer' and (script := os.environ.get(f'FAKE_WI_{phase}_REVIEWS')) and 'Reduced PLAN review.' not in prompt:
+            path = Path(script)
+            history = path.with_suffix('.used')
+            count = len(history.read_text()) if history.exists() else 0
+            steps = path.read_text().splitlines()
+            if count < len(steps):
+                step = steps[count]
+                history.write_text('x' * (count + 1))
+                findings = [{'severity': 'MAJOR', 'file': 'plan.md' if phase == 'PLAN' else 'sum_ints.py',
+                             'summary': summary, 'category': category, 'failure_scenario': 'Cover the behavior with a test'}
+                            for category, summary in (field.split(':', 1) for field in step.split('|') if ':' in field)]
+                revise = bool(findings) or step in ('keep', 'repeat')
+                if step in ('keep', 'repeat'):
+                    prior = [{**row, 'disposition': 'still_open'} for row in prior]
+                if step == 'repeat':
+                    findings = [{'severity': 'MAJOR', 'file': 'plan.md', 'category': 'correctness',
+                                 'summary': f"{open_ids[0]} repeated blocker",
+                                 'failure_scenario': 'Cover the behavior with a test'}]
+        if 'Reduced PLAN review.' in prompt:
+            reduced = os.environ.get('FAKE_REDUCED_REVIEW', 'approve')
+            revise = reduced != 'approve'
+            findings = ([{'severity': 'MAJOR' if reduced == 'block' else 'MINOR', 'file': 'plan.md',
+                          'summary': 'Retained input contract needs clarification',
+                          'failure_scenario': 'The core behavior is unclear'}] if revise else [])
         if 'Role: shadow,' in prompt or 'Role: shadow,' in prompt.replace('fresh isolated ', ''):
             prior = None
         check = configured_test or ('git status --short' if reused_test else 'python3 -m unittest')
@@ -896,7 +929,8 @@ def main():
         if (os.environ.get('FAKE_EMPTY_CLAIMS') == role and
                 ('Evidence contract retry:' not in prompt or os.environ.get('FAKE_ALWAYS_EMPTY_CLAIMS'))):
             answer['verified_claims'] = []
-        if os.environ.get('FAKE_MALFORMED_CLAIMS') == role:
+        if (os.environ.get('FAKE_MALFORMED_CLAIMS') == role
+                or ('Reduced PLAN review.' in prompt and os.environ.get('FAKE_REDUCED_REVIEW') == 'invalid')):
             answer['verified_claims'] = [{'claim': ' ', 'file': 'tracked.txt', 'line': True}]
         if 'Phase: PLAN' in prompt and os.environ.get('FAKE_PLAN_INSPECT'):
             text = (Path.cwd() / 'tracked.txt').read_text()
@@ -943,6 +977,8 @@ def main():
             import time
             time.sleep(600)
     snapshot_mode = os.environ.get('FAKE_SNAPSHOT_MODE')
+    if 'Reduced PLAN review.' in prompt and os.environ.get('FAKE_REDUCED_REVIEW') == 'invalid-schema':
+        answer.pop('status')
     if isinstance(answer, str):
         pass
     elif snapshot_mode == 'wrong':

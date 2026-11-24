@@ -4105,7 +4105,7 @@ sys.exit(result.returncode)
 
     def test_mixed_minor_major_does_not_take_advisory_exit(self):
         result = self.run_coordinator('--shadow', 'off', '--adversarial-gate', 'off',
-                                      '--polish-round', 'off', '--max-exec-rounds', '1',
+                                      '--polish-round', 'off', '--auto-split-rounds', 'false', '--max-exec-rounds', '1',
                                       env={'FAKE_EXEC_MIXED_REVISE': '1'})
         self.assertEqual(result.returncode, 2)
         state = json.loads((self.run_dir / 'state.json').read_text())
@@ -4160,7 +4160,7 @@ sys.exit(result.returncode)
 
     def test_shadow_critical_prevents_minor_advisory_exit(self):
         result = self.run_coordinator('--shadow', 'on', '--adversarial-gate', 'off',
-                                      '--polish-round', 'off', '--max-exec-rounds', '1',
+                                      '--polish-round', 'off', '--auto-split-rounds', 'false', '--max-exec-rounds', '1',
                                       env={'FAKE_EXEC_MINOR_REVISE': '1',
                                            'FAKE_SHADOW_CRITICAL': '1'})
         self.assertEqual(result.returncode, 2)

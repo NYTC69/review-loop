@@ -51,9 +51,11 @@ Not on Codex:
   On Windows `--detach` is refused, Git for Windows
   (Git Bash) is required, and run directories and workspaces stay out of OneDrive-synced folders. On Windows the
   Codex skills run their commands in PowerShell as best effort; the Claude Code entry is the tested Windows path.
-- **Round caps** — PLAN and pre-gate EXEC default to 3 rounds each. The gate gives one PASS/FAIL
-  verdict. FAIL allows one repair review and at most one more within the automatic 5-round EXEC hard cap.
-  At a round-limit HOLD, `resume --add-rounds N` (1–10) extends the run on the operator's decision.
+- **Round caps** — PLAN defaults to 3 rounds; in a delivery run up to two more PLAN rounds run automatically,
+  then the author cuts the contested part into a follow-up and the reduced plan gets one review. Initial EXEC
+  runs up to round 5; unresolved blockers or a gate FAIL at round 5 ship into a follow-up (`--auto-split-rounds
+  false` or `"auto_split_rounds": false` restores the old 3-round caps and HOLDs). The gate gives one PASS/FAIL
+  verdict. At a round-limit HOLD, `resume --add-rounds N` (1–10) extends the run on the operator's decision.
   Advisory-only reviews can pass, with open findings recorded in the run backlog and carried to acceptance.
   An advisory fix round is available only through code-quality-loop. EXEC needs a passed configured test,
   own run evidence and the current tree. See [round rules and gate repair](../../../paired_session/README.md#acceptance-rejection-and-round-limits)

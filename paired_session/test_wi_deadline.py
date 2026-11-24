@@ -129,7 +129,7 @@ class WiDeadlineTests(unittest.TestCase):
         self.assertEqual(rescoped.returncode, 0, rescoped.stdout + rescoped.stderr)
 
     def test_a_round_limit_hold_past_the_deadline_keeps_its_owner_override(self):
-        flags = ('--wi-deadline', '100000', '--exercise-revisions', '--max-exec-rounds', '1', '--shadow', 'off',
+        flags = ('--auto-split-rounds', 'false', '--wi-deadline', '100000', '--exercise-revisions', '--max-exec-rounds', '1', '--shadow', 'off',
                  '--polish-round', 'off', '--gate-vendor', 'claude')
         held = self.run_coordinator(*flags)
         state_path = self.run_dir / 'state.json'

@@ -41,7 +41,7 @@ class ResumeAccountingTests(unittest.TestCase):
         self.assertNotIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
 
     def equal_limit(self, mode):
-        flags = ('--lifecycle-mode', mode, '--max-invocations', '80', '--max-exec-rounds', '1')
+        flags = ('--auto-split-rounds', 'false', '--lifecycle-mode', mode, '--max-invocations', '80', '--max-exec-rounds', '1')
         self.assertIn('HOLD: EXEC round limit reached', self.run_coordinator(*flags, env={'FAKE_EXEC_MIXED_REVISE': '1'}).stdout)
         before = self.state()
         self.assertEqual(before['exec_rounds'], 1)

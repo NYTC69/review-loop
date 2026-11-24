@@ -91,13 +91,13 @@ class ThresholdRunTests(unittest.TestCase):
 
     def test_the_same_major_with_a_blocking_category_still_starts_a_fix_round(self):
         env = {'FAKE_EXEC_MIXED_REVISE': '1', **fields(**{'major behavior issue': CORRECT})}
-        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '1', env=env)
+        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--auto-split-rounds', 'false', '--max-exec-rounds', '1', env=env)
         self.assertIn('HOLD: EXEC round limit reached', result.stdout, result.stdout + result.stderr)
         self.assertIn('NOTE: round rule R1 stopped the run', result.stdout)
 
     def test_r2f1_a_blocking_category_with_an_empty_reachability_still_blocks(self):
         env = {'FAKE_EXEC_MIXED_REVISE': '1', **fields(**{'major behavior issue': {'category': 'correctness', 'reachability': ''}})}
-        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '1', env=env)
+        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--auto-split-rounds', 'false', '--max-exec-rounds', '1', env=env)
         self.assertIn('HOLD: EXEC round limit reached', result.stdout, result.stdout + result.stderr)
         row = next(r for r in self.state()['finding_ledger'] if r['summary'] == 'major behavior issue')
         self.assertEqual((row['category'], row['status']), ('correctness', 'open'))
@@ -262,7 +262,7 @@ class ThresholdRunTests(unittest.TestCase):
 
     # --- S4 ---------------------------------------------------------------------------------------------------------------
     def test_r1_three_exec_review_rounds_by_default_then_hold(self):
-        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', env={'FAKE_EXEC_MIXED_REVISE': '1'})
+        result = self.run_coordinator(*OFF, '--auto-split-rounds', 'false', '--adversarial-gate', 'off', env={'FAKE_EXEC_MIXED_REVISE': '1'})
         self.assertIn('HOLD: EXEC round limit reached', result.stdout, result.stdout + result.stderr)
         self.assertIn('NOTE: round rule R1 stopped the run', result.stdout)
         state = self.state()
@@ -271,7 +271,7 @@ class ThresholdRunTests(unittest.TestCase):
     def test_r1_a_resume_without_the_flag_keeps_the_saved_cap_of_a_run_made_under_the_old_default(self):
         flags = (*OFF, '--adversarial-gate', 'off')
         env = {'FAKE_EXEC_MIXED_REVISE': '1'}
-        held = self.run_coordinator(*flags, '--max-exec-rounds', '4', env=env)   # v3.8.x saved its default 4
+        held = self.run_coordinator(*flags, '--auto-split-rounds', 'false', '--max-exec-rounds', '4', env=env)   # v3.8.x saved its default 4
         self.assertIn('HOLD: EXEC round limit reached', held.stdout, held.stdout + held.stderr)
         self.assertEqual(self.state()['exec_rounds'], 4)
         resumed = self.run_operator_action('resume', *flags, env=env)
@@ -283,14 +283,14 @@ class ThresholdRunTests(unittest.TestCase):
 
     def test_r2_a_gate_fail_gets_two_fix_rounds_then_a_split_hold_without_a_second_gate(self):
         keep = {**FAIL, 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'}
-        held = self.run_coordinator(*OFF, '--max-exec-rounds', '1', env=keep)
+        held = self.run_coordinator(*OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1', env=keep)
         self.assertIn('HOLD: ' + rc.GATE_SPLIT_REASON, held.stdout, held.stdout + held.stderr)
         self.assertIn('NOTE: round rule R2 stopped the run', held.stdout)
         state = self.state()
         self.assertEqual((len(gates(state)), state['exec_rounds'], state['gate_fail_round']['round']), (1, 3, 1))
-        plain = self.run_operator_action('resume', *OFF, '--max-exec-rounds', '1', env=keep)
+        plain = self.run_operator_action('resume', *OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1', env=keep)
         self.assertIn('HOLD: ' + rc.GATE_SPLIT_REASON, plain.stdout)   # only an extension continues
-        resumed = self.run_operator_action('resume', *OFF, '--max-exec-rounds', '1', '--add-rounds', '1', env=FAIL)
+        resumed = self.run_operator_action('resume', *OFF, '--auto-split-rounds', 'false', '--max-exec-rounds', '1', '--add-rounds', '1', env=FAIL)
         self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
         self.assertEqual(len(gates(self.state())), 1)
 
@@ -299,7 +299,7 @@ class ThresholdRunTests(unittest.TestCase):
                             ('then-other', 'regression: the fix drops a case|every caller')):
             with self.subTest(case=name):
                 self.run_dir = self.root / ('post-' + name)
-                result = self.run_coordinator(*OFF, env={**FAIL, 'FAKE_POST_GATE_FINDING': reach})
+                result = self.run_coordinator(*OFF, '--auto-split-rounds', 'false', env={**FAIL, 'FAKE_POST_GATE_FINDING': reach})
                 state = self.state()
                 post = [r for r in state['finding_ledger'] if r['summary'].startswith('post-gate finding')]
                 self.assertEqual(len(gates(state)), 1)
@@ -354,7 +354,7 @@ class ThresholdRunTests(unittest.TestCase):
 
     def test_r3f7_two_distinct_confirmed_shadow_regressions_stop_at_r4c(self):
         marker = str(self.root / 'gate-failed')
-        flags = ('--lifecycle-mode', 'off', '--max-exec-rounds', '1')
+        flags = ('--auto-split-rounds', 'false', '--lifecycle-mode', 'off', '--max-exec-rounds', '1')
         keep = {**FAIL, 'FAKE_EXEC_STILL_OPEN': '[gate FAIL]'}
         first = self.run_coordinator(*flags, env=keep)
         self.assertIn('HOLD: ' + rc.GATE_SPLIT_REASON, first.stdout, first.stdout + first.stderr)
@@ -496,6 +496,7 @@ class ThresholdRunTests(unittest.TestCase):
 
     def test_r2f5_a_saved_v386_state_is_recounted_with_its_gate_fail_baseline(self):
         co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
+        co.state['config'].pop('auto_split_rounds')  # saved before WI-I
         turn = lambda sequence, role, phase, **more: {'sequence': sequence, 'role': role, 'phase': phase, 'answer': {}, **more}
         turns = [turn(1, 'author', 'PLAN'), turn(2, 'reviewer', 'PLAN'), turn(3, 'author', 'EXEC'), turn(4, 'reviewer', 'EXEC'),
                  turn(5, 'gate', 'EXEC', answer={'findings': []}), turn(6, 'author', 'EXEC'), turn(7, 'reviewer', 'EXEC'),
@@ -515,6 +516,7 @@ class ThresholdRunTests(unittest.TestCase):
 
     def test_r3f5_uncredited_author_receipts_do_not_raise_the_legacy_count_or_gate_baseline(self):
         co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
+        co.state['config'].pop('auto_split_rounds')  # saved before WI-I
         turns = [
             {'sequence': seq, 'role': role, 'phase': 'EXEC', 'answer': answer}
             for seq, role, answer in (
@@ -537,7 +539,7 @@ class ThresholdRunTests(unittest.TestCase):
                          (2, 1, (3, 'R2')))
 
     def test_r3_the_hard_cap_guards_a_state_whose_round_count_ran_past_it(self):
-        co = rc.Coordinator(self.args('--lifecycle-mode', 'off'))
+        co = rc.Coordinator(self.args('--auto-split-rounds', 'false', '--lifecycle-mode', 'off'))
         co.state.update(exec_rounds=5, gate_fail_round={'round': 5, 'extra': 0, 'sequence': 9})   # e.g. v3.8.x stage writes
         self.assertEqual(co._exec_limits(), (5, 'R3'))
         self.assertEqual(co._exec_limit_reason(), rc.HARD_CAP_REASON)
@@ -545,11 +547,11 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertEqual(co._exec_limits(), (7, 'R3'))   # an extension lands on top of the hard cap too
 
     def test_r2f6_the_hard_cap_is_five_whatever_the_pre_gate_cap_says(self):
-        co = rc.Coordinator(self.args('--lifecycle-mode', 'off', '--max-exec-rounds', '4'))
+        co = rc.Coordinator(self.args('--lifecycle-mode', 'off', '--auto-split-rounds', 'false', '--max-exec-rounds', '4'))
         co.state.update(exec_rounds=4, gate_fail_round={'round': 4, 'extra': 0, 'sequence': 9})   # a gate FAIL in round 4
         self.assertEqual(co._exec_limits(), (5, 'R3'))
         self.run_dir = self.root / 'cap7'
-        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--max-exec-rounds', '7',
+        result = self.run_coordinator(*OFF, '--adversarial-gate', 'off', '--auto-split-rounds', 'false', '--max-exec-rounds', '7',
                                       env={'FAKE_EXEC_MIXED_REVISE': '1'})
         self.assertIn('HOLD: ' + rc.HARD_CAP_REASON, result.stdout, result.stdout + result.stderr)
         self.assertIn('NOTE: round rule R3 stopped the run', result.stdout)
@@ -557,14 +559,14 @@ class ThresholdRunTests(unittest.TestCase):
 
     def test_r4b_the_same_finding_still_open_in_two_consecutive_reviews_holds_and_asks(self):
         env = {'FAKE_EXEC_STILL_OPEN': 'required exercise'}
-        held = self.run_coordinator(*OFF, '--exercise-revisions', '--max-exec-rounds', '5', env=env)
+        held = self.run_coordinator(*OFF, '--auto-split-rounds', 'false', '--exercise-revisions', '--max-exec-rounds', '5', env=env)
         self.assertIn('HOLD: ' + rc.STILL_OPEN_REASON + ': F', held.stdout, held.stdout + held.stderr)
         self.assertIn('NOTE: round rule R4b stopped the run', held.stdout)
         state = self.state()
         self.assertEqual((state['exec_rounds'], state['next']), (3, 'author'))
-        plain = self.run_operator_action('resume', *OFF, '--exercise-revisions', '--max-exec-rounds', '5', env=env)
+        plain = self.run_operator_action('resume', *OFF, '--auto-split-rounds', 'false', '--exercise-revisions', '--max-exec-rounds', '5', env=env)
         self.assertIn('HOLD: ' + rc.STILL_OPEN_REASON, plain.stdout)   # plain resume keeps it: ask the owner
-        resumed = self.run_operator_action('resume', *OFF, '--exercise-revisions', '--max-exec-rounds', '5', '--add-rounds', '1')
+        resumed = self.run_operator_action('resume', *OFF, '--auto-split-rounds', 'false', '--exercise-revisions', '--max-exec-rounds', '5', '--add-rounds', '1')
         self.assertIn(DONE, resumed.stdout, resumed.stdout + resumed.stderr)
         self.assertEqual(self.state()['exec_rounds'], 4)
 

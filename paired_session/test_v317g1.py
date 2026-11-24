@@ -195,7 +195,8 @@ class OtherVersionRunTests(unittest.TestCase):
         for mode in (OFF, ON):
             with self.subTest(mode=mode[1]):
                 self.run_dir = self.root / ('withdraw-' + mode[1])
-                held = self.run_coordinator(*mode, '--max-exec-rounds', '1', env={'FAKE_EXEC_MIXED_REVISE': '1'})
+                held = self.run_coordinator(*mode, '--auto-split-rounds', 'false', '--max-exec-rounds', '1',
+                                            env={'FAKE_EXEC_MIXED_REVISE': '1'})
                 self.assertIn('HOLD: EXEC round limit reached', held.stdout, held.stdout + held.stderr)
                 self.from_other_version()
                 before = self.state()['config']

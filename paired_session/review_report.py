@@ -191,6 +191,20 @@ def delivery_section(state: dict) -> str:
         if found or severity != 'OTHER':
             lines.append(f'- {title}：{len(found)} 条' + ('（' + '，'.join(f'{s} {n}' for s, n in statuses.items()) + '）' if found else '')
                          + (f"；未关闭：{', '.join(open_ids)}" if open_ids else ''))
+    splits = state.get('round_splits', {})
+    if splits:
+        lines += ['', '## Follow-up work items (auto-split by rule)']
+        targets = {finding_id: split['target'] for split in splits.values() for finding_id in split['ids']}
+        risks = {'data-loss': 'Data loss', 'security': 'Security', 'money': 'Money'}
+        rows = [row for row in state.get('finding_ledger', []) if row['id'] in targets]
+        for category, label in (*risks.items(), (None, None)):
+            lines.extend(f"- {f'**{label}** ' if label else ''}{row['id']} → {targets[row['id']]}: {row['summary']}"
+                         for row in rows if (row.get('category') if row.get('category') in risks else None) == category)
+        lines.extend(f"- {split['summary']}" for split in splits.values())
+        criteria = [item['criterion'] for item in state.get('gate_fail_items', [])
+                    if item['id'] in targets and item['basis'] == 'criterion']
+        if criteria:
+            lines += ['', '### Unmet criteria (gate FAIL)', *[f"- {criterion}" for criterion in criteria]]
     if state.get('operator_rulings'):
         lines += ['', '## 操作者撤回（operator rulings）', *[
             f"- {row['id']} (operator): {', '.join(row['finding_ids'])}: {row['reason']}"

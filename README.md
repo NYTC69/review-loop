@@ -400,18 +400,18 @@ Show the usage guide — how it works, commands, configuration, and key features
 Project review settings live in `.review-loop/config.md` (every field optional; the table below). Operator
 settings live in the operator profile (the one you name, else `~/.config/review-loop/paired-session.json`):
 roles, vendors, models and efforts, the test command, `auto_commit` for the main pipeline,
-`quality_writers`, `advisory_fix_round`, `max_invocations` and timeouts.
+`quality_writers`, `advisory_fix_round`, `auto_split_rounds`, `max_invocations` and timeouts.
 The CLI option `--lifecycle-mode on|off` defaults to `on`; the JSON profile key
 `lifecycle_mode` may select `off` in an operator or workspace profile. With off,
-DONE follows gate approval and `accept --auto-commit false` returns the uncommitted tree. The values in
+DONE follows EXEC convergence and `accept --auto-commit false` returns the uncommitted tree. The values in
 `paired_session/paired-session-config.example.json` are examples, not the defaults (without a profile the gate
 uses the author's vendor, and the test command is the one the skill confirms with you).
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `entry` | absent = `paired-session` | `paired-session` (exact value); `legacy` is refused since v2.13.0; anything else is warned about and treated as absent |
-| `soft_limit_plan` | `3` | `--max-plan-rounds`: the PLAN round cap; blocking reviews at the cap HOLD and `resume --add-rounds N` continues them |
-| `soft_limit_exec` | `3` | `--max-exec-rounds`: the same for EXEC (the review rounds before the gate) |
+| `soft_limit_plan` | `3` | `--max-plan-rounds`: ordinary PLAN cap, with operator grants and up to two automatic rounds in delivery mode |
+| `soft_limit_exec` | `3` | `--max-exec-rounds`: legacy pre-gate cap. The default initial delivery route uses round five regardless of this setting |
 | `auto_commit` | `false` | Not applied on the main pipeline: paired-session reads `auto_commit` from the operator profile and prints a warning when `auto_commit: true` is set here. Review-only runs (`/review-loop` on existing code, code-quality-loop) default to `true`: one local commit at `accept` with lifecycle on, never a push; lifecycle off returns the uncommitted tree; both honour an explicit `auto_commit: false` here |
 | `docs_file` | `CHANGELOG.md` | File to append delivery summary; `""` to skip |
 | `handsfree` | `false` | Nobody answers questions: a stage A question fails the entry, and `accept` / `reject` / `withdraw-findings` are never run |
@@ -419,6 +419,13 @@ uses the author's vendor, and the test command is the one the skill confirms wit
 | `quality_focus` | `""` | Paired-session: `--quality-focus` (L105), frozen at run start, for the POLISH-Q specialists |
 | `review_style` | `""` | Tone and rules for all reviews (free text); paired-session: `--review-style` (L105), frozen at run start, for every review role |
 | `skip_quality_polish` | `false` | With lifecycle on, `true` skips the POLISH-Q specialists and the quality writers; docs and security still run |
+
+New delivery runs use automatic PLAN continuation and round-cap splits by default in both lifecycle modes.
+Set `--auto-split-rounds false` or `"auto_split_rounds": false` in the JSON profile to use the legacy rules.
+The run freezes this setting at creation. An enabled run can cut PLAN after round three when rounds two and
+three introduce new blockers. Initial EXEC can deliver with unresolved reviewer blockers or a gate FAIL at
+round five, with a follow-up in the run backlog and delivery report. Acceptance carries the follow-up to the
+repository backlog. See [round limits and acceptance](paired_session/README.md#acceptance-rejection-and-round-limits).
 
 `reviewer_model` and `executor_model` are not applied: set to anything other than empty or `inherit`, they
 print a warning; models come from the operator profile. The legacy-only keys `reviewer`, `judgment_model`,
@@ -531,14 +538,14 @@ Its change includes the earlier uncommitted edits, and the new PLAN author sees 
 **Run Directory** — Each run's state, evidence, findings ledger, usage and reports live in its run
 directory under `<repo>/.review-loop/runs/<UUID>/` (gitignored); legacy `.review-loop/sessions/` files are left on disk and never read.
 
-**Round Caps** — PLAN and pre-gate EXEC default to 3 rounds each. After a gate FAIL, the author gets
-one automatic fix round and at most one more. If gate items stay open, the run HOLDs and recommends
-splitting them into a new work item. The automatic EXEC hard cap is 5 rounds.
-`resume --add-rounds N` continues the same run at a round-limit HOLD. FINISH, POLISH-Q, DOCS and
-SECURITY writes, writer replay and rollback, and failed or timed-out CLI turns use no EXEC round.
-The run also HOLDs to ask the owner when the same non-gate blocker is marked `still_open` in two consecutive
-reviews, or recommends splitting when two consecutive reviews after an approval each bring new blocking
-findings. Each such HOLD prints its round rule. Review findings block at CRITICAL, MAJOR or SECURITY
+**Round Caps** — Delivery PLAN defaults to 3 ordinary rounds and can add up to two automatic rounds.
+Two consecutive reviews with new blockers can trigger a cut at the ordinary cap. Initial delivery EXEC uses
+round five for unresolved eligible blockers and converges earlier on approval. The gate runs once, including on
+round five when it is still pending. The initial route can continue through repeated blockers and consecutive
+new blockers after approval. With the automatic rule off, pre-gate EXEC defaults to 3, a gate FAIL gets up
+to two fix rounds, and R4 can stop the run early. `resume --add-rounds N` continues at an eligible round-limit
+HOLD. FINISH, POLISH-Q, DOCS and SECURITY writes, writer replay and rollback, and failed or timed-out
+CLI turns use no EXEC round. Review findings block at CRITICAL, MAJOR or SECURITY
 severity in correctness, data-loss, security or money. Findings carry a reachability statement. An empty
 statement leaves an otherwise blocking finding blocking. With only non-blocking rows left and valid
 evidence, a REVISE becomes `APPROVE_WITH_ADVISORY`. EXEC requires a passing configured test on the current tree

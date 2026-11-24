@@ -64,7 +64,7 @@ class D09FTests(unittest.TestCase):
         self.assertTrue((self.workspace / 'writer_note.py').is_file())
 
     def test_a_writer_replay_leaves_the_exec_limit_unchanged(self):   # WI-GATE1 R5 replaces the F3 replay credit
-        co = rc.Coordinator(rc.parser().parse_args(self.command('--lifecycle-mode', 'on', '--max-exec-rounds', '4')[2:]))
+        co = rc.Coordinator(rc.parser().parse_args(self.command('--auto-split-rounds', 'false', '--lifecycle-mode', 'on', '--max-exec-rounds', '4')[2:]))
         self.assertEqual(co.exec_round_limit(), 4)
         for rounds, replay in ((5, {'start': 4, 'used': None}), (6, {'start': 4, 'used': 2}), (3, {'start': 1, 'used': None})):
             co.state.update(exec_rounds=rounds, writer_replay_rounds=replay)   # a v3.8.x record is ignored

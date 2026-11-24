@@ -89,11 +89,9 @@ Blocking means a CRITICAL, MAJOR or SECURITY finding whose category is correctne
 data-loss, security or money. Findings carry a reachability statement, and an empty statement leaves an otherwise
 blocking finding blocking. Gate FAIL items are mandatory checks. Category `other` (wording, style,
 docs polish, extra robustness) never blocks. Program rows (test failure, secret scan, independence scan, sensitive paths)
-set their own blocking category. A MINOR or LOW security-flagged finding is listed but advisory. A blocking row
-still open at the cap is the `PLAN round limit reached` / `EXEC round limit reached` HOLD; the EXEC round rules
-(R1-R5: cap 3 before the gate, up to two fix rounds after a gate FAIL, hard cap 5, a non-gate blocker still open in two consecutive
-reviews, new blockers in two consecutive reviews after an approval; lifecycle writes use no round) each name
-themselves in a NOTE line at the HOLD.
+set their own blocking category. A MINOR or LOW security-flagged finding is listed but advisory. Eligible blockers at the cap follow the
+[automatic delivery round rules](#acceptance-rejection-and-round-limits). Legacy round-limit HOLDs name the
+rule that stopped the run in a NOTE line.
 Review comparison shows each reviewer decision separately from the final coordinator
 status, which may still be HOLD after later checks.
 
@@ -635,6 +633,11 @@ An EXEC, FINISH or DOCS author timeout reports the selected seconds and suggests
 `resume --exec-turn-timeout 14400` when the saved timeout is below the cap.
 At 14400 seconds, the HOLD identifies it as the maximum author timeout.
 
+The saved invocation base defaults to 25. Automatic delivery transitions record fixed additional
+allowances in state for the extra PLAN rounds, the reduced author and review, and the scheduled work
+for EXEC rounds four and five. Those allowances survive resume and the raw charged invocation count
+still includes the automatic calls.
+
 An explicit CLI `resume --max-invocations N` may raise the saved invocation cap;
 a lower value is refused and the same value is accepted. Profile/project defaults
 do not count as an explicit raise. The new cap is saved for later turns and resumes;
@@ -709,6 +712,33 @@ An eligible blocker can also be withdrawn at the existing POLISH-Q fix HOLD.
 
 ## Acceptance, rejection and round limits
 
+Automatic continuation and splitting default to on for newly created delivery runs in both lifecycle modes.
+Pass `--auto-split-rounds false` or set `"auto_split_rounds": false` in the JSON profile for the legacy rules.
+Resume uses the frozen value and refuses an explicit conflicting value. Runs saved without the key and
+review-only, code-quality-loop and report routes retain their original round rules.
+
+PLAN uses the configured cap plus granted rounds and up to two automatic repair rounds for transferable
+blockers. Two consecutive reviews with new blocking IDs cut at the first eligible boundary. With the default
+cap three, new blockers in rounds two and three cut immediately after round three. Otherwise the default
+automatic limit is round five. At the cut, the author proposes an independently implementable retained plan
+and scope, plus a deferred follow-up. One reduced PLAN review approves the retained scope or leaves a core
+HOLD. Advisory-only revisions can approve. A blocked core HOLD gives the finding IDs and reason. Plain resume
+keeps the HOLD and an ordinary note is saved without dispatch. `--add-rounds` is available at ordinary
+round-limit HOLDs. At the core HOLD, `note --scope-change` starts a successor run using the printed command.
+A scope-change successor must `abort` and start a new run.
+
+Initial delivery EXEC uses a fixed round-five boundary while the rule is enabled, regardless of
+`--max-exec-rounds`. Earlier convergence advances as usual. Generic R4b/R4c streaks allow continuation
+with eligible blockers. The once-only gate can run on round five, or its scoped repair can continue through
+that round. Unresolved reviewer blockers and a valid gate FAIL can ship at round five when tree, test,
+independence, shadow and lifecycle checks pass. The gate FAIL receipt and exact unmet criteria stay in the
+audit and follow-up. Lifecycle reviews, including EXEC re-reviews on writer replay and after rejection, treat
+the transferred scope as out of scope and still review regressions within retained scope.
+
+Each phase that splits records one follow-up in the run backlog and the delivery report using
+`auto-split by rule`, the target and the transferred IDs. The report highlights data loss, security and
+money findings first. Explicit acceptance carries the follow-up into the repository backlog.
+
 At a current PLAN or EXEC round-limit HOLD, `resume --add-rounds N` (1-10)
 continues the same run with N more rounds of that phase. The saved cap stays;
 `round_extensions` records the addition. A review/gate HOLD resumes with the
@@ -717,7 +747,7 @@ The gate runs once per work item (WI-GATE1) and returns PASS or FAIL with per-cr
 The four required parts of a FAIL item are the quoted unmet acceptance criterion or blocking class, evidence,
 the smallest change, and proof it is fixed. PASS requires every listed criterion met and an empty FAIL list.
 The EXEC reviewer checks each open FAIL item in full every round and may close it only as fixed.
-A saved verdict also counts when an earlier version reset `gate_ran`. A FAIL gets one automatic fix round and at most one more,
+A saved verdict also counts when an earlier version reset `gate_ran`. Under the legacy round rules, a FAIL gets one automatic fix round and at most one more,
 wherever the EXEC cap stood (round rule R2); a FAIL item still open after them HOLDs and recommends splitting the open
 gate items into a new work item. From the FAIL until a repair review passes, only the open FAIL items and blocking
 regressions introduced by the fix (the reviewer starts their reachability with `regression:`) keep a review from
@@ -727,7 +757,7 @@ withdraws an incorrect finding. Use `non_blocking` only for a row marked "shadow
 `still_open` for other rows that remain open. The coordinator records an inapplicable `non_blocking` as `still_open`
 and prints a NOTE listing the affected IDs. The confirmation uses the same tree and no author round. The automatic hard cap is
 5 EXEC rounds whatever `--max-exec-rounds` says. Explicit extensions, counted rejections and the opt-in advisory fix
-round add their own allowance. Later FINISH and writer re-reviews use the ordinary threshold. R4 asks the owner when
+round add their own allowance. Later FINISH and writer re-reviews use the ordinary threshold. Outside the initial automatic route, R4 asks the owner when
 the same non-gate blocker is marked `still_open` in two consecutive reviews, and recommends a split when two consecutive
 reviews after an approval each add new blockers. `resume --add-rounds N` resets both streaks. R5 excludes lifecycle
 writes, writer replay and rollback, CLI failures and timeouts, and an approval held for host test evidence. A
