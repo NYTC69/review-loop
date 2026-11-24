@@ -74,9 +74,12 @@ ships `paired_session/paired-session-config.example.json` for that profile.
 no Claude Code Bash sandbox). No permission probe is needed before dispatch, and the evidence guard only records
 what it would have held. `permission-probe` and strict mode were removed in v3.7.0: `permission-probe` is refused,
 and `--strict` or `"safety_mode": "strict"` in a profile only prints a NOTE (a run saved strict resumes in the
-default mode). A reviewer turn that changes the workspace is voided, restored and re-dispatched once (a second
-change or a failed restore is a HOLD), and an author turn that changes HEAD or the branch is a HOLD. When an
-operator program or PATH changed since the run started, the run records the new state with a NOTE and continues.
+default mode). A reviewer turn that changes HEAD, the branch, the index, a tracked file or a non-ignored
+untracked file is voided. A verified restore allows one automatic re-dispatch. A second change or a failed
+restore is a HOLD. A detected change to an existing ignored file by a Gemini reviewer also voids the verdict and
+HOLDs, leaving the edit on disk for manual inspection. An author turn that changes HEAD or the branch is a
+HOLD. When an operator program or PATH changed since the run started, the run records the new state with a
+NOTE and continues.
 See [`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
 **Optional** — copy the config template and uncomment only the keys you change (every key is commented out at its default):
@@ -453,8 +456,8 @@ only where the operator profile or the CLI flags name it:
   role runs gemini.
 - Read-only roles: agy runs with `--sandbox` and session-only settings that deny file writes, URLs and MCP and allow
   shell commands and file reads; a turn in which agy denies an action fails. agy 1.5.1 still lets a shell write inside
-  the workspace through, so a read-only gemini turn that changes the workspace is undone and dispatched once more, as
-  for the other vendors.
+  the workspace through. A verified restore allows one automatic re-dispatch of a voided review. A detected
+  edit to an existing ignored file voids the verdict and HOLDs with the edit still on disk for manual inspection.
 - Author: agy runs with `--sandbox` and settings that allow file writes in the workspace only (never the run
   directory), file reads and shell commands, and deny URLs and MCP; it gets the post-turn checks of a Claude author
   (git HEAD and control files, plus refs and the index for the lifecycle writers; global config and the coordinator context), plus a check of the run directory's files, and the
@@ -504,7 +507,8 @@ and logs it to `progress.jsonl` in the run directory; `status --brief` shows the
 
 **Provider quota waits** — Codex, Claude and Gemini quota rejections retry the same turn at the reported reset
 when it fits the run-wide `--max-rate-limit-wait` budget (6 hours by default). Without a usable reset, the
-coordinator waits 30, 60, 120 and 240 seconds between retries, then HOLDs. Set the budget to 0 for immediate HOLD.
+pending dispatch uses backoff slots of 30, 60, 120 and 240 seconds, then HOLDs. A later dispatch starts at 30
+seconds and shares the remaining run-wide wait budget. Set the budget to 0 for immediate HOLD.
 `status --brief` shows the pending retry time, and plain `resume` continues a wait interrupted by `stop`.
 
 **Plan Conformance** — In EXEC the reviewer and the shadow review the change against the approved plan, and an

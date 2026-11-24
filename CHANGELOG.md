@@ -1,5 +1,15 @@
 # Changelog
 
+### v3.16.1：修复 agy 临时错误重试并澄清只读恢复（WI-F）
+
+- F1：agy 以正退出码结束且终态 `ERROR` 匹配现有的容量不足或过载措辞时，尚未执行工具且通过工作区等检查的回合会退回调用额度，并在 60 秒后重试一次。明确的配额拒绝优先走配额等待流程。
+- F2：补充 Gemini 只读恢复说明。检测到已有忽略文件被修改时，裁定作废并进入 HOLD，修改留在磁盘上供人工检查。工作区恢复通过验证后才会自动重新派发。
+- F3：新增现状测试。退避槽位随待重试的派发保存，后续派发从首个槽位开始，累计等待秒数由整个运行共享。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.0` 更新为 `3.16.1`。
+
 ### v3.16.0：审查达到轮次上限后自动继续并拆分工作项（WI-I）
 
 - 新交付运行默认开启自动继续和拆分，两种 lifecycle 模式均适用。启动时可传 `--auto-split-rounds false`，或在 JSON profile 中设 `"auto_split_rounds": false`。已有运行沿用冻结值，只有显式传入冲突的命令行值才会拒绝。旧状态没有该键时沿用原规则。review-only、code-quality-loop 和报告模式沿用原有轮次策略。

@@ -203,6 +203,22 @@ class RateLimitDriveTests(unittest.TestCase):
                 self.assertNotIn('hold_kind', state)
                 self.assertEqual((waits, state['invocations_used']), ([], 1))
 
+    def test_unknown_reset_backoff_restarts_for_next_dispatch(self):
+        co = rc.Coordinator(self.h.args())
+        with self.clock() as (_, waits):
+            for marker, role, phase, schema in ((*SITES[0], rc.author_schema()), (*SITES[1], rc.review_schema())):
+                env = {**self.limited_env(marker), 'FAKE_RATE_LIMIT_UNKNOWN': '1',
+                       'FAKE_RATE_LIMIT_ONCE': str(self.h.root / f'{role}.limited')}
+                with patch.dict(os.environ, env):
+                    receipt = co.invoke(role, phase, f'Role: {role}, {marker}', schema)
+                self.assertIn('answer', receipt)
+                self.assertNotIn('rate_limit_wait', self.state())
+            self.assertEqual(waits, [30, 30])
+        state = self.state()
+        self.assertEqual(state['rate_limit_wait_used'], 60)
+        self.assertEqual([(t['role'], t.get('error_kind')) for t in state['turns']],
+                         [('author', 'rate_limited'), ('author', None), ('reviewer', 'rate_limited'), ('reviewer', None)])
+
     def test_repeated_short_known_resets_retry_until_the_next_wait_exceeds_budget(self):
         env = {**self.limited_env(SITES[0][0], once=False), 'FAKE_RATE_LIMIT_RETRY_AFTER': '12'}
         with self.clock() as (_, waits):

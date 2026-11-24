@@ -439,6 +439,110 @@ class GeminiAdapterTests(unittest.TestCase):
         with patch.dict(os.environ, {'FAKE_GEMINI_NO_STRUCTURED': '1'}):   # G7: the response is the fallback answer
             self.assertEqual(self.coordinator()._invoke_once('reviewer', 'PLAN', PLAN_REVIEW, rc.review_schema())['answer']['status'], 'APPROVE')
 
+    def run_agy_review(self, env, *flags):
+        with patch.dict(os.environ, env), patch.object(rc, 'TRANSIENT_RETRY_SECONDS', 0):
+            result = self.main('run', *GEMINI_REVIEWER, '--gemini-bin', str(self.h.fake_gemini_cli()), *flags)
+        state = json.loads((self.h.run_dir / 'state.json').read_text())
+        return result, state
+
+    def test_agy_structured_capacity_error_retries_once(self):
+        result, state = self.run_agy_review({
+            'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_ERROR_STDOUT_ONLY': '1',
+            'FAKE_GEMINI_ERROR': 'Selected model is at capacity',
+            'FAKE_GEMINI_FAIL_ONCE': str(self.h.root / 'agy-failed'),
+        }, '--lifecycle-mode', 'off')
+        self.assertEqual((result.returncode, state['status']), (0, 'DONE'), result.stdout)
+        self.assertIn('retrying the reviewer turn once', result.stdout)
+        failed, retry = [t for t in state['turns'] if (t['role'], t['phase']) == ('reviewer', 'PLAN')]
+        self.assertEqual((failed['error_kind'], failed['invocation_budget_counted']), ('transient', False))
+        self.assertEqual((retry['answer']['status'], retry['invocation_budget_counted']), ('APPROVE', True))
+        self.assertEqual(state['invocations_used'], len(state['turns']) - 1)
+        first, second = self.calls()[:2]
+        self.assertEqual(first['stdin'], second['stdin'])
+        evidence = self.h.run_dir / 'evidence'
+        prefix = f"{failed['sequence']:03d}-plan-reviewer"
+        self.assertEqual((evidence / (prefix + '.stderr.log')).read_bytes(), b'')
+        receipt = json.loads((evidence / (prefix + '.receipt.json')).read_text())
+        self.assertEqual((receipt['error_kind'], receipt['invocation_budget_counted']), ('transient', False))
+
+    def test_agy_repeated_structured_capacity_error_holds(self):
+        result, state = self.run_agy_review({
+            'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_ERROR_STDOUT_ONLY': '1',
+            'FAKE_GEMINI_ERROR_JSON': json.dumps({'type': 'overloaded_error', 'message': 'provider busy'}),
+        })
+        self.assertEqual((result.returncode, state['status']), (2, 'HOLD'), result.stdout)
+        self.assertEqual(state['hold_reason'], 'CLI exit 1: provider busy' + rc.TRANSIENT_HOLD_HINT)
+        self.assertEqual(len(self.calls()), 2)
+        turns = [t for t in state['turns'] if t['vendor'] == 'gemini']
+        self.assertEqual([(t['role'], t['phase'], t.get('error_kind'), t['invocation_budget_counted']) for t in turns],
+                         [('reviewer', 'PLAN', 'transient', False)] * 2)
+        self.assertEqual(state['invocations_used'], len(state['turns']) - 2)
+
+    def test_agy_non_transient_errors_hold_without_retry(self):
+        cases = (('1', 'no diagnostic code', 'CLI exit 1: no diagnostic code'),
+                 ('0', 'Selected model is at capacity', 'agy turn status ERROR: Selected model is at capacity'))
+        for exit_code, error, reason in cases:
+            with self.subTest(exit_code=exit_code):
+                self.h.run_dir = self.h.root / f'non-transient-{exit_code}'
+                self.log.unlink(missing_ok=True)
+                result, state = self.run_agy_review({
+                    'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_ERROR_STDOUT_ONLY': '1',
+                    'FAKE_GEMINI_FAIL_EXIT': exit_code, 'FAKE_GEMINI_ERROR': error,
+                })
+                self.assertEqual((result.returncode, state['status'], state['hold_reason']), (2, 'HOLD', reason))
+                self.assertEqual(len(self.calls()), 1)
+                failed = state['turns'][-1]
+                self.assertTrue(failed['invocation_budget_counted'])
+                self.assertNotIn('error_kind', failed)
+
+    def test_agy_quota_takes_precedence_over_transient_error(self):
+        result, state = self.run_agy_review({
+            'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_ERROR_STDOUT_ONLY': '1',
+            'FAKE_GEMINI_ERROR_JSON': json.dumps({'code': 429, 'status': 'RESOURCE_EXHAUSTED',
+                                                'message': 'Selected model is at capacity'}),
+        }, '--max-rate-limit-wait', '0')
+        self.assertEqual((result.returncode, state['status'], state.get('hold_kind')), (2, 'HOLD', 'rate_limited'))
+        self.assertEqual(len(self.calls()), 1)
+        self.assertNotIn('retrying the reviewer turn once', result.stdout)
+        failed = state['turns'][-1]
+        self.assertEqual((failed['returncode'], failed['error_kind'], failed['invocation_budget_counted']),
+                         (1, 'rate_limited', False))
+
+    def test_agy_capacity_error_after_work_holds_without_retry(self):
+        for hook, value in (('FAKE_GEMINI_TOOL_ERROR', '1'), ('FAKE_PLAN_REVIEWER_MUTATE', '1'),
+                            ('FAKE_PLAN_REVIEWER_TOUCH_IGNORED', 'local.cache')):
+            with self.subTest(hook=hook):
+                self.h.run_dir = self.h.root / hook
+                self.log.unlink(missing_ok=True)
+                (self.h.workspace / 'local.cache').write_bytes(b'original\n')
+                result, state = self.run_agy_review({
+                    'FAKE_GEMINI_FAIL': 'error', 'FAKE_GEMINI_ERROR_STDOUT_ONLY': '1',
+                    'FAKE_GEMINI_ERROR': 'Selected model is at capacity', hook: value,
+                })
+                self.assertEqual((result.returncode, state['status']), (2, 'HOLD'), result.stdout)
+                self.assertIn(rc.TRANSIENT_HOLD_HINT, state['hold_reason'])
+                self.assertEqual(len(self.calls()), 1)
+                failed = state['turns'][-1]
+                self.assertTrue(failed['invocation_budget_counted'])
+                self.assertNotIn('error_kind', failed)
+                if hook == 'FAKE_PLAN_REVIEWER_MUTATE':
+                    self.assertNotEqual(failed['snapshot_after'], failed['snapshot_before'])
+                if hook == 'FAKE_PLAN_REVIEWER_TOUCH_IGNORED':
+                    self.assertEqual(failed['voided']['ignored_changed'], ['local.cache'])
+
+    def test_agy_reviewer_ignored_edit_holds_without_redispatch(self):
+        ignored = self.h.workspace / 'local.cache'   # the harness's committed .gitignore covers *.cache
+        ignored.write_bytes(b'original\n')
+        result, state = self.run_agy_review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': ignored.name})
+        self.assertEqual((result.returncode, state['status']), (2, 'HOLD'), result.stdout)
+        self.assertIn('changed ignored files', state['hold_reason'])
+        self.assertEqual(len(self.calls()), 1)
+        failed = state['turns'][-1]
+        receipt = json.loads((self.h.run_dir / 'evidence' / f"{failed['sequence']:03d}-plan-reviewer.receipt.json").read_text())
+        self.assertEqual(receipt['voided']['ignored_changed'], [ignored.name])
+        self.assertNotIn('answer', receipt)
+        self.assertEqual(ignored.read_bytes(), b'original\nreviewer edit\n')
+
     def test_other_role_paths_refuse_gemini_before_any_turn(self):
         co = self.coordinator()
         for role, phase in (('gate', 'PLAN'),):

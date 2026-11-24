@@ -208,6 +208,11 @@ def emit_gemini(answer, session, model, command_events=None):
         rows.append(step(index, state='DONE', step_type='tool', tool_name='run_command', tool_info={
             **tool, 'output': f"Command exited with code {event['exit_code']}.\n\nCommand output:\n{text}\r\n"}))
     fail = os.environ.get('FAKE_GEMINI_FAIL')
+    if fail == 'error' and (once := os.environ.get('FAKE_GEMINI_FAIL_ONCE')):
+        if Path(once).exists():
+            fail = None
+        else:
+            Path(once).write_text('failed\n')
     usage = {'input_tokens': 70, 'output_tokens': 20, 'thinking_tokens': 5, 'cache_read_tokens': 30, 'total_tokens': 90}
     result = {'conversation_id': session, 'status': 'SUCCESS', 'response': json.dumps(answer), 'duration_seconds': 1.0,
               'num_turns': 1, 'structured_output': answer, 'usage': usage}
@@ -221,9 +226,13 @@ def emit_gemini(answer, session, model, command_events=None):
             print('jetski: no output produced — a tool required the "write_file" permission that headless mode cannot prompt for, '
                   'so it was auto-denied.', file=sys.stderr)
     if fail == 'error':
-        result = {'conversation_id': '', 'status': 'ERROR', 'response': '', 'error': os.environ.get('FAKE_GEMINI_ERROR', 'fake agy failure'),
+        error = os.environ.get('FAKE_GEMINI_ERROR', 'fake agy failure')
+        if structured := os.environ.get('FAKE_GEMINI_ERROR_JSON'):
+            error = json.loads(structured)
+        result = {'conversation_id': '', 'status': 'ERROR', 'response': '', 'error': error,
                   'num_turns': 0, 'usage': {key: 0 for key in usage}}
-        print('error: ' + result['error'], file=sys.stderr)
+        if not os.environ.get('FAKE_GEMINI_ERROR_STDOUT_ONLY'):
+            print(f'error: {error}', file=sys.stderr)
     if fail != 'no-result':
         rows.append({'event': 'result', 'result': result})
     print(''.join(json.dumps(row) + '\n' for row in rows), end='')

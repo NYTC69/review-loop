@@ -1079,12 +1079,16 @@ def read_text_tail(path: Path, max_bytes: int = 65536) -> str:
 ANSI_CSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
 
-def classify_transient_failure(returncode: int, stderr: str, stdout: str = '') -> bool:
-    """V327-RETRY: only the provider's explicit capacity or overload answer, in stderr or an error event on stdout. A 401, a login
-    error or any other CLI failure is not transient; a rate limit keeps its own typed path (checked first)."""
+def classify_transient_failure(returncode: int, stderr: str, stdout: str = '', *, agy_result: Optional[dict] = None) -> bool:
+    """V327-RETRY: only the provider's explicit capacity or overload answer, in stderr, an error event or agy's terminal result.
+    A 401, a login error or any other CLI failure is not transient; a rate limit keeps its own typed path (checked first)."""
     if returncode <= 0:
         return False
     texts = ANSI_CSI_RE.sub('', stderr).splitlines()
+    if agy_result and agy_result.get('status') == 'ERROR' and not agy_result.get('denied_actions'):
+        error = agy_result.get('error')
+        parts = [error.get(key) for key in ('message', 'type', 'code')] if isinstance(error, dict) else [error]
+        texts.extend(part for part in parts if isinstance(part, str))
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -7273,10 +7277,15 @@ class Coordinator:
                             continue
                         transient = exc.__cause__ if isinstance(exc, RuntimeError) else None
                         if isinstance(transient, TransientProviderError) and transient.retryable and not transient_retried:
+                            transient_writer_guard = writer_guard if dispatch['vendor'] == 'gemini' else None
+                            if transient_writer_guard:
+                                transient_writer_guard(exc)
                             transient_retried = True   # V327-RETRY: the failed attempt is refunded; its receipt stays
                             print(f'NOTE: transient provider error ({transient.detail}); retrying the {role} turn once in '
                                   f'{TRANSIENT_RETRY_SECONDS:g} s')
                             time.sleep(TRANSIENT_RETRY_SECONDS)
+                            if transient_writer_guard:
+                                transient_writer_guard(exc)
                             continue
                         if not (isinstance(exc, RuntimeError) and isinstance(exc.__cause__, ReadOnlyTurnVoided)
                                 and exc.__cause__.restored): raise
@@ -7698,8 +7707,10 @@ class Coordinator:
                 if receipt['vendor'] == 'codex' and CODEX_UNAUTHORIZED_RE.search(message + '\n' + error_text):   # V327-RETRY: no retry
                     raise ValueError(message + f"; the Codex login in {env['CODEX_HOME']} is missing or stale: refresh that home's "
                                      'auth.json (copy a current login or log in there), then resume')
-                if process.returncode > 0 and classify_transient_failure(process.returncode, error_text, output_text):   # V327-RETRY
+                if classify_transient_failure(process.returncode, error_text, output_text, agy_result=terminal):   # V327-RETRY
                     retryable = voided is None and after == before and not failed_turn_did_work(receipt['vendor'], stdout_path)
+                    if receipt['vendor'] == 'gemini':
+                        retryable = retryable and not touched and context_before == context_after
                     if retryable:   # the provider failed before any work: refunded like a rate limit, retried once by invoke()
                         self.state['invocations_used'] -= 1
                         receipt['invocation_budget_counted'] = False

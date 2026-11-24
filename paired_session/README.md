@@ -49,10 +49,12 @@ result with status `ERROR` and wording such as `quota reached` or `quota exceede
 is an explicit rejection. Relative reset hints such as `Resets in 164h` determine
 the wait. If that wait exceeds the remaining budget, the run immediately enters
 a `rate_limited` HOLD with the budget reason.
-A turn that fails at once with a transient provider error ("Selected model is
-at capacity", Anthropic's overloaded error) before any tool call is retried
-once after 60 seconds without consuming the budget; a second such failure holds
-and `resume` retries the turn.
+A turn that fails with a recognized transient provider error ("Selected model is
+at capacity", Anthropic's overloaded error) before any tool call or workspace
+change is retried once after 60 seconds without consuming the invocation budget.
+For a positive agy exit, the terminal JSON `ERROR` can supply that diagnostic.
+Explicit quota rejections take precedence. A second qualifying transient failure
+holds, and `resume` retries the turn.
 
 ## MINOR-only review revisions
 
@@ -489,7 +491,7 @@ in is writable, `.git` stays read-only), `$TMPDIR` writable
 `features.hooks=false` and, on Windows, the elevated sandbox. A configured test
 may therefore write build output and caches. The post-turn guard still undoes a
 change to HEAD, the branch, the index, a tracked file or a non-ignored untracked
-file and re-dispatches once; ignored paths stay free (recorded in the receipt
+file and re-dispatches once after the restore verifies. Ignored paths stay free (recorded in the receipt
 as `readonly_ignored_kept`; since v3.7.2 for Claude reviewer-type roles too, so a turn that only changed a git-ignored
 path, such as a test's temp cluster dir, stands). TMPDIR/TMP/TEMP are set to a fresh 0700
 `<scratch_root>/role-tmp/<seq>-<role>` outside any repo for that one dispatch
@@ -597,10 +599,12 @@ in the turn receipt without HOLDing that turn.
 
 If a run is held, inspect `state.json`, `open-findings.md`,
 `findings-ledger.md`, and the latest receipts under `evidence/` before resuming.
-Two HOLDs apply in both safety modes: a reviewer, gate or shadow turn that
-changes the workspace is void (the workspace is restored and the turn
-re-dispatched once; a second change or a failed restore holds), and an author
-turn that changes HEAD or the branch holds.
+A reviewer, gate or shadow turn that changes HEAD, the branch, the index, a tracked
+file or a non-ignored untracked file is voided. A verified restore allows one automatic
+re-dispatch. A second change or a failed restore holds. For Gemini read-only roles, a
+detected edit to an existing ignored file voids the verdict and holds, leaving the
+edit on disk for manual inspection.
+An author turn that changes HEAD or the branch holds.
 `--max-rate-limit-wait SECONDS` (`max_rate_limit_wait` in the JSON profile) is
 a nonnegative integer fixed at run start and cannot be raised on resume. The
 default is 21600 seconds (6 hours), including for older supported runs. Scheduled
@@ -608,8 +612,10 @@ waits share this budget across every role and stage. For a usable reset, the
 coordinator waits until the reset or for 30 seconds, whichever is longer, without
 using a backoff slot. That full wait must fit the remaining budget, including an
 exact fit. Only unknown or stale resets use the four backoff slots of 30, 60,
-120 and 240 seconds for consecutive quota rejections. If the retry would reach
-or pass the whole-WI deadline, the coordinator HOLDs immediately on the deadline.
+120 and 240 seconds for the pending dispatch. The saved wait preserves the slot
+on resume. A later dispatch starts at the first slot and shares the remaining
+run-wide wait budget. If the retry would reach or pass the whole-WI deadline,
+the coordinator HOLDs immediately on the deadline.
 Set the budget to 0 for immediate quota HOLD. A quota HOLD shows the reset hint
 when available and explains why automatic retries stopped. After quota clears,
 use plain `resume` with the same workspace, work item, run directory, role
