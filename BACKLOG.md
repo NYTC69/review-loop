@@ -23,45 +23,23 @@
     - A run/resume pre-flight check that each vendor CLI is logged in under the run's CODEX_HOME / Claude config, refusing early with a refresh hint instead of a mid-run HOLD (gg-pipeline WI-282a, 2026-10-24; deferred).
 - Deferred Windows items after v3.3.0 (ADR-20): map Git Bash `/c/...` operands through `winplat.windows_abs_path` in `evidence_guard` (log-only on Windows today); decode PowerShell `-EncodedCommand` if a real Codex sample shows it; `--detach` on Windows; Linux/WSL support. (added 2026-10-27)
 - v3.12.0 follow-up (audit GR-7): automatic quota sensing to drop specialists first (owner 2026-11-22: deferred, quota is not tight; revisit when it is. quota_status.py is machine-local). (added 2026-11-22)
-- Cosmetic polish follow-ups (wording or duplication only; no behavior change). (added 2026-11-24)
-  - v3.15.4 note (Opus, WI-G/H R1): when both disposition and evidence errors occur, the correction says "rejected" twice; could merge into one sentence. (2026-11-24)
-  - v3.15.4 note (Opus, WI-G/H R1): scenario_matrix re-splits each hint candidate with LABEL_SEPARATOR, close to _label_and_content; minor duplication in a diagnostic. (2026-11-24)
-  - v3.15.5 note (Opus, WI-E R1): README "When delivering a new clarification after an earlier note, the author follows…" reads as if the operator delivers; say "When a new clarification is delivered after an earlier note…". (2026-11-24)
-  - v3.15.5 note (Opus, WI-E R1): no test combines a withdrawal with two delivered notes (precedence line placement); optional. (2026-11-24)
-  - v3.15.6 note (Opus, WI-HISTSCAN R1): paired_session/README "A valid declaration also names its vendors for the existing bare-name exception" holds for the delta patches; say "in the delta patches" (plans exempt bare prose names by another route). (2026-11-24)
-  - v3.16.0 note (Opus R2): README "With off, DONE follows EXEC convergence" (was "gate approval") is accurate after WI-I but was not listed in the CHANGELOG. (2026-11-24)
-- History-scan subject follow-ups (optional; WI-HISTSCAN v3.15.6). (added 2026-11-24)
-  - v3.15.6 note (Opus R1): `_history_workitem()` strips every `history-scan-subject:` line, so a malformed line (e.g. `claude unknown`) no longer counts as a mention of `claude` for FIELD-30 / tool-path lookups; consistent with "malformed grants nothing". (2026-11-24)
-  - v3.15.6 note (Opus R1): `_history_workitem()` re-reads context/workitem.md per match; cache per scan if it ever matters. (2026-11-24)
-  - v3.15.6 note (Opus R1): `HISTORY_SUBJECT_DIR_RE` attribution lookahead omits `reviewed`/`found` (`.codex reviewed it` is masked as a dir); the unmasked prose attribution regexes cover the realistic forms. (2026-11-24)
-
-- Auto-split rounds follow-ups (optional; WI-I v3.16.0). (added 2026-11-24)
-  - v3.16.0 note (Opus R1): the EXEC split's transferred-scope line is the reviewer finding summaries with ids stripped, not author-written work-item text, and it is excluded from the fresh-role independence scan. (2026-11-24)
-  - v3.16.0 note (Opus R1): data-loss/security/money first ordering exists only in the delivery report; run and repository backlog entries list transferred findings in ledger order. (2026-11-24)
-  - v3.16.0 note (Opus R1): automatic allowances for EXEC rounds 4-5 are granted even when --max-exec-rounds >= 5 already budgeted them (generous, harmless). (2026-11-24)
-  - v3.16.0 note (Opus R2): a round-5 shadow HOLD also stops an APPROVE; the resume re-dispatches reviewer and shadow and the fixed round-5 allowance (4) may not cover a second pass, so the operator may need resume --max-invocations. (2026-11-24)
 - Gemini / agy follow-ups (WI-F v3.16.1; do when the paid agy plan is active in December). (added 2026-11-24)
   - Real gemini run on the v3.16.1+ coordinator once the paid plan is active (WI-F was verified with fake CLIs and a standard-role real run only). (2026-11-24)
   - v3.16.1 note (Opus R1): TRANSIENT_PROVIDER_RE lacks Gemini-native overload wording (503 UNAVAILABLE / "The model is overloaded"); widen it from a real agy capture. (2026-11-24)
   - v3.16.1 note (Opus R1): a Gemini capacity failure made ineligible by an ignored-file edit HOLDs with the transient resume hint, not the "changed ignored files, check them by hand" note (path still in voided.ignored_changed); add that note when touched. (2026-11-24)
   - v3.16.1 note (Opus R1): no test for the Gemini context-digest condition or the Gemini writer Git guard on the transient path (the no-work guard is mutation-tested). (2026-11-24)
-- POLISH-Q operator-fix recovery follow-ups (optional; WI-POLBUDGET v3.16.2). (added 2026-11-24)
+- Optional small follow-ups from review notes (regrouped 2026-11-25; v3.15.5-v3.16.2). (added 2026-11-25)
+  - v3.15.5 note (Opus, WI-E R1): no test combines a withdrawal with two delivered notes (precedence line placement); optional. (2026-11-24)
+  - v3.16.0 note (Opus R1): data-loss/security/money first ordering exists only in the delivery report; run and repository backlog entries list transferred findings in ledger order. (2026-11-24)
+  - v3.16.0 note (Opus R2): a round-5 shadow HOLD also stops an APPROVE; the resume re-dispatches reviewer and shadow and the fixed round-5 allowance (4) may not cover a second pass, so the operator may need resume --max-invocations. (2026-11-24)
   - v3.16.2 note (Opus R1): after an operator-recheck still_open HOLD the owner count is 1, so a second operator edit falls through to an author turn instead of a direct recheck (safe; owner closure still required); document it or grant a direct recheck whenever operator_hold sees a changed tree. (2026-11-24)
   - v3.16.2 note (Opus R1): the operator grant does not pre-check the invocation limit like the author path; the recheck HOLDs at the limit and resume with a higher --max-invocations continues (clearer message possible). (2026-11-24)
-  - v3.16.2 note (Opus R1): the operator_hold state is not named in paired_session/README.md; add a one-line code comment (scenario row 3). (2026-11-24)
-- Operator-verification lookup follow-ups (optional; WI-OPVVOID v3.16.3). (added 2026-11-25)
-  - v3.16.3 note (Opus R1): in the field sequence the first resume still HOLDs once with "stale EXEC approval" and a second resume re-reviews; a replayed stale approval could route straight to re-review. (2026-11-25)
-  - v3.16.3 note (Opus R1): outside EXEC reviewer/gate resume, old-tree records can stay current in state until the next prompt_block or writer turn (harmless: lookups match the exact tree). (2026-11-25)
-  - v3.16.3 note (Opus R1): prompt_block still voids as a side effect (safe while callers pass the live tree); add a docstring note or an explicit live-snapshot argument. (2026-11-25)
-  - v3.16.3 note (Opus R1): future OPV changes run every module that asserts operator-verification status (test_field_fixes was missed by the executor). (2026-11-25)
+  - v3.16.4 note (Opus R1, Fable gate): no test for a second stale replay on the same tree at the reviewer-result replay site (coordinator.py ~10485); only the FINISH site is tested. (2026-11-25)
+  - v3.16.4 note (Fable gate): a stale approval that re-routes no longer passes hold(), so its exec_comparisons effective_verdict stays APPROVE and comparison.md shows it as effective (display only). (2026-11-25)
+  - v3.16.4 note (Opus R1): the non-lifecycle stop-after-gate re-route (coordinator.py ~5379) has no per-tree bound and a different NOTE wording than _rereview_stale_exec_approval; README "can HOLD" on a repeat could say "HOLDs"; the test_opv_replay fixture pause is not named in the CHANGELOG. (2026-11-25)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~CI: two macOS test groups cancelled at 20 minutes on the v3.15.5 candidate.~~ (added 2026-11-24, closed 2026-11-24, supervisor CI tooling, no plugin change)
-  - Root cause: GitHub found no macOS runner (capacity), not a timeout. ci_wait.sh now reruns cancelled jobs once and never counts a cancelled job green; workflow source d14 refreshes the macOS timings (timeout stays 60).
-- ~~WI-I PLAN round cap: continue automatically like the post-gate-FAIL repair rounds (owner request via token-meter).~~ (added 2026-11-24, closed 2026-11-24, see v3.16.0)
-  - PLAN: up to two automatic rounds after the cap; an early cut when two consecutive rounds add new blockers (may fire right after round 3, owner D-WII); the author writes a reduced plan reviewed once; a blocking REVISE on it HOLDs with the core ids.
-  - EXEC: ships at round 5; unresolved reviewer blockers or a gate FAIL go to a follow-up recorded as "auto-split by rule" (run backlog, delivery report with data-loss/security/money first, repository BACKLOG on accept). Default on; opt out with --auto-split-rounds false / "auto_split_rounds": false.
 - ~~WI-F gemini / agy runtime follow-ups.~~ (added 2026-11-22, closed 2026-11-24, see v3.16.1)
   - F1 fixed: an agy positive exit whose terminal JSON ERROR carries capacity/overload wording gets one transient retry (no-work attempts only; quota classification first).
   - F2 docs: READMEs and ADR-21 match the code (verified restore allows one re-dispatch; an ignored-file edit voids the verdict and HOLDs with the edit on disk).
@@ -70,3 +48,10 @@
   - Fixed: at that HOLD a plain resume on a changed tree (operator edit) resets the exhausted owners' epoch counts and dispatches their recheck (no author turn); clear -> new epoch with EXEC replay; still open -> HOLD. Security rows stay owner-only; held runs resume in place.
 - ~~WI-OPVVOID resume voids operator test records bound to the live tree; shadow EXEC HOLD loops (token-meter field blocker, run 1862edcf).~~ (added 2026-11-24, closed 2026-11-25, see v3.16.3)
   - Fixed: operator-verification lookups are read-only; records are voided only against the live tree (resume at EXEC reviewer/gate, accept, writer turns, attach). Held runs: attach-verification again on the live tree, then resume.
+- ~~WI-STALEFIX stale EXEC approval routes to re-review; docs/comment cleanups.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.4)
+  - Fixed: a reviewer approval of an older tree re-routes to the persistent reviewer in the same resume (once per live tree; a repeat on the same tree HOLDs as before; the gate stays spent).
+  - Docs/comments: combined correction sentence, README clarification and delta-patch wording, operator_hold named, prompt_block live-tree docstring, WI-I CHANGELOG mention; scenario_matrix split kept (_label_and_content validates labels, so it cannot give the raw typo-hint prefix).
+- ~~Review notes accepted as-is (no action; owner 2026-11-25 cleanup).~~ (added 2026-11-24, closed 2026-11-25, see v3.16.4)
+  - History-scan: malformed declaration strips the line (consistent with "malformed grants nothing"); per-match workitem re-read (no cost issue); `.codex reviewed it` lookahead (prose regexes cover realistic forms).
+  - Auto-split: transferred-scope line from finding summaries (descriptive); generous round 4-5 allowances (harmless).
+  - OPV: old-tree records stay current until the next prompt_block/writer turn (lookups match the exact tree); "run every OPV-status module" moved to memory as a process lesson.
