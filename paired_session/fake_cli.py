@@ -743,10 +743,13 @@ def main():
                 Path(block_once).write_text('blocked once\n')
             revise = True
             findings = [{'severity': os.environ.get('FAKE_SPECIALIST_SEVERITY', 'CRITICAL'), 'file': 'sum_ints.py',
-                         'summary': 'specialist blocker', 'failure_scenario': 'a specialist found a blocking defect'}]
+                         'summary': 'specialist blocker', 'failure_scenario': 'a specialist found a blocking defect',
+                         **({'security': True, 'category': 'security'} if os.environ.get('FAKE_SPECIALIST_SECURITY') else {})}]
         docs_block = os.environ.get('FAKE_DOCS_REVIEW_BLOCK_ONCE')   # worktree-lifecycle DOCS review
-        if 'Role: docs reviewer,' in prompt and docs_block and not Path(docs_block).exists():
-            Path(docs_block).write_text('blocked once\n')
+        if 'Role: docs reviewer,' in prompt and (os.environ.get('FAKE_DOCS_REVIEW_BLOCK') or   # WI-POSTGATE: every review
+                                                  (docs_block and not Path(docs_block).exists())):
+            if docs_block:
+                Path(docs_block).write_text('blocked once\n')
             revise = True
             findings = [{'severity': 'MAJOR', 'file': 'CHANGELOG.md', 'summary': 'docs describe the wrong behavior',
                          'failure_scenario': 'a reader trusts the stale changelog entry'}]
@@ -781,6 +784,11 @@ def main():
             findings = [{'severity': os.environ.get('FAKE_SECURITY_MINOR_SEVERITY', 'MINOR'), 'security': True,
                          'file': 'sum_ints.py', 'summary': 'input size is unbounded',
                          'failure_scenario': 'a huge list makes the call slow'}]
+        keep_open = os.environ.get('FAKE_SECURITY_KEEP_OPEN_ONCE')   # WI-POSTGATE: the security reviewer keeps its rows open once
+        if keep_open and open_ids and 'Role: security reviewer' in prompt and not Path(keep_open).exists():
+            Path(keep_open).write_text('kept open\n')
+            revise = True
+            prior = [{**row, 'disposition': 'still_open', 'evidence': 'the unsafe path is still reachable'} for row in prior]
         docs_open = os.environ.get('FAKE_DOCS_FINDING_STILL_OPEN_ONCE')   # the EXEC reviewer keeps a docs finding
         if (docs_open and role == 'reviewer' and phase == 'EXEC' and 'docs describe the wrong behavior' in prompt and
                 not Path(docs_open).exists()):

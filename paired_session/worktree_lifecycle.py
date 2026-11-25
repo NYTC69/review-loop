@@ -3,10 +3,11 @@ import json
 from pathlib import Path
 
 try:
-    from paired_session import docs_policy, lifecycle_spine
+    from paired_session import docs_policy, lifecycle_spine, review_report
 except ModuleNotFoundError:
     import docs_policy
     import lifecycle_spine
+    import review_report
 
 FORMAT = 'worktree'
 DOCS_HOLD_PARTS = {*docs_policy.PROTECTED_PARTS, '.claude-plugin', '.codex-plugin', 'plugin.json', 'marketplace.json'}
@@ -232,8 +233,52 @@ def agent_body(raw):
     return text.strip()
 
 
-def delivery_report(state, run_id, workitem, delivery):
-    """The Chinese delivery report (doc 6): stage outcomes, SECURITY, delivery and totals, never secrets."""
+DECISION_HEADING = '## 不阻塞、需要你决定'
+POST_GATE_DECIDE = ('correctness', 'data-loss', 'money')   # WI-POSTGATE Q4: money joins correctness and data loss
+
+
+def post_gate_class(row, review_only, blocks):
+    """WI-POSTGATE (v3.17.0): how an open POLISH-Q specialist row or DOCS docs-reviewer row counts after the gate. It is
+    computed on every read, so a saved state follows it without a ledger rewrite. `blocks`: the row blocks by severity and
+    category and is inside its pass's delta. Returns 'security' (a blocking security row: the SECURITY reviewer owns it and
+    only SECURITY blocks on it), 'decide' (a blocking correctness, data-loss or money row, or one without a category: listed
+    for the owner's decision, never a blocker), 'report' (any other row: BACKLOG), or None: another row, or a POLISH-Q row of
+    a --review-only run, which keeps its fix leg (owner Q1)."""
+    if row.get('status') != 'open':
+        return None
+    if row.get('phase') == 'POLISH-Q' and str(row.get('owner_role') or '').startswith('specialist:'):
+        if review_only:
+            return None
+    elif not (row.get('phase') == 'DOCS' and row.get('source') == 'docs-reviewer'):
+        return None
+    if not blocks:
+        return 'report'
+    if row.get('security') is True or row.get('category') == 'security' or str(row.get('severity')).upper() == 'SECURITY':
+        return 'security'
+    return 'decide' if 'category' not in row or row['category'] in POST_GATE_DECIDE else 'report'
+
+
+def owner_decision_lines(state, classes):
+    """WI-POSTGATE F: the lines of `## 不阻塞、需要你决定`: the 'decide' rows (classes: finding id -> post_gate_class),
+    risk-first, and a DOCS pass that spent its budget with the docs rows it left open."""
+    rows = review_report.risk_first([row for row in state['finding_ledger'] if classes.get(row['id']) == 'decide'])
+    lines = []
+    for row in rows:
+        label = review_report.SPLIT_RISKS.get(row.get('category'))
+        lines.append(f"- {f'**{label}** ' if label else ''}{row['id']} [{row['severity']}"
+                     + (f", {row['category']}" if row.get('category') else '')
+                     + f"; {str(row.get('owner_role') or row.get('source')).replace('specialist:', 'specialist ')}, {row.get('phase')}] "
+                     + f"{row.get('file') or '-'}: {' '.join(str(row.get('summary', '')).split())}")
+    docs = next((row for row in reversed(state['lifecycle']['receipts']) if row.get('stage') == 'DOCS'), {})
+    if docs.get('budget_spent'):
+        left = [row['id'] for row in state['finding_ledger'] if row.get('status') == 'open' and row.get('source') == 'docs-reviewer']
+        lines.append('- DOCS 预算已用完，文档评审未关闭的发现：' + ('、'.join(left) if left else '无'))
+    return lines
+
+
+def delivery_report(state, run_id, workitem, delivery, decisions=()):
+    """The Chinese delivery report (doc 6): stage outcomes, SECURITY, delivery and totals, never secrets. WI-POSTGATE F:
+    `decisions` (owner_decision_lines) follow the 结论 line as `## 不阻塞、需要你决定`."""
     life = state['lifecycle']
     last = {row['stage']: row for row in life['receipts']}
     security = last.get('SECURITY', {})
@@ -247,6 +292,7 @@ def delivery_report(state, run_id, workitem, delivery):
     lines = ['# 交付报告（worktree lifecycle）', '',
              f'- 运行：`{run_id}`；工作项：{title}',
              f"- 结论：已接受（ACCEPTED），{state.get('accepted_at', '')}",
+             *(['', DECISION_HEADING, *decisions, '', '## 详情'] if decisions else []),
              ('- 交付：auto_commit 开启，本地提交 `' + str(delivery.get('commit')) + '`（父提交 `' + str(delivery.get('head'))
               + '`），未推送。' if delivery.get('auto_commit') else
               f"- 交付：auto_commit 已跳过（{delivery['commit_skipped']}），没有改动任何 ref 或 index。" if delivery.get('commit_skipped')

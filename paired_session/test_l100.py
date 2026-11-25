@@ -79,7 +79,8 @@ class AddRoundsTests(unittest.TestCase):
 
     def test_a_w_polish_fix_at_the_exec_cap_uses_no_round(self):
         # WI-GATE1 R5: a POLISH-Q fix is no EXEC round, so the cap no longer holds it (before: 'EXEC round limit reached')
-        flags = ('--max-exec-rounds', '1', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        twl.WorktreeLifecycleActivationTests.existing_change(self)   # WI-POSTGATE: the POLISH-Q fix leg is review-only (Q1)
+        flags = ('--review-only', '--max-exec-rounds', '1', '--lifecycle-mode', 'on', '--max-invocations', '60')
         done = self.run_coordinator(*flags, env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer',
                                                  'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')})
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)

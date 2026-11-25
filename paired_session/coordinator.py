@@ -251,6 +251,8 @@ FRESH_HISTORY_RE = re.compile(
     r'|(?:previous|prior|earlier|persistent|shadow|gate)[ -]+(?:review|verdict|finding)'
     r'|(?:reviewer|review)\s+(?:said|requested|asked|found|approved|rejected)', re.I)
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
+DECISION_NOTE = ('to fix them in this run: reject --text "<what to fix>" (EXEC reopens); to keep them for later: accept '
+                 '(they go to BACKLOG.md as P1).')   # WI-POSTGATE F
 # WI-GATE1 S3 (owner 2026-11-19, item 5): one blocking threshold for every reviewer-type role. A row blocks only when its
 # severity blocks AND its category is one of these four AND it says how normal use reaches it; everything else is reported
 # and goes to the BACKLOG.
@@ -382,6 +384,10 @@ class RunLeaseError(RuntimeError):
 
 class InvalidDispositionIDs(RuntimeError):
     """A disposition answer contains duplicate or unknown ledger IDs."""
+
+
+class DocsBudgetSpent(RuntimeError):
+    """WI-POSTGATE D: the DOCS stage cap has no room for the next call; DOCS moves on to SECURITY with its open rows."""
 
 
 class WorktreeDeliveryHold(RuntimeError):
@@ -4009,9 +4015,23 @@ class Coordinator:
     def blocking_open_findings(self) -> list[dict]:
         rows = [finding for finding in self.open_findings()   # v3.8.1: the security tag alone does not block; a POLISH-Q
                 if blocks_by_severity(finding) and not finding.get('out_of_delta')]   # row outside its pass's delta is advisory
-        if worktree_lifecycle.is_worktree(self.state) and self.state['lifecycle'].get('stage') not in ('SECURITY', 'DONE'):
-            rows = [row for row in rows if row.get('owner_role') != 'security-reviewer']   # only SECURITY can close them
-        return rows
+        if worktree_lifecycle.is_worktree(self.state):
+            late = self.state['lifecycle'].get('stage') in ('SECURITY', 'DONE')   # only SECURITY can close security rows;
+            rows = [row for row in rows if (late or row.get('owner_role') != 'security-reviewer') and   # WI-POSTGATE: a
+                    (kind := self._post_gate_class(row)) not in ('decide', 'report') and (late or kind != 'security')]
+        return rows   # post-gate 'decide'/'report' row never blocks, a forwarded 'security' row blocks only from SECURITY on
+
+    def _post_gate_class(self, row: dict) -> Optional[str]:
+        """WI-POSTGATE: worktree_lifecycle.post_gate_class for a W run's ledger row (None elsewhere)."""
+        if not worktree_lifecycle.is_worktree(self.state):
+            return None
+        return worktree_lifecycle.post_gate_class(row, bool(self.state.get('review_only') or self.state['config'].get('review_report')),
+                                                  blocks_by_severity(row) and not row.get('out_of_delta'))
+
+    def _security_owned(self) -> list[dict]:
+        """The open rows the SECURITY reviewer disposes: its own and (WI-POSTGATE C) the forwarded POLISH-Q/DOCS security rows."""
+        return [row for row in self.open_findings()
+                if row.get('owner_role') == 'security-reviewer' or self._post_gate_class(row) == 'security']
 
     @staticmethod
     def normalize_plan_findings(findings: list[dict]) -> tuple[list[dict], int]:
@@ -4145,7 +4165,8 @@ class Coordinator:
         for index, row in enumerate(normalized):
             finding = all_by_id[row['id']]
             if ('owner_role' in finding and finding['owner_role'] != owner_role and
-                    row['disposition'] in ('fixed', 'withdrawn')):
+                    row['disposition'] in ('fixed', 'withdrawn') and
+                    not (owner_role == 'security-reviewer' and self._post_gate_class({**finding, 'status': 'open'}) == 'security')):   # WI-POSTGATE C (a replay sees it closed)
                 raise RuntimeError('finding disposition requires its owning specialist')
             replayed = any(
                     item.get('round') == origin_round and item.get('status') == row['disposition']
@@ -4282,7 +4303,8 @@ class Coordinator:
     def nonblocking_open_findings(self) -> list[dict]:
         """WI-GATE1 S3: every open row below the blocking threshold (a non-blocking severity, category other, no
         reachability, a post-gate non-regression, or a row outside its pass's delta)."""
-        return [row for row in self.open_findings() if not blocks_by_severity(row) or row.get('out_of_delta')]
+        return [row for row in self.open_findings() if not blocks_by_severity(row) or row.get('out_of_delta')
+                or self._post_gate_class(row) in ('decide', 'report')]   # WI-POSTGATE: reported after the gate
 
     @staticmethod
     def findings_are_advisory(findings: list[dict]) -> bool:
@@ -4340,7 +4362,15 @@ class Coordinator:
             lines += ['', 'No open or declined findings.']
         if self.state.get('operator_rulings'):
             lines += ['', '## Operator withdrawals', *self.operator_ruling_lines()]
+        if decisions := self._owner_decision_lines():   # WI-POSTGATE F
+            lines += ['', worktree_lifecycle.DECISION_HEADING, '', DECISION_NOTE, '', *decisions]
         atomic_text(self.run_dir / 'open-findings.md', '\n'.join(lines) + '\n')
+
+    def _owner_decision_lines(self) -> list[str]:
+        """WI-POSTGATE F: the post-gate rows that did not block but need the owner's decision (worktree_lifecycle.owner_decision_lines)."""
+        if not worktree_lifecycle.is_worktree(self.state):
+            return []
+        return worktree_lifecycle.owner_decision_lines(self.state, {row['id']: self._post_gate_class(row) for row in self.open_findings()})
 
     @staticmethod
     def comparison_findings(answer: dict) -> list[dict]:
@@ -4811,7 +4841,7 @@ class Coordinator:
         self.state.update(acceptance=record, acceptance_state='ACCEPTED', status='ACCEPTED', accepted_at=record['timestamp'])
         self.state.pop('delivery_pending', None)
         atomic_text(self.run_dir / 'delivery-report.md', worktree_lifecycle.delivery_report(
-            self.state, self.run_dir.name, self.workitem.read_text(encoding='utf-8'), delivery) + '\n' + review_report.delivery_section(self.state))
+            self.state, self.run_dir.name, self.workitem.read_text(encoding='utf-8'), delivery, self._owner_decision_lines()) + '\n' + review_report.delivery_section(self.state))
         self.save()
         self.write_comparison()
         self._progress_terminal('ACCEPTED')
@@ -5336,6 +5366,9 @@ class Coordinator:
         self.write_comparison()
         self.write_open_findings()
         self.write_usage()
+        if decisions := self._owner_decision_lines():   # WI-POSTGATE F: seen before accept
+            print('NOTE: ' + ', '.join(dict.fromkeys(LEDGER_ID_RE.findall(' '.join(decisions)))) + ' did not block delivery but '
+                  f"needs your decision ({self.run_dir / 'open-findings.md'}): " + DECISION_NOTE)
         self._progress_terminal('DONE')
         return 'DONE'
 
@@ -8019,8 +8052,9 @@ class Coordinator:
                 + worktree_lifecycle.delivered_findings('docs-review', rows))
 
     def _docs_revise_rows(self) -> list[dict]:
-        blocking = self.blocking_open_findings()
-        return [row for row in blocking if row.get('source') == 'docs-reviewer'] or blocking
+        blocking = self.blocking_open_findings()   # WI-POSTGATE: a docs row never blocks the run, but the docs writer
+        return [row for row in self.open_findings() if row.get('source') == 'docs-reviewer' and blocks_by_severity(row)
+                and not row.get('out_of_delta')] or blocking   # still gets every docs row that would have
 
     def _writer_git_state(self) -> dict:
         """HEAD, its branch and the staged entries: what a lifecycle writer must not change (doc 6, D8)."""
@@ -8181,7 +8215,10 @@ class Coordinator:
             tree, manifest = git_snapshot(workspace)   # WI-DOCSFIX: an operator change at a DOCS HOLD, before any dispatch
             if self._docs_operator_route(dict(base), dict(manifest), tree, request):
                 return
-            recheck = self._docs_beyond_cap(request, tree)   # no docs writer beyond the DOCS cap
+            changed = worktree_lifecycle.manifest_delta(dict(base), dict(manifest))   # docs paths only (operator route above)
+            recheck = self._docs_beyond_cap(request, tree, 2, bool(changed or self._docs_owned()))   # WI-POSTGATE: a writer
+            if recheck == 'spent':   # only with room for its review; no room and nothing unreviewed: on to SECURITY
+                return self._docs_spent(request, changed)
         if recheck:
             if self.state['lifecycle']['pending'] != request:   # the git baseline a later writer attempt of this request needs
                 self.state['lifecycle']['writer_git'] = {**self._writer_git_state(), 'sequence': self.state['sequence']}
@@ -8240,7 +8277,10 @@ class Coordinator:
         owned = self._docs_owned()
         revise = False
         if not reason and (changed or owned or recheck):   # every DOCS-written doc gets a fresh docs review
-            if not recheck and self._docs_beyond_cap(request, tree):
+            if not recheck and (beyond := self._docs_beyond_cap(request, tree)) == 'spent':   # an unchanged, reviewed tree
+                self._docs_spent(request, changed, sequence)
+                return
+            if not recheck and beyond:
                 recheck = True
                 self.state['lifecycle']['docs_recheck'] = {'request_id': request['request_id'], 'tree': tree}
                 self.save()
@@ -8365,21 +8405,49 @@ class Coordinator:
         self.progress('docs-operator-change', paths=paths[:20])
         return True
 
-    def _docs_beyond_cap(self, request: dict, tree: str) -> bool:
-        """WI-DOCSFIX (AC3): False while the DOCS cap has room for the next call. Beyond it, no docs writer runs, but one
-        docs review of a tree no docs review has seen may (once per tree; a replay of that recheck, marked by docs_recheck,
-        continues it): an operator-changed tree, or (WI-DOCSFIX2) the output of a docs writer dispatched on the last DOCS
-        slot, which would otherwise end in a HOLD no resume can clear; otherwise the DOCS budget HOLD, naming this route."""
+    def _docs_beyond_cap(self, request: dict, tree: str, need: int = 1, docs: bool = True):
+        """WI-DOCSFIX (AC3): False while the DOCS cap has room for the next `need` calls (WI-POSTGATE: a docs writer needs 2,
+        itself and its review). Beyond it, no docs writer runs, but one docs review of a tree with docs to review that no
+        docs review has seen may (once per tree; a replay of that recheck, marked by docs_recheck, continues it): an
+        operator-changed tree, or the output of a docs writer recorded on the last DOCS slot (a v3.16.x state). Otherwise
+        'spent' (WI-POSTGATE D): DOCS moves on to SECURITY with its open rows (_docs_spent) instead of the budget HOLD."""
         replay = self.state['lifecycle'].get('docs_recheck') == {'request_id': request['request_id'], 'tree': tree}
-        if not replay and self._stage_calls('DOCS') + 1 <= self._worktree_run_cap('DOCS'):
+        if not replay and self._stage_calls('DOCS') + need <= self._worktree_run_cap('DOCS'):
             return False
         reviewed = any(turn.get('role') == 'reviewer' and turn.get('phase') == 'DOCS' and not turn.get('error')
                        and turn.get('snapshot_before') == tree for turn in self.state['turns'])
-        if not replay and reviewed:
-            self._docs_budget()
+        if not replay and (reviewed or not docs):
+            return 'spent'
         self._require_polish_invocations(1, 'the DOCS recheck')
-        print(f'NOTE: the DOCS budget is spent; one docs review recheck of the changed tree {tree[:12]} runs beyond it')
+        print(f'NOTE: the DOCS budget has no room for a docs writer; one docs review of the changed tree {tree[:12]} runs')
         return True
+
+    def _docs_spent(self, request: dict, paths: list[str], sequence: Optional[int] = None) -> None:
+        """WI-POSTGATE D: the DOCS budget is spent. DOCS completes its request READY with route SECURITY, budget_spent and
+        the open docs rows it leaves (leftover: reported for the owner's decision, never a HOLD), and SECURITY binds the tree.
+        `paths`: the docs paths changed since the DOCS base. Callers reach it only without an outside or protected change
+        (the operator route, the rollback and the protected-path HOLDs come first), so integrity HOLDs are unchanged."""
+        tree, manifest = git_snapshot(self.workspace)
+        current, allow = dict(manifest), set(self._docs_allowlist())
+        life = self.state['lifecycle']
+        if life['pending'] != request:
+            life = lifecycle_spine.begin(life, request)
+        leftover = [row['id'] for row in self.open_findings() if row.get('source') == 'docs-reviewer']
+        written = {path: current.get(path) for path in paths if path in allow}
+        life = lifecycle_spine.complete(life, {**request, 'status': 'READY', 'output_oid': tree, 'sequence': sequence,
+                                               'docs_paths': list(paths), 'docs_written': written, 'route': 'SECURITY',
+                                               'budget_spent': True, 'leftover': leftover})
+        for key in ('writer_git', 'docs_feedback', 'docs_recheck', 'docs_skip', 'docs_only'):
+            life.pop(key, None)
+        life['docs_owned'] = {**life.get('docs_owned', {}), **written}
+        self.state['lifecycle'] = life
+        opv.void_stale(self, tree, atomic_json)
+        life.update(stage='SECURITY', candidate_oid=tree, docs_approval=self._save_approval_manifest('docs'))
+        self.state['next'] = 'security'
+        self.save()
+        print('NOTE: the DOCS budget is spent; DOCS moves on to SECURITY' + (
+            ' with open docs findings for your decision: ' + ', '.join(leftover) if leftover else ''))
+        self.progress('docs-budget-spent', leftover=leftover[:20])
 
     def _docs_writer_skip(self, request: dict) -> bool:
         """v3.8.1 DOCS skip: when no non-doc path changed since the last DOCS approval, the writer is not dispatched again:
@@ -8412,7 +8480,11 @@ class Coordinator:
                    'docs_written': {}, 'writer_skipped': True}
         review = None
         if changed:   # the reviewed docs changed since the approval: a fresh docs review of exactly this tree
-            review = receipt['review'] = self._docs_review_turn(tree, sorted({*changed, *self._docs_owned()}))
+            try:
+                review = receipt['review'] = self._docs_review_turn(tree, sorted({*changed, *self._docs_owned()}))
+            except DocsBudgetSpent:   # WI-POSTGATE D: docs paths only (checked above): on to SECURITY, no HOLD
+                self._docs_spent(request, changed)
+                return True
             receipt['sequence'] = review['sequence']
         revise = bool(review) and review['status'] != 'APPROVE'
         reason = (None if revise or not (blocking := self.blocking_open_findings()) else
@@ -8454,7 +8526,12 @@ class Coordinator:
         request = worktree_lifecycle.stage_request(self.state['lifecycle'], 'docs-reviewer')
         self.state['lifecycle'] = lifecycle_spine.begin(self.state['lifecycle'], request)
         self.save()
-        review = self._docs_review_turn(tree, sorted({*paths, *self._docs_owned()}))
+        try:
+            review = self._docs_review_turn(tree, sorted({*paths, *self._docs_owned()}))
+        except DocsBudgetSpent:   # WI-POSTGATE D: a docs-only change (scope): on to SECURITY, no HOLD; another role's
+            if self.blocking_open_findings():   # open blocker keeps today's HOLD (it needs the EXEC reviewer, not DOCS)
+                raise
+            return self._docs_spent(request, paths)
         blocking = self.blocking_open_findings()
         route = ('DOCS' if review['status'] != 'APPROVE' else 'EXEC' if blocking else 'SECURITY')
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
@@ -8588,7 +8665,8 @@ class Coordinator:
                      'sequence': row.get('origin_round', sequence), 'severity': str(row.get('severity', '')).upper(),
                      'file': row.get('file', ''), 'summary': str(row.get('summary', '')),
                      'failure_scenario': str(row.get('failure_scenario', '')),
-                     **({'id': row['id']} if row.get('id') else {}), **({'category': row['category']} if row.get('category') else {})}
+                     **({'id': row['id']} if row.get('id') else {}), **({'category': row['category']} if row.get('category') else {}),
+                     **({'priority': 'P1'} if self._post_gate_class(row) == 'decide' else {})}   # WI-POSTGATE F: owner decision
             if (entry['source'], entry['file'], entry['summary']) not in known:
                 known.add((entry['source'], entry['file'], entry['summary']))
                 entries.append(entry)
@@ -8602,7 +8680,7 @@ class Coordinator:
     def _write_run_backlog(self) -> None:
         entries = self.state['backlog']
         atomic_text(self.run_dir / 'backlog.md', '# Run backlog (non-blocking)\n\n' + ''.join(
-            f"- [{row['source']} {row['phase']} #{row['sequence']}] " + (f"{row['id']} " if row.get('id') and row['source'] != 'auto-split by rule' else '')
+            f"- {'[P1] ' if row.get('priority') == 'P1' else ''}[{row['source']} {row['phase']} #{row['sequence']}] " + (f"{row['id']} " if row.get('id') and row['source'] != 'auto-split by rule' else '')
             + f"{row['severity']} {row['file']}: {row['summary']}"
             + (f" ({row['failure_scenario']})" if row['failure_scenario'] else '') + '\n' for row in entries))
 
@@ -8637,7 +8715,8 @@ class Coordinator:
         today = datetime.now().astimezone().strftime('%Y-%m-%d')
         lines = []
         for row in entries:
-            head = (f"- {' '.join(row['summary'].split())} (review-loop run {self.run_dir.name}"
+            head = (f"- {'[P1 needs owner decision] ' if row.get('priority') == 'P1' else ''}"
+                    f"{' '.join(row['summary'].split())} (review-loop run {self.run_dir.name}"
                     + (f", {row['file']}" if row['file'] else '') + ')')
             if head not in text and head not in lines:
                 lines.append(head)
@@ -8706,7 +8785,7 @@ class Coordinator:
         used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
             blocking = [row['id'] for row in self.blocking_open_findings()]
-            raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run)'
+            raise DocsBudgetSpent(f'DOCS budget exhausted ({used} writer and review calls in this run)'
                                + (f"; open blocking findings: {', '.join(blocking)}" if blocking else '')
                                + '; fix the documentation in the workspace and resume: one docs review of the changed tree '
                                'runs beyond the cap, and a change outside the docs paths goes back to the EXEC reviewer; or abort')
@@ -8863,8 +8942,7 @@ class Coordinator:
         if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
             raise RuntimeError(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore it and '
                                'resume, or abort')
-        if (held := [row['id'] for row in self.open_findings() if row.get('owner_role') == 'security-reviewer'
-                     and blocks_by_severity(row)]) and (
+        if (held := [row['id'] for row in self._security_owned() if blocks_by_severity(row)]) and (
                 life.get('security_hold_tree') == tree):   # the tree its findings were raised or left open on
             raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + ', '.join(held) +
                                '; fix them outside the run and resume (EXEC replays), or abort')
@@ -9067,7 +9145,7 @@ class Coordinator:
         life, owner = self.state['lifecycle'], 'security-reviewer'
         if (stored := life.get('security_review')) and stored['request_id'] == request_id:
             return stored['review']   # the ledger is already durable for this review
-        owned = [row for row in self.open_findings() if row.get('owner_role') == owner]
+        owned = self._security_owned()   # WI-POSTGATE C: with the security rows forwarded from POLISH-Q and DOCS
         def discard(turn, reason):
             turn['discarded'] = reason
             life.pop('security_turn', None)
@@ -9088,7 +9166,10 @@ class Coordinator:
                               'in full_review. CRITICAL, MAJOR and SECURITY findings stop delivery; report a MINOR or LOW '
                               'security concern as MINOR: it is listed in the delivery report but does not stop delivery. '
                               'A finding without a blocking category (threshold below) does not stop delivery either.\n' + self._security_scan_note_prompt() +
-                              worktree_lifecycle.owned_ledger(owned) +
+                              worktree_lifecycle.owned_ledger([row if row.get('owner_role') == owner else {
+                                  **row, 'summary': f"(forwarded from {row['phase']}"
+                                  + (f" {row['owner_role'].split(':', 1)[1]}" if row.get('owner_role') else '') + ') ' + row['summary']}
+                                  for row in owned]) +
                               self._review_protocol(self._changed_paths()) + '\n' + MISSING_HOST_TEST_RULE +
                               (f'\n{test_instruction}' if (test_instruction := self._test_instruction(tree, reuse_only=True)) else '') +
                               '\nReturn only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json) +
@@ -9129,8 +9210,8 @@ class Coordinator:
         self.record_findings(owner, 'SECURITY', sequence, findings)
         self.render({'answer': answer, 'sequence': sequence, 'snapshot': turn.get('snapshot_after'), 'role': 'reviewer'},
                     owner, 'SECURITY')
-        open_ids = [row['id'] for row in self.open_findings() if row.get('owner_role') == owner]
-        blocking_ids = [row['id'] for row in self.open_findings() if row.get('owner_role') == owner and blocks_by_severity(row)]
+        open_ids = [row['id'] for row in self._security_owned()]
+        blocking_ids = [row['id'] for row in self._security_owned() if blocks_by_severity(row)]
         review = {'sequence': sequence, 'status': answer['status'], 'finding_ids': open_ids,   # every open row is listed;
                   'reason': ('security reviewer findings: ' + ', '.join(blocking_ids) + '; fix them outside the run and '
                              'resume (EXEC replays), or abort') if blocking_ids else None}   # v3.8.1: MINOR/LOW do not stop it
@@ -9329,10 +9410,20 @@ class Coordinator:
                 self.save()
         blocking = self.blocking_open_findings()
         tree = git_snapshot(self.workspace)[0]
+        posted = {}   # WI-POSTGATE B: a delivery run's specialist blockers are reported (or go to SECURITY), never fixed here
+        if not report_mode and not self.state.get('review_only'):
+            kinds = [(row['id'], self._post_gate_class(row)) for row in self.open_findings() if row.get('phase') == 'POLISH-Q']
+            posted = {key: ids for key, kind in (('report_only', 'decide'), ('to_security', 'security'))
+                      if (ids := [finding_id for finding_id, found in kinds if found == kind])}
         receipt = {**request, 'status': 'HOLD' if (blocking and not report_mode) or tree != request['candidate_oid'] else 'READY',
                    'output_oid': tree, 'specialists': list(names), 'specialist_turns': [done[name] for name in names],
                    'skipped': not names,   # skip_quality_polish, or no path changed since the last pass: a no-op receipt
-                   **({'delta_base': scope['base'], 'delta_paths': paths} if scope['base'] else {})}
+                   **({'delta_base': scope['base'], 'delta_paths': paths} if scope['base'] else {}), **posted}
+        if posted:
+            print('NOTE: POLISH-Q is report-only in a delivery run: ' + '; '.join(
+                [*(['needs your decision (delivery report, BACKLOG P1): ' + ', '.join(posted['report_only'])]
+                   if 'report_only' in posted else []),
+                 *(['goes to the SECURITY reviewer: ' + ', '.join(posted['to_security'])] if 'to_security' in posted else [])]))
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], receipt)
         self.state['lifecycle'].pop('specialist_done', None)
         self.state['lifecycle'].pop('polish_scope', None)
@@ -11152,6 +11243,7 @@ class Coordinator:
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         if self._reconcile_polish_reservation():
             self.save()
+        self._migrate_post_gate()
         while self.state['status'] == 'ACTIVE':
             if self.state['config'].get('review_report'):
                 record = self.state.get('review_only') or {}   # no writer: the frozen tree holds before EVERY dispatch
@@ -11194,6 +11286,38 @@ class Coordinator:
             except RuntimeError as exc:
                 return self.hold(str(exc), rate_limited=type(exc) is RateLimitedTurn)
         return self.state['status']
+
+    def _migrate_post_gate(self) -> None:
+        """WI-POSTGATE §3: a v3.16.x delivery state in the POLISH-Q fix leg (next polish-fix or polish-recheck, or
+        reviewer saved by the fix author) whose blockers the post-gate rule no longer counts leaves the fix leg once. On the
+        tree POLISH-Q reviewed it goes on to DOCS with no author turn; on a tree a fix already changed, the EXEC reviewer
+        reviews that change (stage EXEC, a new epoch). Receipts, turns, ledger rows, verdicts and budgets are never
+        rewritten; only the transient keys change, and state['post_gate_migration'] records the step. A --review-only run
+        keeps its fix leg (owner Q1)."""
+        life = self.state.get('lifecycle')
+        if (not worktree_lifecycle.is_worktree(self.state) or self.state.get('review_only')
+                or self.state['config'].get('review_report') or life.get('stage') != 'POLISH-Q' or life.get('pending')
+                or self.state['next'] not in ('polish-fix', 'polish-recheck', 'reviewer') or self.blocking_open_findings()):
+            return
+        tree = git_snapshot(self.workspace)[0]
+        record = {'from': self.state['next'], 'tree': tree, 'sequence': self.state['sequence'], 'epoch': life['epoch']}
+        for key in ('fix_base', 'recheck'):
+            life.pop(key, None)
+        if tree == life['candidate_oid']:   # no fix was written: the POLISH-Q pass stands
+            if (life.get('polish_approval') or {}).get('tree') != tree:
+                life['polish_approval'] = self._save_approval_manifest('polish')
+            life['stage'] = 'DOCS'
+            self.state.update(next='docs', delivered_review='')
+            record['to'] = 'DOCS'
+        else:   # a fix the author or the operator wrote is reviewed like any code change
+            self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+            self.state.update(phase='EXEC', next='reviewer', delivered_review='')
+            record['to'] = 'EXEC'
+        self.state.setdefault('post_gate_migration', []).append(record)
+        self.save()
+        print(f"NOTE: v3.17.0 post-gate rule: the POLISH-Q fix leg ({record['from']}) ends; the specialist findings are "
+              + ('reported, DOCS runs next' if record['to'] == 'DOCS' else
+                 'reported, and the EXEC reviewer reviews the change already made'))
 
     def _apply_resume_role_changes(self) -> list[dict]:
         config = self.state['config']

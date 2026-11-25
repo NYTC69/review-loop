@@ -8,7 +8,7 @@ from unittest import mock
 from paired_session import test_worktree_lifecycle as twl
 
 rc = twl.rc
-RUN = ('--lifecycle-mode', 'on', '--max-invocations', '80')
+RUN = ('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '80')   # WI-POSTGATE: the fix leg is review-only (Q1)
 OWNER = 'code-reviewer'
 
 
@@ -26,6 +26,8 @@ class PolishBudgetRecoveryTests(unittest.TestCase):
 
     def hold_at_budget(self, owners=OWNER):
         self.fake_env = {'FAKE_POLISH_BUDGET_OWNERS': owners}
+        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+                                                    '        raise TypeError("ints only")\n    return sum(values)\n')   # the change under review
         result = self.run_coordinator(*RUN, env=self.fake_env)
         self.assertIn('HOLD: POLISH-Q blockers remain after the fix:', result.stdout, result.stdout + result.stderr)
         result = self.resume()
@@ -148,7 +150,7 @@ class PolishBudgetRecoveryTests(unittest.TestCase):
                   'resume with a higher --max-invocations, or abort')
         after = self.assert_no_dispatch(before, reason)
         self.assertNotIn('operator_fixes', after['lifecycle'])
-        result = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '120', env=self.fake_env)
+        result = self.run_operator_action('resume', '--review-only', '--lifecycle-mode', 'on', '--max-invocations', '120', env=self.fake_env)
         self.assertIn(twl.DONE, result.stdout, result.stdout + result.stderr)
         final = self.state()
         self.assertEqual(final['turns'][len(before['turns'])]['role'], 'reviewer')

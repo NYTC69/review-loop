@@ -573,7 +573,8 @@ class ThresholdRunTests(unittest.TestCase):
     def test_r5_finish_and_polish_q_writes_use_no_exec_round(self):
         env = {'FAKE_FINISH_WRITE': '1', 'FAKE_SPECIALIST_BLOCK': 'code-reviewer',
                'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'spec-once')}
-        result = self.run_coordinator(*ON, '--max-exec-rounds', '1', env=env)
+        twl.WorktreeLifecycleActivationTests.existing_change(self)   # WI-POSTGATE: the POLISH-Q fix leg is review-only (Q1)
+        result = self.run_coordinator('--review-only', *ON, '--max-exec-rounds', '1', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = self.state()
         self.assertEqual(state['exec_rounds'], 1)

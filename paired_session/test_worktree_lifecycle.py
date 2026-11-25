@@ -34,6 +34,10 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         (self.workspace / '.gitignore').write_text(COVERING_GITIGNORE)
         rc.subprocess.run(['git', 'commit', '-qam', 'ignore sensitive files'], cwd=self.workspace, check=True)
 
+    def existing_change(self):   # the change a --review-only run reviews
+        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+                                                    '        raise TypeError("ints only")\n    return sum(values)\n')
+
     def args(self, *extra, action='run'):
         command = self.command('--lifecycle-mode', 'on', *extra)
         command[2] = action
@@ -533,7 +537,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         rc.Coordinator(rc.configure_parser(rc.parser(), abort[2:]).parse_args(abort[2:]))
 
     def test_a_specialist_blocker_goes_to_the_fix_leg_and_only_its_owner_can_close_it(self):
-        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60',
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
+        result = self.run_coordinator('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60',
                                       env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
         self.assertIn('HOLD: POLISH-Q blockers remain after the fix: ', result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
@@ -545,14 +550,14 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(phases[2:4], [('author', 'EXEC'), ('reviewer', 'POLISH-Q')])   # the fix, then the owner
         self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())   # the author got the blocker
         self.assertEqual((state['lifecycle']['stage'], state['next']), ('POLISH-Q', 'polish-fix'))
-        co = rc.Coordinator(self.args('--max-invocations', '60', action='resume'))
+        co = rc.Coordinator(self.args('--review-only', '--max-invocations', '60', action='resume'))
         for role in (None, 'persistent-reviewer', 'specialist:python-reviewer'):   # None: the real persistent path
             with self.subTest(role=role), self.assertRaisesRegex(RuntimeError, 'requires its owning specialist'):
                 co.apply_dispositions([{'id': second['id'], 'disposition': 'fixed', 'evidence': 'not mine'}],
                                       999, [second['id']], role)
         self.assertNotIn(second['id'], co.open_findings_prompt())   # the persistent reviewer is not asked to close it
         self.assertNotIn(second['id'], [row['id'] for row in co._reviewer_open_findings()])
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        again = self.run_operator_action('resume', '--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60')
         # a second fix round on a new tree; its owner closes F002, the write replays EXEC + gate + FINISH + POLISH-Q
         self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
@@ -563,14 +568,15 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                           state['lifecycle']['specialist_counts']['code-reviewer']), (1, 1, 1))   # caps are per epoch
 
     def test_the_operator_withdraws_specialist_blockers_at_a_polish_fix_hold_and_the_run_reaches_done(self):
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
         # v3.8.4 (poker-tools runs 4c1e6a6d, fe39d674): a specialist blocker the author cannot fix was a dead end
-        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60',
+        result = self.run_coordinator('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60',
                                       env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
         self.assertIn('HOLD: POLISH-Q blockers remain after the fix: ', result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [row] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer' and row['status'] == 'open']
         epoch = state['lifecycle']['epoch']
-        co = rc.Coordinator(self.args('--max-invocations', '60'))
+        co = rc.Coordinator(self.args('--review-only', '--max-invocations', '60'))
         co.args.finding, co.args.reason = [row['id']], 'The sandbox cannot start the database; the host run passed.'
         co.args.expect = co.operator_intent('withdraw-findings', None, None)['digest']
         with mock.patch('builtins.print') as printed:
@@ -579,17 +585,18 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((co.state['phase'], co.state['next'], co.state['lifecycle']['stage'], co.state['lifecycle']['epoch']),
                          ('EXEC', 'reviewer', 'EXEC', epoch + 1))
         self.assertNotIn('fix_base', co.state['lifecycle'])
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        again = self.run_operator_action('resume', '--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60')
         self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([item['status'] for item in state['finding_ledger'] if item['id'] == row['id']], ['withdrawn'])
 
     def test_a_withdrawal_at_a_budget_hold_raised_mid_pass_still_reaches_done(self):
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
         # v3.8.4 Opus review: the budget ran out inside a POLISH-Q pass, so its request was still pending
-        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60',
+        result = self.run_coordinator('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60',
                                       env={'FAKE_SPECIALIST_BLOCK': 'code-reviewer'})
         self.assertIn('HOLD: POLISH-Q blockers remain after the fix: ', result.stdout, result.stdout + result.stderr)
-        co = rc.Coordinator(self.args('--max-invocations', '60'))
+        co = rc.Coordinator(self.args('--review-only', '--max-invocations', '60'))
         [row] = [row for row in co.state['finding_ledger'] if row['source'] == 'specialist:code-reviewer' and row['status'] == 'open']
         life = co.state['lifecycle']
         life.update(pending={'request_id': 'w-POLISH-Q-mid-pass', 'stage': 'POLISH-Q'}, specialist_done={'code-reviewer': {}},
@@ -601,7 +608,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(co.withdraw_findings(), 'HOLD')
         self.assertIsNone(co.state['lifecycle']['pending'])
         self.assertFalse({'specialist_done', 'polish_scope'} & set(co.state['lifecycle']))
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        again = self.run_operator_action('resume', '--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60')
         self.assertIn(DONE, again.stdout, again.stdout + again.stderr)
 
     def test_specialist_rows_are_withdrawable_only_at_a_polish_fix_hold(self):
@@ -638,11 +645,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertTrue(block.endswith(rc.SPECIALIST_OPERATOR_TEST_RULE))
 
     def test_a_fix_that_leaves_the_tree_unchanged_cannot_close_a_blocker(self):
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
         tree = rc.git_snapshot(self.workspace)[0]
         for candidate in (tree, 'tree-of-an-earlier-epoch-round'):   # first fix round; a later round on its own base
             with self.subTest(candidate=candidate):
                 self.run_dir = self.root / ('first' if candidate == tree else 'later')
-                co = rc.Coordinator(self.args())
+                co = rc.Coordinator(self.args('--review-only'))
                 [finding] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
                     {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'held blocker'}])
                 co.state['lifecycle'].update(stage='POLISH-Q', candidate_oid=candidate, fix_base=tree)
@@ -655,7 +663,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertEqual(json.loads(co.state['delivered_review'])['findings'][0]['id'], finding['id'])
 
     def test_a_recheck_replay_keeps_the_owners_already_done(self):
-        co = rc.Coordinator(self.args())
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
+        co = rc.Coordinator(self.args('--review-only'))
         tree = rc.git_snapshot(self.workspace)[0]
         for name in ('code-reviewer', 'pr-test-analyzer'):
             co.record_findings('specialist:' + name, 'POLISH-Q', 1, [
@@ -675,7 +684,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertNotIn('recheck', co.state['lifecycle'])
 
     def test_the_fix_leg_checks_round_limit_and_owner_budget_before_the_author_writes(self):
-        co = rc.Coordinator(self.args())
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
+        co = rc.Coordinator(self.args('--review-only'))
         co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
             {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'held blocker'}])
         co.state['lifecycle'].update(stage='POLISH-Q', specialist_counts={'code-reviewer': 3})
@@ -702,7 +712,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertNotIn('round_limit_hold', co.state)
 
     def test_a_fix_author_that_stopped_before_routing_still_goes_to_the_owners(self):
-        co = rc.Coordinator(self.args())
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
+        co = rc.Coordinator(self.args('--review-only'))
         co.state['lifecycle']['stage'] = 'POLISH-Q'
         co.state.update(next='reviewer', phase='EXEC')   # author_turn saved next=reviewer, then the process died
         with mock.patch.object(co, 'reviewer_turn', side_effect=AssertionError('persistent reviewer')), \
@@ -711,8 +722,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((co.state['next'], co.state['hold_reason']), ('polish-recheck', 'rechecked'))
 
     def test_a_fixed_specialist_blocker_replays_exec_review_then_finish_and_polish_q(self):
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
-        result = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        result = self.run_coordinator('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn(DONE, result.stdout, result.stdout + result.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         [finding] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
@@ -729,7 +741,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())
 
     def test_a_same_tree_re_review_of_a_held_blocker_is_refused(self):
-        co = rc.Coordinator(self.args())
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
+        co = rc.Coordinator(self.args('--review-only'))
         tree = rc.git_snapshot(self.workspace)[0]
         [finding] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
             {'severity': 'CRITICAL', 'file': 'tracked.txt', 'summary': 'held blocker'}])
@@ -769,8 +782,9 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                 self.assertFalse([row for row in state['finding_ledger'] if row['phase'] == 'POLISH-Q'])
 
     def test_a_polish_q_replay_after_a_mid_stage_hold_reuses_completed_specialists(self):
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_NO_TOOLS': 'silent-failure-hunter'}
-        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
+        held = self.run_coordinator('--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
         self.assertIn('HOLD: specialist silent-failure-hunter made no tool calls after one retry', held.stdout,
                       held.stdout + held.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
@@ -779,7 +793,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         first_code = next(row['sequence'] for row in state['turns'] if row['phase'] == 'POLISH-Q' and
                           'Role: specialist code-reviewer,' in (self.run_dir / 'evidence' /
                           f"{row['sequence']:03d}-polish-q-reviewer.prompt.txt").read_text())
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
+        again = self.run_operator_action('resume', '--review-only', '--lifecycle-mode', 'on', '--max-invocations', '60')
         self.assertIn(DONE, again.stdout, again.stdout + again.stderr)   # fix leg, replay, clean
         state = json.loads((self.run_dir / 'state.json').read_text())
         attempt = next(row for row in state['lifecycle']['receipts'] if row['request_id'] == 'w-POLISH-Q-0-0')
@@ -799,7 +813,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertFalse([row for row in state['turns'] if row['phase'] == 'POLISH-Q'])
 
     def test_mid_polish_downgrade(self):
-        flags = ('--max-invocations', '60')
+        self.existing_change()   # WI-POSTGATE: the POLISH-Q fix leg is review-only (owner Q1)
+        flags = ('--review-only', '--max-invocations', '60')
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer',
                'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once'),
                'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_MATCH': 'Role: specialist silent-failure-hunter,',
@@ -1127,10 +1142,11 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertIn('resume reviews again', str(error))
         self.assertEqual(json.dumps(co.state['finding_ledger']), ledger)   # no partial disposition
 
-    def polish_at(self, approve_first=True):
-        co = rc.Coordinator(self.args())
+    def polish_at(self, approve_first=True, review_only=False):
+        co = None if review_only else rc.Coordinator(self.args())
         (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    return sum(values)\n')
         (self.workspace / 'other.py').write_text('VALUE = 1\n')
+        co = co or rc.Coordinator(self.args('--review-only'))   # a review-only run needs its change first
         if approve_first:   # an earlier completed pass on this tree
             co.state['lifecycle']['polish_approval'] = co._save_approval_manifest('polish')
         return co
@@ -1150,7 +1166,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         return invoke
 
     def test_fresh_stage_reviewers_see_operator_rulings(self):
-        co = self.polish_at(approve_first=False)
+        co = self.polish_at(approve_first=False, review_only=True)   # WI-POSTGATE: the recheck leg is review-only (owner Q1)
         tree = rc.git_snapshot(self.workspace)[0]
         [withdrawn, open_row] = co.record_findings('specialist:code-reviewer', 'POLISH-Q', 1, [
             {'severity': 'MAJOR', 'file': 'sum_ints.py:1', 'summary': 'decided issue'},
@@ -1188,7 +1204,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
                         self.assertIn(open_row['id'], ruled)
 
     def test_specialist_cross_owner_duplicate(self):
-        co = self.polish_at(approve_first=False)
+        co = self.polish_at(approve_first=False, review_only=True)   # WI-POSTGATE: the fix leg is review-only (owner Q1)
         tree = rc.git_snapshot(self.workspace)[0]
         a, b = 'code-reviewer', 'python-reviewer'
         first = {'severity': 'MAJOR', 'file': 'sum_ints.py:1', 'summary': 'first report'}
@@ -1220,7 +1236,7 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual(recheck.call_args.args[0], a)
 
     def test_withdrawing_a_shared_specialist_row_leaves_no_open_attached_claim(self):
-        co = self.polish_at(approve_first=False)
+        co = self.polish_at(approve_first=False, review_only=True)   # WI-POSTGATE: the fix leg is review-only (owner Q1)
         a, b = 'python-reviewer', 'code-reviewer'
         first = {'severity': 'MAJOR', 'file': 'sum_ints.py:1', 'summary': 'first report', 'failure_scenario': 'x'}
         second = {**first, 'summary': 'second report'}
@@ -1339,8 +1355,8 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((receipt['delta_paths'], receipt['skipped']), (['tracked.txt'], False))
         self.assertIn('Changed paths: tracked.txt\n', prompts['code-reviewer'])
         [row] = [row for row in co.state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
-        self.assertFalse(row.get('out_of_delta'))   # the restored file is in this pass's scope: its finding blocks
-        self.assertIn(row, co.blocking_open_findings())
+        self.assertFalse(row.get('out_of_delta'))   # the restored file is in this pass's scope: its finding would block;
+        self.assertEqual(co._post_gate_class(row), 'decide')   # WI-POSTGATE: a delivery run reports it for the owner's decision
 
     def test_a_finding_file_with_suffixes_or_several_paths_matches_the_delta_by_token(self):
         co = rc.Coordinator(self.args())

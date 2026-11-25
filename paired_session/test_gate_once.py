@@ -419,7 +419,9 @@ class GateOnceTests(unittest.TestCase):
 
     def test_a_polish_q_fix_is_reviewed_without_a_gate(self):
         env = {**FAIL, 'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
-        state = self.assert_one_gate_then_done(self.run_coordinator(*ON, env=env))
+        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
+                                                    '        raise TypeError("ints only")\n    return sum(values)\n')   # WI-POSTGATE: the fix leg is review-only (Q1)
+        state = self.assert_one_gate_then_done(self.run_coordinator('--review-only', *ON, env=env))
         self.assertEqual(len(state['lifecycle']['polish_fixes']), 1)
         fix = state['lifecycle']['polish_fixes'][0]['author_sequence']
         self.assertIn(('reviewer', 'EXEC'), [(t['role'], t['phase']) for t in state['turns'] if t['sequence'] > fix])

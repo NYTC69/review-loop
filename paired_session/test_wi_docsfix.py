@@ -151,41 +151,32 @@ class DocsOperatorEditTests(unittest.TestCase):
 
     # --- AC3: DOCS budget exhaustion after an operator fix -----------------------------------------------------------------
     def test_docs_budget_hold_names_the_route_and_one_recheck_runs_per_operator_tree(self):
+        # WI-POSTGATE D: DOCS no longer HOLDs on its budget; a v3.16.x state saved at the budget HOLD still gets one docs
+        # review of an operator-changed tree, which must fit the invocation budget, and then moves on to SECURITY
         env = self.review_block_env()
-        self.assertEqual(self.drive_with_docs_cap(2, env)[0], 'HOLD')
+        budget = RuntimeError('DOCS budget exhausted (2 writer and review calls in this run); fix the documentation in the '
+                              'workspace and resume')   # the v3.16.x HOLD at the next DOCS writer
+        status, reason, _ = self.drive_with_docs_cap(2, env, _docs_spent=mock.Mock(side_effect=budget))
         held = self.state()
         [finding] = [row['id'] for row in held['finding_ledger'] if row['source'] == 'docs-reviewer' and row['status'] == 'open']
+        self.assertEqual(status, 'HOLD')
         self.assertTrue(held['hold_reason'].startswith('DOCS budget exhausted (2 writer and review calls in this run)'), held['hold_reason'])
-        self.assertIn(finding, held['hold_reason'])
-        self.assertIn('resume', held['hold_reason'])
-        # no operator change: a resume holds again without a dispatch
-        status, reason, _ = self.resume_in_process(cap=2, env=env)
-        self.assertEqual((status, self.state()['sequence']), ('HOLD', held['sequence']))
-        self.assertIn('DOCS budget exhausted', reason)
-        # an operator edit that does not fix the entry: one recheck, REVISE, then a HOLD naming the finding
+        # an operator edit that does not fix the entry: the recheck must fit the invocation budget first
         changelog = self.workspace / 'CHANGELOG.md'
         changelog.write_text(changelog.read_text() + '# operator attempt\n')
-        status, reason, _ = self.resume_in_process(cap=2, env=env)
-        first = self.state()
-        self.assertEqual(self.after(first, held['sequence']), [('reviewer', 'DOCS')])
-        self.assertEqual(status, 'HOLD')
-        self.assertIn(finding, reason)
-        status, _, _ = self.resume_in_process(cap=2, env=env)   # the same tree: no second recheck
-        self.assertEqual((status, self.state()['sequence']), ('HOLD', first['sequence']))
-        # the fix: the recheck must fit the invocation budget first
-        changelog.write_text(changelog.read_text() + '# corrected entry\n')
-        status, reason, _ = self.resume_in_process(cap=2, env=env, max_invocations=first['invocations_used'])
-        self.assertEqual((status, self.state()['sequence']), ('HOLD', first['sequence']))
+        status, reason, _ = self.resume_in_process(cap=2, env=env, max_invocations=held['invocations_used'])
+        self.assertEqual((status, self.state()['sequence']), ('HOLD', held['sequence']))
         self.assertIn('the DOCS recheck needs at least 1 more invocations; resume with a higher --max-invocations', reason)
-        status, reason, _ = self.resume_in_process(cap=2, env=env)
-        self.assertEqual(status, 'DONE', reason)
+        # one recheck of the operator tree (REVISE), no docs writer beyond the cap, then SECURITY with the leftover row
+        status, reason, out = self.resume_in_process(cap=2, env=env)
+        self.assertEqual(status, 'DONE', reason + out)
         state = self.state()
-        self.assertEqual(self.after(state, first['sequence']), [('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
-        last = self.docs_rows(state)[-1]
-        self.assertEqual((last['route'], last['review']['status'], last['review'].get('operator_recheck'), last['writer_skipped']),
-                         ('SECURITY', 'APPROVE', True, True))
-        self.assertIn('# corrected entry', changelog.read_text())
-        self.assertNotIn(('author', 'DOCS'), self.after(state, held['sequence']))   # no docs writer beyond the cap
+        self.assertEqual(self.after(state, held['sequence']), [('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+        recheck, last = self.docs_rows(state)[-2:]
+        self.assertEqual((recheck['route'], recheck['review']['status'], recheck['review'].get('operator_recheck'),
+                          recheck['writer_skipped']), ('DOCS', 'REVISE', True, True))
+        self.assertEqual((last['route'], last['budget_spent'], last['leftover']), ('SECURITY', True, [finding]))
+        self.assertIn('# operator attempt', changelog.read_text())
 
     # --- AC4: the field run's saved state -------------------------------------------------------------------------------------
     def operator_edits(self, tag):
@@ -249,32 +240,39 @@ class DocsOperatorEditTests(unittest.TestCase):
         return [(turn['role'], turn['phase']) for turn in state['turns'] if turn['phase'] == 'DOCS']
 
     def test_a_docs_writer_on_the_last_docs_slot_gets_its_review_beyond_the_cap(self):
+        # WI-POSTGATE D: a docs writer is dispatched only with room for its review, so no writer takes the last DOCS slot
         status, reason, out = self.drive_with_docs_cap(1, DOCS_ENV)
+        self.assertEqual(status, 'DONE', reason + out)
+        state = self.state()
+        self.assertEqual(self.docs_turns(state), [])
+        [docs] = self.docs_rows(state)
+        self.assertEqual((docs['route'], docs['budget_spent']), ('SECURITY', True))
+        self.run_dir = self.root / 'room-for-both'
+        status, reason, out = self.drive_with_docs_cap(2, DOCS_ENV)
         self.assertEqual(status, 'DONE', reason + out)
         state = self.state()
         self.assertEqual(self.docs_turns(state), [('author', 'DOCS'), ('reviewer', 'DOCS')])
         [docs] = self.docs_rows(state)
-        self.assertEqual((docs['route'], docs['review']['status'], docs['review'].get('operator_recheck'), docs['writer_skipped']),
-                         ('SECURITY', 'APPROVE', True, False))
+        self.assertEqual((docs['route'], docs['review']['status'], docs['review'].get('operator_recheck'), docs.get('budget_spent')),
+                         ('SECURITY', 'APPROVE', None, None))
 
     def test_a_revise_of_the_review_beyond_the_cap_holds_without_another_docs_writer(self):
+        # WI-POSTGATE D: a REVISE of the last review leaves its row open and moves on to SECURITY, with no second writer
         env = self.review_block_env()
-        status, reason, _ = self.drive_with_docs_cap(1, env)
-        held = self.state()
-        self.assertEqual(status, 'HOLD')
-        self.assertEqual(self.docs_turns(held), [('author', 'DOCS'), ('reviewer', 'DOCS')])
-        [finding] = [row['id'] for row in held['finding_ledger'] if row['source'] == 'docs-reviewer' and row['status'] == 'open']
-        self.assertTrue(reason.startswith('DOCS budget exhausted (2 writer and review calls in this run)'), reason)
-        self.assertIn(finding, reason)
-        status, reason, _ = self.resume_in_process(cap=1, env=env)   # the reviewed tree: no second review, no writer
-        self.assertEqual((status, self.state()['sequence']), ('HOLD', held['sequence']))
-        self.assertIn('DOCS budget exhausted', reason)
+        status, reason, out = self.drive_with_docs_cap(2, env)
+        self.assertEqual(status, 'DONE', reason + out)
+        state = self.state()
+        self.assertEqual(self.docs_turns(state), [('author', 'DOCS'), ('reviewer', 'DOCS')])
+        [finding] = [row['id'] for row in state['finding_ledger'] if row['source'] == 'docs-reviewer' and row['status'] == 'open']
+        last = self.docs_rows(state)[-1]
+        self.assertEqual((last['route'], last['budget_spent'], last['leftover']), ('SECURITY', True, [finding]))
 
     def test_a_run_held_with_an_unreviewed_writer_output_on_the_last_slot_resumes(self):
         # the v3.16.6 state: the last-slot writer turn is recorded, the DOCS budget HOLD came before its review
         budget = RuntimeError('DOCS budget exhausted (1 writer and review calls in this run); fix the documentation in the '
                               'workspace and resume')
-        status, reason, _ = self.drive_with_docs_cap(1, DOCS_ENV, _docs_review_turn=mock.Mock(side_effect=budget))
+        status, reason, _ = self.drive_with_docs_cap(2, DOCS_ENV, _docs_review_turn=mock.Mock(side_effect=budget))   # WI-POSTGATE: a
+        # writer needs room for its review, so the v3.16.6 state is made with room for both and resumed with cap 1
         self.assertEqual(status, 'HOLD', reason)
         held = self.state()
         self.assertEqual(held['lifecycle']['pending']['role'], 'docs-writer')
