@@ -424,7 +424,7 @@ class SecurityLoopTests(unittest.TestCase):
         self.assertEqual(self.state()['exec_rounds'], rounds)
 
     # --- the loop cap -------------------------------------------------------------------------------------------------------
-    def test_a_third_security_failure_is_an_operator_hold(self):
+    def test_a_third_security_failure_holds_with_the_security_budget_spent(self):
         held = self.run_coordinator(*ON, env=SECURITY_ALWAYS)
         state = self.state()
         self.assertEqual(state['status'], 'HOLD', held.stdout + held.stderr)
@@ -438,6 +438,21 @@ class SecurityLoopTests(unittest.TestCase):
         self.assertEqual(len([turn for turn in state['turns'] if turn['phase'] == 'SECURITY']), 3)
         again = self.run_operator_action('resume', *ON)
         self.assertIn('HOLD: security findings need a fix on a new tree, not a re-review', again.stdout, again.stdout + again.stderr)
+
+    def test_an_operator_fix_after_the_security_budget_is_spent_holds_without_a_dispatch(self):
+        held = self.run_coordinator(*ON, env=SECURITY_ALWAYS)
+        before = self.state()
+        self.assertEqual(before['status'], 'HOLD', held.stdout + held.stderr)
+        self.assertIn('the SECURITY budget is spent (3 of 3 reviews): abort', before['hold_reason'])
+        module = self.workspace / 'sum_ints.py'
+        module.write_text(module.read_text() + '# operator security fix\n')
+        again = self.run_operator_action('resume', *ON)
+        state = self.state()
+        self.assertEqual(state['status'], 'HOLD', again.stdout + again.stderr)
+        self.assertIn('the SECURITY budget is spent (3 of 3 reviews): abort', state['hold_reason'])
+        self.assertEqual((state['sequence'], len(state['turns'])), (before['sequence'], len(before['turns'])))   # no dispatch
+        self.assertEqual((state['lifecycle']['stage'], state['lifecycle'].get('security_fix')), ('SECURITY', None))
+        self.assertEqual(state['lifecycle']['security_fix_history'], before['lifecycle']['security_fix_history'])
 
     # --- AC5: the operator variant ------------------------------------------------------------------------------------------
     def test_the_operator_fix_takes_the_narrow_chain(self):
@@ -512,7 +527,9 @@ class SecurityLoopTests(unittest.TestCase):
         [loop] = state['lifecycle']['security_fix_history']
         self.assertEqual((loop['loop'], loop['by'], loop['mirror']), (1, 'author', True))
 
-    def test_exec_reopened_by_the_v316_security_operator_route_resumes_as_an_operator_loop(self):
+    def legacy_security_operator_route(self):
+        """A v3.16.x SECURITY HOLD, the operator's fix, then the v3.16.x operator route: EXEC reopened, HOLD before the
+        reviewer. Returns the legacy hold state."""
         before = self.legacy_security_hold()
         module = self.workspace / 'sum_ints.py'
         module.write_text(module.read_text() + '# operator security fix\n')
@@ -524,6 +541,10 @@ class SecurityLoopTests(unittest.TestCase):
         co.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
         co.state.update(phase='EXEC', next='reviewer', delivered_review='', status='HOLD', hold_reason='invocation limit reached')
         co.save()
+        return before
+
+    def test_exec_reopened_by_the_v316_security_operator_route_resumes_as_an_operator_loop(self):
+        before = self.legacy_security_operator_route()
         saved = self.state()
         self.assert_done(self.run_operator_action('resume', *ON))
         state = self.state()
@@ -536,6 +557,16 @@ class SecurityLoopTests(unittest.TestCase):
         self.assertEqual((loop['by'], loop['mirror'], loop['hold_tree']), ('operator', False, before['lifecycle']['candidate_oid']))
         prompt = self.prompt(self.loop_review(state, saved['sequence'])['sequence'])
         self.assertIn('sum_ints.py', prompt.split('## Narrow security loop', 1)[1])   # no mirror: the changed paths
+
+    def test_the_v316_security_operator_route_holds_without_a_dispatch_when_the_security_budget_is_spent(self):
+        self.legacy_security_operator_route()
+        saved = self.state()
+        status, reason, out = self.drive(action='resume', _worktree_run_cap=lambda co, stage: 1)   # 1 review used of 1
+        self.assertEqual(status, 'HOLD', out)
+        self.assertEqual(reason, "the operator's change cannot be rechecked: the SECURITY budget is spent (1 of 1 reviews): abort")
+        state = self.state()
+        self.assertEqual((state['sequence'], len(state['turns'])), (saved['sequence'], len(saved['turns'])))   # no dispatch
+        self.assertNotIn('security_fix', state['lifecycle'])
 
 
 if __name__ == '__main__':

@@ -244,8 +244,12 @@ When SECURITY stops only on the security reviewer's findings (forwarded POLISH-Q
 repairs them in a narrow loop: the author fixes them without using an EXEC round, the EXEC reviewer reviews only the fix
 delta (no shadow; the gate verdict stands), FINISH runs, a docs writer updates the docs the fix affects (no docs review;
 the delivery report lists it), and SECURITY runs again. The author gets at most two such fixes per run, each only while
-the SECURITY budget (3 reviews) and the invocations leave room. Scan hits, a third failure and an author HOLD stay with
-you: fix it outside the run and resume, and your change takes the same narrow chain.
+the SECURITY budget (3 reviews) and the invocations leave room. Scan hits, an author HOLD, an invocation shortage, and a
+cap HOLD that still has SECURITY budget stay with you: fix it outside the run and resume, and your change takes the same
+narrow chain. With the default caps the loop cap and the SECURITY budget run out together: after two failed author
+loops, the third SECURITY failure HOLDs with the SECURITY budget spent, and the only exit is `abort`. A fix-and-resume
+then HOLDs at once without spending calls. After an author HOLD where you change nothing, `resume` runs the delta reviewer
+and FINISH, then starts the next author loop, which counts toward the cap.
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 
 Use `run --fast-plan` to skip PLAN review for a small delivery. The work item must list one to three

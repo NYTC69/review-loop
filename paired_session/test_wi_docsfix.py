@@ -235,11 +235,11 @@ class DocsOperatorEditTests(unittest.TestCase):
         self.assertIn('attach-verification', out.getvalue())
         self.assertIn('--max-invocations 80', out.getvalue())
 
-    # --- WI-DOCSFIX2 AC1: a docs writer on the last DOCS slot gets its review beyond the cap --------------------------------
+    # --- WI-DOCSFIX2 AC1 (WI-POSTGATE D): a docs writer runs only with room for its review ---------------------------------
     def docs_turns(self, state):
         return [(turn['role'], turn['phase']) for turn in state['turns'] if turn['phase'] == 'DOCS']
 
-    def test_a_docs_writer_on_the_last_docs_slot_gets_its_review_beyond_the_cap(self):
+    def test_no_docs_writer_takes_the_last_docs_slot_and_with_room_its_review_runs(self):
         # WI-POSTGATE D: a docs writer is dispatched only with room for its review, so no writer takes the last DOCS slot
         status, reason, out = self.drive_with_docs_cap(1, DOCS_ENV)
         self.assertEqual(status, 'DONE', reason + out)
@@ -256,7 +256,7 @@ class DocsOperatorEditTests(unittest.TestCase):
         self.assertEqual((docs['route'], docs['review']['status'], docs['review'].get('operator_recheck'), docs.get('budget_spent')),
                          ('SECURITY', 'APPROVE', None, None))
 
-    def test_a_revise_of_the_review_beyond_the_cap_holds_without_another_docs_writer(self):
+    def test_a_revise_of_the_last_docs_review_moves_on_to_security_without_another_docs_writer(self):
         # WI-POSTGATE D: a REVISE of the last review leaves its row open and moves on to SECURITY, with no second writer
         env = self.review_block_env()
         status, reason, out = self.drive_with_docs_cap(2, env)

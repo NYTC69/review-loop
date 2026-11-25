@@ -736,11 +736,18 @@ section is created before `## Done` (at the end when there is none).
   caps, and only while one more SECURITY review fits `BUDGET_CAPS['SECURITY']` (3 reviews per run) and the invocations
   cover the loop (4, or 5 with a docs path). Otherwise the HOLD names the reason and ends with "fix them outside the run
   and resume (narrow security loop), or abort", or with "the SECURITY budget is spent (…): abort".
-- The operator variant: a scan HOLD (sensitive paths, preflight, `.gitignore`), the cap and an author HOLD answer stay with
-  the operator. Every SECURITY HOLD on an unchanged tree records `lifecycle.security_hold` (tree, mirror, manifest). A
-  resume on a changed tree enters the loop `by: operator` and goes straight to the EXEC delta review, then FINISH, the
-  touch-up and SECURITY. A resume on the held tree starts the author loop when the limits allow it, and otherwise refuses
-  ("security findings need a fix on a new tree").
+- With the default caps the loop cap (2) and the SECURITY budget (3) run out together: after two failed author loops, the
+  third SECURITY failure HOLDs with the SECURITY budget spent, and the only exit is `abort`. A cap HOLD with budget left
+  happens only when a loop ended without a SECURITY review (for example an unchanged-tree pass).
+- The operator variant: fix-and-resume applies to a scan HOLD (sensitive paths, preflight, `.gitignore`), an author HOLD
+  answer, an invocation shortage, and a cap HOLD that still has SECURITY budget. Every SECURITY HOLD on an unchanged tree
+  records `lifecycle.security_hold` (tree, mirror, manifest). A resume on a changed tree enters the loop `by: operator`
+  and goes straight to the EXEC delta review, then FINISH, the touch-up and SECURITY. When no SECURITY review is left for
+  the recheck, that resume HOLDs at once ("the operator's change cannot be rechecked: the SECURITY budget is spent (…):
+  abort") and spends no calls; so does a migrated v3.16.x operator route. A resume on the held tree starts the author
+  loop when the limits allow it, and otherwise refuses ("security findings need a fix on a new tree").
+- After an author HOLD where the operator changes nothing, `resume` runs the delta reviewer and FINISH, then starts the
+  next author loop on the same tree; it counts toward the cap.
 - Records: `lifecycle.security_fix` = `{loop, by, hold_request_id, hold_tree, hold_manifest, mirror, finding_ids}`; the
   next SECURITY moves it to `security_fix_history` with the outcome `passed`, `held`, `unchanged` or `superseded`. The
   delivery report adds a "SECURITY 窄修复环" line.

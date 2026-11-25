@@ -8985,6 +8985,8 @@ class Coordinator:
         request = worktree_lifecycle.stage_request(life, 'security')
         tree = git_snapshot(self.workspace)[0]
         if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: the narrow loop (WI-POSTGATE E)
+            if spent := self._security_budget_spent():   # no SECURITY review left to recheck it: HOLD before any call
+                raise RuntimeError("the operator's change cannot be rechecked: " + spent)
             return self._enter_security_fix('operator', life['candidate_oid'], self._last_security_request(), request, tree)
         if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
             raise RuntimeError(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore it and '
@@ -9103,10 +9105,14 @@ class Coordinator:
                     '--max-invocations lets the author fix them)')
         return None
 
-    def _security_hold_text(self, held: list[str], why: str) -> str:
+    def _security_budget_spent(self) -> Optional[str]:
+        """None while one more SECURITY review fits the stage budget, else the HOLD wording (abort is the only exit)."""
         used, cap = self._stage_calls('SECURITY'), self._worktree_run_cap('SECURITY')
-        return (', '.join(held) + f'; {why}; ' + ('fix them outside the run and resume (narrow security loop), or abort'
-                                                   if used + 1 <= cap else f'the SECURITY budget is spent ({used} of {cap} reviews): abort'))
+        return None if used + 1 <= cap else f'the SECURITY budget is spent ({used} of {cap} reviews): abort'
+
+    def _security_hold_text(self, held: list[str], why: str) -> str:
+        return (', '.join(held) + f'; {why}; ' + (self._security_budget_spent()
+                                                   or 'fix them outside the run and resume (narrow security loop), or abort'))
 
     def _record_security_hold(self, request_id: Optional[str], tree: str) -> None:
         """The tree of a SECURITY HOLD (the workspace is still that tree): its manifest and a workspace mirror, so a later fix,
@@ -11651,6 +11657,9 @@ class Coordinator:
         elif (life.get('stage') == 'EXEC' and self.state['next'] == 'reviewer' and receipts
               and receipts[-1]['stage'] == 'SECURITY' and receipts[-1].get('route') == 'EXEC'
               and receipts[-1]['epoch'] == life['epoch'] - 1):
+            if spent := self._security_budget_spent():   # the same dead end as a new operator fix: HOLD before any call
+                self.hold("the operator's change cannot be rechecked: " + spent)
+                return True
             self._open_security_fix('operator', receipts[-1]['candidate_oid'],
                                     next((row['request_id'] for row in reversed(receipts[:-1]) if row['stage'] == 'SECURITY'), None))
             record = {'from': 'security-exec', 'to': 'SECURITY-FIX', 'by': 'operator'}
