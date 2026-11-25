@@ -8177,7 +8177,7 @@ class Coordinator:
         if not (pending and self._recorded_lifecycle_writer(request)):
             if pending and (git_base := self.state['lifecycle'].get('writer_git')):   # the git guard HOLD comes first
                 self._check_lifecycle_writer_git('DOCS', git_base, 'docs writer')
-                self._docs_failed_writer_rollback(request, dict(base))   # WI-DOCSFIX2: before the operator check
+                self._docs_failed_writer_rollback(request, dict(base), git_base['sequence'])   # WI-DOCSFIX2: before the operator check
             tree, manifest = git_snapshot(workspace)   # WI-DOCSFIX: an operator change at a DOCS HOLD, before any dispatch
             if self._docs_operator_route(dict(base), dict(manifest), tree, request):
                 return
@@ -8287,7 +8287,7 @@ class Coordinator:
         DOCS base and the current tree when the tree is still the one the writer left, else nothing counts as the
         writer's own (a change outside the docs paths then goes to the EXEC reviewer, never to a rollback)."""
         turn = next(row for row in self.state['turns'] if row.get('sequence') == sequence)
-        if sides := self._docs_turn_manifests(turn):
+        if (sides := self._docs_turn_manifests(turn)) is not None:
             return sides
         return (base, current) if turn.get('snapshot_after') == tree else ({}, {})
 
@@ -8303,16 +8303,15 @@ class Coordinator:
             pass
         return None
 
-    def _docs_failed_writer_rollback(self, request: dict, base: dict) -> None:
+    def _docs_failed_writer_rollback(self, request: dict, base: dict, since: int) -> None:
         """WI-DOCSFIX2 (AC2): before a docs writer is dispatched again, an outside-the-allowlist write by an errored or
         discarded docs writer turn of this request (timeout, unusable answer, git guard) is the writer's own, so it is rolled
         back as WI-GATE1 does, not taken for an operator edit. A path counts only when the turns' evidence snapshots chain
         from the DOCS base to the current content (judged per path); with any snapshot missing nothing is the writer's, and a
         path edited between or after the turns is not the writer's: _docs_operator_route sends such changes to the EXEC
-        reviewer (an operator edit is never reverted)."""
-        git_base = self.state['lifecycle'].get('writer_git')
+        reviewer (an operator edit is never reverted). `since` is the sequence of this writer attempt's git baseline."""
         turns = [turn for turn in self.state['turns'] if turn.get('role') == 'author' and turn.get('phase') == 'DOCS'
-                 and turn.get('sequence', 0) > git_base['sequence'] and (turn.get('error') or turn.get('discarded'))]
+                 and turn.get('sequence', 0) > since and (turn.get('error') or turn.get('discarded'))]
         left, uncertain = {}, set()   # path -> the content the failed writer turns left there
         for turn in turns:
             if (sides := self._docs_turn_manifests(turn)) is None:

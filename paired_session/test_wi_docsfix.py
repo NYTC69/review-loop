@@ -1,6 +1,8 @@
 """WI-DOCSFIX (v3.16.6): operator edits at a DOCS HOLD are never rolled back by the docs writer's outside-write rollback,
 a change outside the docs paths goes to the EXEC reviewer, and DOCS budget exhaustion after an operator fix allows one
-docs review recheck of the changed tree. Fake provider CLIs only."""
+docs review recheck of the changed tree. WI-DOCSFIX2 (v3.16.7): a docs writer on the last DOCS slot still gets its review,
+and an errored docs writer turn's outside write is rolled back as the writer's, never an operator edit over it. Fake
+provider CLIs only."""
 import contextlib
 import io
 import json
@@ -36,6 +38,19 @@ class DocsOperatorEditTests(unittest.TestCase):
     def docs_rows(self, state):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == 'DOCS']
 
+    def docs_writer_turns(self, state):
+        return [turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'DOCS']
+
+    def review_block_env(self):
+        """DOCS_ENV whose first docs review answers REVISE with one open finding."""
+        return {**DOCS_ENV, 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
+
+    def docs_cap(self, cap):
+        """Patch the DOCS stage run cap to `cap`; a falsy cap keeps the configured one."""
+        original_cap = rc.Coordinator._worktree_run_cap
+        return mock.patch.object(rc.Coordinator, '_worktree_run_cap',
+                                 lambda co, stage: cap if stage == 'DOCS' and cap else original_cap(co, stage))
+
     def progress_kinds(self):
         path = self.run_dir / 'progress.jsonl'
         return [json.loads(line)['kind'] for line in path.read_text().splitlines()] if path.is_file() else []
@@ -44,7 +59,7 @@ class DocsOperatorEditTests(unittest.TestCase):
         """Drive in-process until the n-th DOCS writer dispatch, which fails with the invocation limit as in the field run:
         the request is pending, no writer turn is recorded."""
         calls = []
-        original_invoke, original_cap = rc.Coordinator.invoke, rc.Coordinator._worktree_run_cap
+        original_invoke = rc.Coordinator.invoke
 
         def invoke(co, role, phase, *args, **kwargs):
             if role == 'author' and phase == 'DOCS':
@@ -53,11 +68,7 @@ class DocsOperatorEditTests(unittest.TestCase):
                     raise RuntimeError('invocation limit reached')
             return original_invoke(co, role, phase, *args, **kwargs)
 
-        def stage_cap(co, stage):
-            return cap if stage == 'DOCS' and cap else original_cap(co, stage)
-
-        with mock.patch.dict(os.environ, env or {}), mock.patch.object(rc.Coordinator, 'invoke', invoke), \
-                mock.patch.object(rc.Coordinator, '_worktree_run_cap', stage_cap):
+        with mock.patch.dict(os.environ, env or {}), mock.patch.object(rc.Coordinator, 'invoke', invoke), self.docs_cap(cap):
             co = self.coordinator_for()
             self.assertEqual(co.drive(), 'HOLD', co.state.get('hold_reason'))
         state = self.state()
@@ -71,19 +82,23 @@ class DocsOperatorEditTests(unittest.TestCase):
         return self.state()
 
     def resume_in_process(self, cap=None, env=None, max_invocations=None):
-        original_cap = rc.Coordinator._worktree_run_cap
-
-        def stage_cap(co, stage):
-            return cap if stage == 'DOCS' and cap else original_cap(co, stage)
-
         out = io.StringIO()
-        with mock.patch.dict(os.environ, env or {}), mock.patch.object(rc.Coordinator, '_worktree_run_cap', stage_cap), \
-                contextlib.redirect_stdout(out):
+        with mock.patch.dict(os.environ, env or {}), self.docs_cap(cap), contextlib.redirect_stdout(out):
             co = self.coordinator_for('resume')
             if max_invocations is not None:
                 co.args.max_invocations = max_invocations
             status = co.resume()
         return status, co.state.get('hold_reason', ''), out.getvalue()
+
+    def drive_with_docs_cap(self, cap, env, **patches):
+        """A fresh in-process run with the DOCS cap set to `cap`; `patches` replace Coordinator attributes."""
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), self.docs_cap(cap), \
+                contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(rc.Coordinator, name, value))
+            co = self.coordinator_for()
+            return co.drive(), co.state.get('hold_reason', ''), out.getvalue()
 
     # --- AC1 + AC2: a pending DOCS request (no writer turn recorded yet) ----------------------------------------------------
     def test_operator_code_edit_at_a_pending_docs_writer_goes_to_the_exec_reviewer_and_survives(self):
@@ -136,13 +151,8 @@ class DocsOperatorEditTests(unittest.TestCase):
 
     # --- AC3: DOCS budget exhaustion after an operator fix -----------------------------------------------------------------
     def test_docs_budget_hold_names_the_route_and_one_recheck_runs_per_operator_tree(self):
-        env = {**DOCS_ENV, 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
-        out = io.StringIO()
-        original_cap = rc.Coordinator._worktree_run_cap
-        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), mock.patch.object(
-                rc.Coordinator, '_worktree_run_cap', lambda co, stage: 2 if stage == 'DOCS' else original_cap(co, stage)):
-            co = self.coordinator_for()
-            self.assertEqual(co.drive(), 'HOLD')
+        env = self.review_block_env()
+        self.assertEqual(self.drive_with_docs_cap(2, env)[0], 'HOLD')
         held = self.state()
         [finding] = [row['id'] for row in held['finding_ledger'] if row['source'] == 'docs-reviewer' and row['status'] == 'open']
         self.assertTrue(held['hold_reason'].startswith('DOCS budget exhausted (2 writer and review calls in this run)'), held['hold_reason'])
@@ -186,7 +196,7 @@ class DocsOperatorEditTests(unittest.TestCase):
         (self.workspace / 'CHANGELOG.md').write_text(f'# corrected entry {tag}\n')
 
     def test_field_state_resume_routes_to_the_exec_reviewer_and_reverts_no_operator_edit(self):
-        env = {**DOCS_ENV, 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
+        env = self.review_block_env()
         self.hold_at_docs_writer(env, writer_call=2)   # DOCS r0 writer + REVISE review, r1 writer hits the invocation limit
         self.module_base = (self.workspace / 'sum_ints.py').read_text()
         self.operator_edits('v1')   # the operator fixes the DOCS findings at that HOLD
@@ -235,17 +245,6 @@ class DocsOperatorEditTests(unittest.TestCase):
         self.assertIn('--max-invocations 80', out.getvalue())
 
     # --- WI-DOCSFIX2 AC1: a docs writer on the last DOCS slot gets its review beyond the cap --------------------------------
-    def drive_with_docs_cap(self, cap, env, **patches):
-        original_cap = rc.Coordinator._worktree_run_cap
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), mock.patch.object(
-                rc.Coordinator, '_worktree_run_cap', lambda co, stage: cap if stage == 'DOCS' else original_cap(co, stage)), \
-                contextlib.ExitStack() as stack:
-            for name, value in patches.items():
-                stack.enter_context(mock.patch.object(rc.Coordinator, name, value))
-            co = self.coordinator_for()
-            return co.drive(), co.state.get('hold_reason', ''), out.getvalue()
-
     def docs_turns(self, state):
         return [(turn['role'], turn['phase']) for turn in state['turns'] if turn['phase'] == 'DOCS']
 
@@ -259,7 +258,7 @@ class DocsOperatorEditTests(unittest.TestCase):
                          ('SECURITY', 'APPROVE', True, False))
 
     def test_a_revise_of_the_review_beyond_the_cap_holds_without_another_docs_writer(self):
-        env = {**DOCS_ENV, 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
+        env = self.review_block_env()
         status, reason, _ = self.drive_with_docs_cap(1, env)
         held = self.state()
         self.assertEqual(status, 'HOLD')
@@ -284,18 +283,16 @@ class DocsOperatorEditTests(unittest.TestCase):
         state = self.state()
         self.assertEqual(self.after(state, held['sequence']), [('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
         [docs] = self.docs_rows(state)
-        self.assertEqual((docs['route'], docs['sequence']), ('SECURITY', self.docs_writer_sequences(state)[0]))
-
-    def docs_writer_sequences(self, state):
-        return [turn['sequence'] for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'DOCS']
+        self.assertEqual((docs['route'], docs['sequence']), ('SECURITY', self.docs_writer_turns(state)[0]['sequence']))
 
     # --- WI-DOCSFIX2 AC2: an errored docs writer turn's outside write is the writer's, not the operator's -------------------
     def errored_docs_writer(self):
+        """A first run whose only docs writer turn writes outside the docs paths and then errors: the run holds."""
         env = {**DOCS_ENV, 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code'), 'FAKE_DOCS_FAIL_ONCE': str(self.root / 'docs-fail')}
         held = self.run_coordinator(*ON, env=env)
         self.assertIn('HOLD', held.stdout, held.stdout + held.stderr)
         state = self.state()
-        [writer] = [turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'DOCS']
+        [writer] = self.docs_writer_turns(state)
         self.assertTrue(writer.get('error'), writer)
         self.assertIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
         return env, state

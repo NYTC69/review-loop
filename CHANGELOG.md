@@ -15,6 +15,7 @@
 
 - `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.6` 更新为 `3.16.7`。
 - 现有断言均未改动。`paired_session/test_wi_docsfix.py` 新增 5 个用例；`paired_session/fake_cli.py` 新增 `FAKE_DOCS_FAIL_ONCE`，用于模拟写入后失败的 docs 写入者。
+- `paired_session/test_wi_docsfix.py` 中 DOCS 上限补丁、docs 审查 REVISE 环境和 docs 写入者回合筛选提取为共用方法（`docs_cap`、`review_block_env`、`docs_writer_turns`），v3.16.6 用例 `test_docs_budget_hold_names_the_route_and_one_recheck_runs_per_operator_tree` 的准备步骤改用 `drive_with_docs_cap`，断言不变。
 
 ### v3.16.6：DOCS 回滚不再撤销操作者的修改，DOCS 预算耗尽后可复审操作者修复（WI-DOCSFIX）
 
