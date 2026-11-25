@@ -550,6 +550,10 @@ def main():
         if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
             Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: rolled back (WI-GATE1)
             module.write_text(module.read_text() + '# docs comment fix\n')
+        if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_FAIL_ONCE')) and not Path(marker).exists():
+            Path(marker).write_text('failed\n')   # WI-DOCSFIX2: a docs writer CLI that fails after its writes
+            print('fake docs writer failed after writing', file=sys.stderr)
+            return 1
         if 'Phase: DOCS' in prompt and 'The fresh docs review of the current documentation requested changes' in prompt:
             changelog = Path.cwd() / 'CHANGELOG.md'   # WI-GATE1: a docs review REVISE goes back to the docs writer
             fails = os.environ.get('FAKE_DOCS_FIX_FAILS_ONCE')   # the first attempt misses the entry

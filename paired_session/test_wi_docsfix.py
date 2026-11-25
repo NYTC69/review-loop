@@ -234,6 +234,92 @@ class DocsOperatorEditTests(unittest.TestCase):
         self.assertIn('attach-verification', out.getvalue())
         self.assertIn('--max-invocations 80', out.getvalue())
 
+    # --- WI-DOCSFIX2 AC1: a docs writer on the last DOCS slot gets its review beyond the cap --------------------------------
+    def drive_with_docs_cap(self, cap, env, **patches):
+        original_cap = rc.Coordinator._worktree_run_cap
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), mock.patch.object(
+                rc.Coordinator, '_worktree_run_cap', lambda co, stage: cap if stage == 'DOCS' else original_cap(co, stage)), \
+                contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(rc.Coordinator, name, value))
+            co = self.coordinator_for()
+            return co.drive(), co.state.get('hold_reason', ''), out.getvalue()
+
+    def docs_turns(self, state):
+        return [(turn['role'], turn['phase']) for turn in state['turns'] if turn['phase'] == 'DOCS']
+
+    def test_a_docs_writer_on_the_last_docs_slot_gets_its_review_beyond_the_cap(self):
+        status, reason, out = self.drive_with_docs_cap(1, DOCS_ENV)
+        self.assertEqual(status, 'DONE', reason + out)
+        state = self.state()
+        self.assertEqual(self.docs_turns(state), [('author', 'DOCS'), ('reviewer', 'DOCS')])
+        [docs] = self.docs_rows(state)
+        self.assertEqual((docs['route'], docs['review']['status'], docs['review'].get('operator_recheck'), docs['writer_skipped']),
+                         ('SECURITY', 'APPROVE', True, False))
+
+    def test_a_revise_of_the_review_beyond_the_cap_holds_without_another_docs_writer(self):
+        env = {**DOCS_ENV, 'FAKE_DOCS_REVIEW_BLOCK_ONCE': str(self.root / 'docs-block')}
+        status, reason, _ = self.drive_with_docs_cap(1, env)
+        held = self.state()
+        self.assertEqual(status, 'HOLD')
+        self.assertEqual(self.docs_turns(held), [('author', 'DOCS'), ('reviewer', 'DOCS')])
+        [finding] = [row['id'] for row in held['finding_ledger'] if row['source'] == 'docs-reviewer' and row['status'] == 'open']
+        self.assertTrue(reason.startswith('DOCS budget exhausted (2 writer and review calls in this run)'), reason)
+        self.assertIn(finding, reason)
+        status, reason, _ = self.resume_in_process(cap=1, env=env)   # the reviewed tree: no second review, no writer
+        self.assertEqual((status, self.state()['sequence']), ('HOLD', held['sequence']))
+        self.assertIn('DOCS budget exhausted', reason)
+
+    def test_a_run_held_with_an_unreviewed_writer_output_on_the_last_slot_resumes(self):
+        # the v3.16.6 state: the last-slot writer turn is recorded, the DOCS budget HOLD came before its review
+        budget = RuntimeError('DOCS budget exhausted (1 writer and review calls in this run); fix the documentation in the '
+                              'workspace and resume')
+        status, reason, _ = self.drive_with_docs_cap(1, DOCS_ENV, _docs_review_turn=mock.Mock(side_effect=budget))
+        self.assertEqual(status, 'HOLD', reason)
+        held = self.state()
+        self.assertEqual(held['lifecycle']['pending']['role'], 'docs-writer')
+        status, reason, out = self.resume_in_process(cap=1, env=DOCS_ENV)
+        self.assertEqual(status, 'DONE', reason + out)
+        state = self.state()
+        self.assertEqual(self.after(state, held['sequence']), [('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+        [docs] = self.docs_rows(state)
+        self.assertEqual((docs['route'], docs['sequence']), ('SECURITY', self.docs_writer_sequences(state)[0]))
+
+    def docs_writer_sequences(self, state):
+        return [turn['sequence'] for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'DOCS']
+
+    # --- WI-DOCSFIX2 AC2: an errored docs writer turn's outside write is the writer's, not the operator's -------------------
+    def errored_docs_writer(self):
+        env = {**DOCS_ENV, 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code'), 'FAKE_DOCS_FAIL_ONCE': str(self.root / 'docs-fail')}
+        held = self.run_coordinator(*ON, env=env)
+        self.assertIn('HOLD', held.stdout, held.stdout + held.stderr)
+        state = self.state()
+        [writer] = [turn for turn in state['turns'] if turn['role'] == 'author' and turn['phase'] == 'DOCS']
+        self.assertTrue(writer.get('error'), writer)
+        self.assertIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
+        return env, state
+
+    def test_an_errored_docs_writer_outside_write_is_rolled_back_before_the_redispatch(self):
+        env, held = self.errored_docs_writer()
+        self.assert_done(self.run_operator_action('resume', *ON, env=env))
+        state = self.state()
+        self.assertEqual(self.after(state, held['sequence']), [('author', 'DOCS'), ('reviewer', 'DOCS'), ('reviewer', 'SECURITY')])
+        self.assertNotIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
+        self.assertIn('docs-rollback', self.progress_kinds())
+        [docs] = self.docs_rows(state)
+        self.assertEqual((docs['route'], docs['docs_paths']), ('SECURITY', ['CHANGELOG.md']))
+
+    def test_an_operator_edit_over_an_errored_docs_writer_write_is_never_reverted(self):
+        env, held = self.errored_docs_writer()
+        module = self.workspace / 'sum_ints.py'
+        module.write_text(module.read_text() + '# operator code fix\n')
+        self.assert_done(self.run_operator_action('resume', *ON, env=env))
+        state = self.state()
+        self.assertEqual(self.after(state, held['sequence'])[0], ('reviewer', 'EXEC'))
+        self.assertIn('# docs comment fix\n# operator code fix', module.read_text())
+        self.assertNotIn('docs-rollback', self.progress_kinds())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -8118,9 +8118,10 @@ class Coordinator:
         """ADR-11 DOCS: a fresh docs writer; its allowlisted writes get a fresh docs review with an observed test, a
         protected path HOLDs. WI-GATE1: the docs writer never reopens EXEC: its write outside the allowlist is rolled back
         to the pre-DOCS tree and recorded (HOLD only when the rollback fails), and a docs review REVISE goes back to the docs
-        writer (bounded by the DOCS stage cap). WI-DOCSFIX: only the writer turn's own write is rolled back; an operator
-        edit outside the docs paths goes to the EXEC reviewer (_docs_operator_route), and past the DOCS cap one docs review
-        of an operator-changed tree may run (_docs_beyond_cap)."""
+        writer (bounded by the DOCS stage cap). WI-DOCSFIX: only the writer turn's own write is rolled back (WI-DOCSFIX2:
+        an errored or discarded writer turn's too, before the re-dispatch); an operator edit outside the docs paths goes to
+        the EXEC reviewer (_docs_operator_route), and past the DOCS cap one docs review of a tree no docs review has seen may
+        run (_docs_beyond_cap)."""
         life, workspace = self.state['lifecycle'], self.workspace
         allow = set(self._docs_allowlist())
         request = worktree_lifecycle.stage_request(life, 'docs-writer')
@@ -8176,10 +8177,11 @@ class Coordinator:
         if not (pending and self._recorded_lifecycle_writer(request)):
             if pending and (git_base := self.state['lifecycle'].get('writer_git')):   # the git guard HOLD comes first
                 self._check_lifecycle_writer_git('DOCS', git_base, 'docs writer')
+                self._docs_failed_writer_rollback(request, dict(base))   # WI-DOCSFIX2: before the operator check
             tree, manifest = git_snapshot(workspace)   # WI-DOCSFIX: an operator change at a DOCS HOLD, before any dispatch
             if self._docs_operator_route(dict(base), dict(manifest), tree, request):
                 return
-            recheck = self._docs_beyond_cap(request, tree, None)   # no docs writer beyond the DOCS cap
+            recheck = self._docs_beyond_cap(request, tree)   # no docs writer beyond the DOCS cap
         if recheck:
             if self.state['lifecycle']['pending'] != request:   # the git baseline a later writer attempt of this request needs
                 self.state['lifecycle']['writer_git'] = {**self._writer_git_state(), 'sequence': self.state['sequence']}
@@ -8238,7 +8240,7 @@ class Coordinator:
         owned = self._docs_owned()
         revise = False
         if not reason and (changed or owned or recheck):   # every DOCS-written doc gets a fresh docs review
-            if not recheck and self._docs_beyond_cap(request, tree, result['snapshot'] if result else None):
+            if not recheck and self._docs_beyond_cap(request, tree):
                 recheck = True
                 self.state['lifecycle']['docs_recheck'] = {'request_id': request['request_id'], 'tree': tree}
                 self.save()
@@ -8285,7 +8287,13 @@ class Coordinator:
         DOCS base and the current tree when the tree is still the one the writer left, else nothing counts as the
         writer's own (a change outside the docs paths then goes to the EXEC reviewer, never to a rollback)."""
         turn = next(row for row in self.state['turns'] if row.get('sequence') == sequence)
-        prefix = self.evidence / f'{sequence:03d}-docs-author'
+        if sides := self._docs_turn_manifests(turn):
+            return sides
+        return (base, current) if turn.get('snapshot_after') == tree else ({}, {})
+
+    def _docs_turn_manifests(self, turn: dict) -> Optional[tuple[dict, dict]]:
+        """A docs writer turn's before/after manifests from its evidence snapshots; None when unreadable or not this turn's."""
+        prefix = self.evidence / f"{turn['sequence']:03d}-docs-author"
         try:
             sides = [json.loads(prefix.with_suffix(f'.snapshot-{side}.json').read_text(encoding='utf-8'))
                      for side in ('before', 'after')]
@@ -8293,7 +8301,39 @@ class Coordinator:
                 return dict(sides[0]['manifest']), dict(sides[1]['manifest'])
         except (OSError, ValueError, TypeError, KeyError):
             pass
-        return (base, current) if turn.get('snapshot_after') == tree else ({}, {})
+        return None
+
+    def _docs_failed_writer_rollback(self, request: dict, base: dict) -> None:
+        """WI-DOCSFIX2 (AC2): before a docs writer is dispatched again, an outside-the-allowlist write by an errored or
+        discarded docs writer turn of this request (timeout, unusable answer, git guard) is the writer's own, so it is rolled
+        back as WI-GATE1 does, not taken for an operator edit. A path counts only when the turns' evidence snapshots chain
+        from the DOCS base to the current content; with any snapshot missing, or an edit in between, nothing is the
+        writer's and _docs_operator_route sends the change to the EXEC reviewer (an operator edit is never reverted)."""
+        git_base = self.state['lifecycle'].get('writer_git')
+        turns = [turn for turn in self.state['turns'] if turn.get('role') == 'author' and turn.get('phase') == 'DOCS'
+                 and turn.get('sequence', 0) > git_base['sequence'] and (turn.get('error') or turn.get('discarded'))]
+        left, uncertain = {}, set()   # path -> the content the failed writer turns left there
+        for turn in turns:
+            if (sides := self._docs_turn_manifests(turn)) is None:
+                return
+            before, after = sides
+            for path in worktree_lifecycle.manifest_delta(before, after):
+                if before.get(path) != left.get(path, base.get(path)):
+                    uncertain.add(path)
+                left[path] = after.get(path)
+        current = dict(git_snapshot(self.workspace)[1])
+        allow = set(self._docs_allowlist())
+        if not (paths := sorted(path for path, value in left.items() if path not in allow and path not in uncertain
+                                and current.get(path) == value != base.get(path))):
+            return
+        try:
+            self._revert_paths(paths, self._docs_capture_dir(request), turns[-1]['sequence'], 'docs-outside')
+        except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(f'a failed DOCS writer turn changed paths outside the docs allowlist ({", ".join(paths[:10])}) '
+                               f'and the rollback failed: {exc}; restore them or abort') from exc
+        print('NOTE: a failed DOCS writer turn changed paths outside the docs allowlist; they were rolled back: '
+              + ', '.join(paths[:10]))
+        self.progress('docs-rollback', paths=paths[:20])
 
     def _docs_operator_route(self, base: dict, current: dict, tree: str, request: Optional[dict] = None,
                              sequence: Optional[int] = None, exempt=frozenset()) -> bool:
@@ -8325,16 +8365,17 @@ class Coordinator:
         self.progress('docs-operator-change', paths=paths[:20])
         return True
 
-    def _docs_beyond_cap(self, request: dict, tree: str, writer_after: Optional[str]) -> bool:
+    def _docs_beyond_cap(self, request: dict, tree: str) -> bool:
         """WI-DOCSFIX (AC3): False while the DOCS cap has room for the next call. Beyond it, no docs writer runs, but one
-        docs review of a tree changed since the last DOCS writer or review may (once per tree; a replay of that recheck,
-        marked by docs_recheck, continues it); otherwise the DOCS budget HOLD, which names this route."""
+        docs review of a tree no docs review has seen may (once per tree; a replay of that recheck, marked by docs_recheck,
+        continues it): an operator-changed tree, or (WI-DOCSFIX2) the output of a docs writer dispatched on the last DOCS
+        slot, which would otherwise end in a HOLD no resume can clear; otherwise the DOCS budget HOLD, naming this route."""
         replay = self.state['lifecycle'].get('docs_recheck') == {'request_id': request['request_id'], 'tree': tree}
         if not replay and self._stage_calls('DOCS') + 1 <= self._worktree_run_cap('DOCS'):
             return False
         reviewed = any(turn.get('role') == 'reviewer' and turn.get('phase') == 'DOCS' and not turn.get('error')
                        and turn.get('snapshot_before') == tree for turn in self.state['turns'])
-        if not replay and (reviewed or tree == writer_after):
+        if not replay and reviewed:
             self._docs_budget()
         self._require_polish_invocations(1, 'the DOCS recheck')
         print(f'NOTE: the DOCS budget is spent; one docs review recheck of the changed tree {tree[:12]} runs beyond it')

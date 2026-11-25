@@ -1,5 +1,21 @@
 # Changelog
 
+### v3.16.7：最后一个 DOCS 名额上的写入者输出可获一次超额审查，出错写入者的越界写入照常回滚（WI-DOCSFIX2）
+
+- 死路修复：DOCS 写入者占用最后一个 DOCS 阶段名额时，它的输出不再直接进入无法解除的 DOCS 预算 HOLD。v3.16.6 的超额复审只覆盖操作者改过的树。现在规则改为：超出上限后，docs 审查从未见过的树可获一次超额 docs 审查，每棵树最多一次，审查前同样检查调用上限。这类树包括操作者改过的树，以及最后名额上写入者的输出。上限对写入者仍然有效，超出后不派发写入者。超额审查 REVISE 时以 DOCS 预算 HOLD 结束，原因列出发现 ID 并说明“在工作区修复后 resume”的路线。同一棵树不会再审第二次。
+  - 选择这个方案而不是“派发写入者前要求留出写入者加审查两个名额”，理由有三。第一，默认 DOCS 上限为 7，写入加审查每轮占 2 个名额，第 7 个名额本来就会落到写入者上；预留方案会让这个名额作废。第二，已停在该 HOLD 的运行，其写入者回合已记录，resume 时直接复用，不经过派发前检查，预留方案救不了这些运行。第三，改动只是去掉一个条件。
+- 归属修复：同一 DOCS 请求中出错或被丢弃的写入者回合（超时、答复不可用、git 守卫），如果在 docs allowlist 外写过文件，再次派发写入者前会按 WI-GATE1 回滚这些写入，不再当作操作者修改送回 EXEC。判断依据是这些回合的证据快照：快照须从 DOCS base 逐回合衔接到当前内容。任一快照缺失或不可读、写入后又被改过、或回合之间有其他修改时，一律不归给写入者，也不回滚，按 v3.16.6 交给 EXEC 审查员。操作者的修改仍然不会被撤销。
+- 文档：v3.16.6 起，DOCS 写入者在早先一次 DOCS HOLD 中留下的受保护路径写入（如 `CLAUDE.md`），只要同时有任何操作者修改，resume 就会把运行交给 EXEC 审查员。v3.16.6 之前这种情况下 resume 会拒绝。`paired_session/README.md` 的 DOCS 段落补充了这一点、上述超额审查规则和出错写入者的回滚范围。
+- 已停住的运行：
+  - 停在 `DOCS budget exhausted` 且最后一个写入者回合已记录、还没审查的运行，用 v3.16.7 执行普通 `resume` 即可：复用该写入者回合，做一次超额 docs 审查，APPROVE 后进入 SECURITY。审查前会检查调用上限，不足时执行 `resume --max-invocations N`。
+  - 写入者回合出错后停住、工作区留有该回合 allowlist 外写入的运行，用 v3.16.7 执行普通 `resume` 即可：先回滚这些写入，再派发新的写入者。若操作者已经改过这些路径，这次 resume 仍会交给 EXEC 审查员，不回滚任何文件。
+  - 其他运行无需特殊处理。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.6` 更新为 `3.16.7`。
+- 现有断言均未改动。`paired_session/test_wi_docsfix.py` 新增 5 个用例；`paired_session/fake_cli.py` 新增 `FAKE_DOCS_FAIL_ONCE`，用于模拟写入后失败的 docs 写入者。
+
 ### v3.16.6：DOCS 回滚不再撤销操作者的修改，DOCS 预算耗尽后可复审操作者修复（WI-DOCSFIX）
 
 - 数据丢失修复：DOCS 写入者越界回滚只针对该写入者回合自己写的路径。判断依据是该回合证据中的前后快照，不再拿请求开始前的 DOCS base 比较。写入者开始前或之后由操作者做的修改一律不回滚。写入者自己的越界写入仍会回滚并记录（WI-GATE1 行为不变）。

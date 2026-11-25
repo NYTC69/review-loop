@@ -350,12 +350,15 @@ runs again) and DOCS (a fresh docs writer; a
 write outside the docs allowlist, a protected path included, is rolled back to the pre-DOCS tree, an allowlisted
 write gets a fresh docs review that must run the test, and its REVISE goes back to
 the docs writer; a docs finding on a path the writer cannot edit goes to the run's `backlog.md`, not to a repair;
-the rollback covers only what the docs writer turn itself wrote, so an operator edit made at a DOCS HOLD is never
-rolled back: an edit of a docs allowlist path stays in DOCS and is docs-reviewed, any other edit, found before a docs
-writer dispatch or after a recorded one, sends the run back to the EXEC reviewer in a new epoch, then FINISH..SECURITY
-again; once the DOCS stage cap is spent no docs writer runs, but one docs review of a tree changed since the last DOCS
-writer or review runs beyond the cap (once per tree, after an invocation-limit check), and the DOCS budget HOLD names
-this fix-and-resume route)
+the rollback covers only what the docs writer turns themselves wrote (since v3.16.7 also an errored or discarded
+writer turn of the same request, rolled back before the re-dispatch when its evidence snapshots show the write is still
+there), so an operator edit made at a DOCS HOLD is never rolled back: an edit of a docs allowlist path stays in DOCS and
+is docs-reviewed, any other edit, found before a docs writer dispatch or after a recorded one, sends the run back to the
+EXEC reviewer in a new epoch, then FINISH..SECURITY again; since v3.16.6 this includes a protected-path write the docs
+writer left at an earlier DOCS HOLD (`CLAUDE.md`, say) together with any operator edit, which before v3.16.6 made the
+resume refuse; once the DOCS stage cap is spent no docs writer runs, but one docs review of a tree no docs review has
+seen runs beyond the cap (once per tree, after an invocation-limit check): an operator-changed tree, or since v3.16.7
+the output of a docs writer dispatched on the last DOCS slot; the DOCS budget HOLD names this fix-and-resume route)
 and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
 security reviewer, then reaches DONE (acceptance pending).
