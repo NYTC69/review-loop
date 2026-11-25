@@ -253,6 +253,8 @@ FRESH_HISTORY_RE = re.compile(
 BLOCKING_REVIEW_SEVERITIES = {'CRITICAL', 'MAJOR', 'SECURITY'}
 DECISION_NOTE = ('to fix them in this run: reject --text "<what to fix>" (EXEC reopens); to keep them for later: accept '
                  '(they go to BACKLOG.md as P1).')   # WI-POSTGATE F
+SECURITY_FIX_LOOPS = 2   # WI-POSTGATE E (owner Q2): automatic author fixes of SECURITY-reviewer findings per run
+SECURITY_HOLD_PATCH = 'delta-since-security-hold.patch'   # the narrow loop's fix delta, in the review context
 # WI-GATE1 S3 (owner 2026-11-19, item 5): one blocking threshold for every reviewer-type role. A row blocks only when its
 # severity blocks AND its category is one of these four AND it says how normal use reaches it; everything else is reported
 # and goes to the BACKLOG.
@@ -1318,7 +1320,7 @@ def reclassify_default_home_trust(changes: dict, before: dict, after: dict, work
 
 
 NOTE_LIFECYCLE_WAITS = ('gate', 'finish', 'docs', 'polish-q', 'polish-fix', 'polish-recheck', 'polish-simplify', 'polish-tests',
-                        'docs-review')   # v3.7.2; v3.8.1 docs-review
+                        'docs-review', 'security-fix', 'docs-touchup')   # v3.7.2; v3.8.1 docs-review; v3.17.0 the narrow SECURITY loop
 NOTE_WRITER_PHASES = ('FINISH', 'DOCS', 'POLISH-Q')   # v3.7.2: lifecycle writer stages a queued note reaches
 READONLY_SCRATCH_ROLES = ('reviewer', 'shadow', 'gate')   # b295-f1 FIELD-1: Codex reviewer-type roles get a per-dispatch temp root
 LEGACY_PROBE_ROLES = ('probe', 'gate-probe')   # v3.7.0: removed roles; a turn saved by an earlier release may still own a scratch
@@ -3985,16 +3987,26 @@ class Coordinator:
         since = self.context / 'delta-since-last-review.patch'
         baseline = self._baseline('last-review')
         if self.state.get('reviews_completed', 0) and baseline.exists():
-            current = self.mirror_base / 'current-review'
-            self._mirror_workspace(current)
-            proc = candidate_tree.run_bounded(candidate_tree.git_command('-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
-                                  cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
-            if proc.returncode not in (0, 1):
-                raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
-            atomic_text(since, proc.stdout)
-            (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(current)
+            atomic_text(since, self._mirror_diff(baseline))
         elif since.exists():
             since.unlink()
+        hold = self.context / SECURITY_HOLD_PATCH   # WI-POSTGATE E: the narrow SECURITY loop reviews the fix delta
+        fix = self._security_fix_active()
+        if fix and fix.get('mirror') and (baseline := self._baseline('security-hold')).exists():
+            atomic_text(hold, self._mirror_diff(baseline))
+        elif hold.exists():
+            hold.unlink()
+
+    def _mirror_diff(self, baseline: Path) -> str:
+        """The binary diff from a workspace mirror (a review baseline) to a fresh mirror of the workspace."""
+        current = self.mirror_base / 'current-review'
+        self._mirror_workspace(current)
+        proc = candidate_tree.run_bounded(candidate_tree.git_command('-c', 'core.quotepath=false', 'diff', *candidate_tree.NO_EXT_DIFF, '--no-index', '--binary', '--', str(baseline), str(current), cwd=self.workspace),
+                              cwd=self.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')   # v297-cwd: git >= 2.40 refuses --attr-source outside a repo
+        if proc.returncode not in (0, 1):
+            raise RuntimeError('git diff --no-index review mirrors failed: ' + proc.stderr.strip())
+        (winplat.rmtree if winplat.IS_WINDOWS else shutil.rmtree)(current)
+        return proc.stdout
 
     def capture_review_baseline(self, sequence: Optional[int] = None,
                                 phase: Optional[str] = None) -> None:
@@ -4712,6 +4724,7 @@ class Coordinator:
         else:
             target = {'finish': 'the FINISH writer', 'docs': 'the DOCS writer',
                       'polish-fix': 'the POLISH-Q fix author turn',
+                      'security-fix': 'the narrow SECURITY loop fix author turn', 'docs-touchup': 'the docs touch-up writer',
                       'polish-simplify': 'the POLISH-Q simplifier', 'polish-tests': 'the POLISH-Q test writer',
                       'polish-q': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn',
                       'polish-recheck': 'the next POLISH-Q fix, POLISH-Q writer or DOCS writer turn',
@@ -5367,7 +5380,8 @@ class Coordinator:
         self.write_open_findings()
         self.write_usage()
         if decisions := self._owner_decision_lines():   # WI-POSTGATE F: seen before accept
-            print('NOTE: ' + ', '.join(dict.fromkeys(LEDGER_ID_RE.findall(' '.join(decisions)))) + ' did not block delivery but '
+            ids = ', '.join(dict.fromkeys(LEDGER_ID_RE.findall(' '.join(decisions))))   # WI-POSTGATE E: a docs touch-up line has none
+            print('NOTE: ' + (ids or 'the listed items') + ' did not block delivery but '
                   f"needs your decision ({self.run_dir / 'open-findings.md'}): " + DECISION_NOTE)
         self._progress_terminal('DONE')
         return 'DONE'
@@ -5701,7 +5715,10 @@ class Coordinator:
         deferred = self._proposed_plan_ids() if self.state['phase'] == 'PLAN' else set()
         rows = [row for row in self.open_findings()
                 if row.get('source') != 'scenario-matrix' and row['id'] not in deferred]
-        return [row for row in rows if not row.get('owner_role')] if worktree_lifecycle.is_worktree(self.state) else rows
+        if not worktree_lifecycle.is_worktree(self.state):
+            return rows
+        loop = bool(self._security_fix_active())   # WI-POSTGATE E: the narrow loop review leaves the reported post-gate rows out
+        return [row for row in rows if not row.get('owner_role') and not (loop and self._post_gate_class(row) in ('decide', 'report'))]
 
     def open_findings_prompt(self) -> str:
         findings = self._reviewer_open_findings()
@@ -7962,7 +7979,8 @@ class Coordinator:
             self.state.pop('pending_rejection_id', None)
             self.state['rejection_repair'] = rejection['id']   # R2 F5: the EXEC reviewer's until it approves
         key = f'{phase.lower()}_rounds'
-        if not rewriting and self.state.get('next') != 'polish-fix': self.state[key] += 1   # R5: a POLISH-Q fix uses no EXEC round
+        if not rewriting and self.state.get('next') not in ('polish-fix', 'security-fix'): self.state[key] += 1   # R5: a POLISH-Q fix
+        # or (WI-POSTGATE E) a narrow SECURITY loop fix uses no EXEC round
         if phase == 'PLAN':
             atomic_text(self.run_dir / 'plan.md', answer['body'].rstrip() + '\n')
             atomic_text(self.run_dir / ('plan-rewrite.md' if rewriting else f"plan-{self.state[key]:02d}.md"), answer['body'].rstrip() + '\n')
@@ -8018,7 +8036,8 @@ class Coordinator:
                 and not self.state['config'].get('review_report')):
             return 'reviewer'
         advisory = self.state.get('advisory_fix') or {}
-        if life.get('writer_replay') or (advisory.get('state') == 'ran' and advisory.get('epoch') == life.get('epoch')):
+        if life.get('security_fix') or life.get('writer_replay') or (   # WI-POSTGATE E: a narrow loop fix is the reviewer's
+                advisory.get('state') == 'ran' and advisory.get('epoch') == life.get('epoch')):
             return 'reviewer'   # the advisory fix round and a writer replay keep their own chain back to POLISH-Q
         approved = self._approval_manifest(life.get('exec_convergence'))
         if approved is None or self.blocking_open_findings():   # R2 F5: an open EXEC blocker is the reviewer's to close
@@ -8144,6 +8163,9 @@ class Coordinator:
             self.hold('finisher: ' + answer['body'])
         elif self.state['lifecycle']['stage'] == 'EXEC':   # FINISH wrote: new convergence, the reviewer only (the gate ran once)
             self.state.update(phase='EXEC', next='reviewer', delivered_review='')   # R5: a FINISH write uses no EXEC round
+        elif self.state['lifecycle'].get('security_fix'):   # WI-POSTGATE E: the narrow loop skips POLISH-Q and the full DOCS
+            self.state['lifecycle']['stage'] = 'DOCS'
+            self.state['next'] = 'docs-touchup'
         else:
             self.state['next'] = 'polish-q'
         self.save()
@@ -8930,22 +8952,20 @@ class Coordinator:
         life = self.state['lifecycle']
         request = worktree_lifecycle.stage_request(life, 'security')
         tree = git_snapshot(self.workspace)[0]
-        if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: EXEC review again
-            life = lifecycle_spine.complete(lifecycle_spine.begin(life, request),
-                                            {**request, 'status': 'HOLD', 'output_oid': tree, 'route': 'EXEC'})
-            self.state['lifecycle'] = {key: value for key, value in life.items()
-                                       if key not in ('security_base', 'security_turn', 'security_review')}
-            self.state['lifecycle'].update(stage='EXEC', epoch=life['epoch'] + 1, candidate_oid=None)
-            self.state.update(phase='EXEC', next='reviewer', delivered_review='')   # R5: a SECURITY-stage change uses no EXEC round
-            self.save()
-            return
+        if tree != life['candidate_oid']:   # the operator's fix after a SECURITY HOLD: the narrow loop (WI-POSTGATE E)
+            return self._enter_security_fix('operator', life['candidate_oid'], self._last_security_request(), request, tree)
         if (head := self._head_commit()) != life['parent']:   # W writers never move HEAD; DONE would only HOLD at accept
             raise RuntimeError(f'HEAD moved since the run started ({life["parent"][:12]} -> {str(head)[:12]}); restore it and '
                                'resume, or abort')
         if (held := [row['id'] for row in self._security_owned() if blocks_by_severity(row)]) and (
                 life.get('security_hold_tree') == tree):   # the tree its findings were raised or left open on
-            raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + ', '.join(held) +
-                               '; fix them outside the run and resume (EXEC replays), or abort')
+            self._close_security_fix('unchanged')   # a loop whose chain left the hold tree as it was
+            if why := self._security_author_block():   # WI-POSTGATE E: otherwise the author fixes them (a resume on the hold tree)
+                raise RuntimeError('security findings need a fix on a new tree, not a re-review: ' + self._security_hold_text(held, why))
+            hold = self._last_security_request()
+            if (self.state['lifecycle'].get('security_hold') or {}).get('tree') != tree:
+                self._record_security_hold(hold, tree)
+            return self._enter_security_fix('author', tree, hold, request, tree)
         self.state['lifecycle'] = lifecycle_spine.begin(life, request)
         self.save()
         all_sensitive = self._sensitive_paths()
@@ -8981,8 +9001,8 @@ class Coordinator:
                 printed.append(note)
         self.save()
         reasons = [*(['SECURITY sensitive paths: ' + ', '.join(f"{row['path']} ({row['category']})" for row in sensitive) +
-                      ('; rename or remove the unclassifiable path and resume (EXEC review and gate replay, then '
-                       'FINISH..SECURITY, within the EXEC round limit), or abort'   # V319-HOLD: a working exit
+                      ('; rename or remove the unclassifiable path and resume (the narrow security loop: EXEC review of '
+                       'the change, FINISH, SECURITY, within the EXEC round limit), or abort'   # V319-HOLD: a working exit
                        if any(row['category'] == 'unclassifiable path' for row in sensitive) else '')]
                      if sensitive else []), *([preflight['reason']] if preflight['reason'] else [])]
         review = None
@@ -8992,17 +9012,258 @@ class Coordinator:
         if not reasons and (blocking := self.blocking_open_findings()):
             reasons.append('SECURITY cannot reach DONE with open blocking findings: ' + ', '.join(row['id'] for row in blocking))
         if (after := git_snapshot(self.workspace)[0]) != tree:
-            reasons.append('SECURITY tree changed during the stage; resume replays EXEC review and gate')
+            reasons.append('SECURITY tree changed during the stage; resume runs the narrow security loop (EXEC review of the '
+                           'change, FINISH, SECURITY)')
+        # WI-POSTGATE E (owner Q2): a HOLD on the security reviewer's findings alone gets the automatic author fix; scan hits,
+        # the loop cap and anything else stay the operator's
+        findings_only = review is not None and review['status'] != 'HOLD' and reasons == [review['reason']] and after == tree
+        why = self._security_author_block() if findings_only else None
+        if findings_only and why:
+            held = [row['id'] for row in self._security_owned() if blocks_by_severity(row)]
+            reasons = ['security reviewer findings: ' + self._security_hold_text(held, why)]
+        route = 'SECURITY-FIX' if findings_only and not why else 'HOLD' if reasons else 'DONE'
         self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
             **request, 'status': 'HOLD' if reasons else 'READY', 'output_oid': after,
-            'route': 'HOLD' if reasons else 'DONE', 'sensitive_paths': sensitive,
+            'route': route, 'sensitive_paths': sensitive,
             'preexisting_sensitive_paths': preexisting, 'notes': notes, 'preflight': preflight, 'review': review})
         for key in ('security_turn', 'security_review'):
             self.state['lifecycle'].pop(key, None)
-        if reasons:
+        self._close_security_fix('held' if reasons else 'passed')
+        if reasons and after == tree:   # the fix delta of the next loop starts here
+            self._record_security_hold(request['request_id'], tree)
+        if route == 'SECURITY-FIX':
+            self._enter_security_fix('author', tree, request['request_id'])
+        elif reasons:
             self.hold('; '.join(reasons))
         else:   # acceptance pending: accept --expect (W3b) delivers it
             self.done(expected=after, lifecycle_stage='DONE')
+
+    # --- WI-POSTGATE E: the narrow SECURITY loop -----------------------------------------------------------------------------
+    # lifecycle['security_fix'] = {loop, by: author|operator, hold_request_id, hold_tree, hold_manifest (approval record),
+    # mirror (a 'security-hold' workspace mirror of hold_tree exists), finding_ids}: open from the SECURITY HOLD until the next
+    # SECURITY completes, then moved to security_fix_history with its outcome. While it is open the fix goes to the EXEC
+    # reviewer as a delta review (no shadow, the gate verdict stands), FINISH runs, a docs touch-up replaces POLISH-Q and DOCS,
+    # and SECURITY runs again. lifecycle['security_hold'] records the tree of the latest SECURITY HOLD for the next fix delta.
+
+    def _security_fix_active(self) -> Optional[dict]:
+        if not worktree_lifecycle.is_worktree(self.state) or self.state['config'].get('review_report'):
+            return None
+        return self.state['lifecycle'].get('security_fix')
+
+    def _last_security_request(self) -> Optional[str]:
+        return next((row['request_id'] for row in reversed(self.state['lifecycle']['receipts']) if row['stage'] == 'SECURITY'), None)
+
+    def _security_author_block(self) -> Optional[str]:
+        """None when the automatic author fix may run (owner Q2), else why the operator fixes: the loop cap
+        (SECURITY_FIX_LOOPS, scaled by rejections like the stage caps), no SECURITY review left for the recheck, or too few
+        invocations for the loop (author, reviewer, FINISH, docs touch-up, SECURITY)."""
+        life = self.state['lifecycle']
+        loops = [row for row in [*life.get('security_fix_history', []), *filter(None, [life.get('security_fix')])]
+                 if row.get('by') == 'author']
+        cap = SECURITY_FIX_LOOPS * (1 + self._counted_rejections())
+        if len(loops) >= cap:
+            return f'the automatic security fix ran {len(loops)} times (its cap is {cap})'
+        if self._stage_calls('SECURITY') + 1 > self._worktree_run_cap('SECURITY'):
+            return 'no SECURITY review is left for a recheck'
+        need = 4 + bool(self._docs_allowlist())
+        if need > (left := self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']):
+            return (f'the automatic security fix needs {need} more invocations ({left} left; a resume with a higher '
+                    '--max-invocations lets the author fix them)')
+        return None
+
+    def _security_hold_text(self, held: list[str], why: str) -> str:
+        used, cap = self._stage_calls('SECURITY'), self._worktree_run_cap('SECURITY')
+        return (', '.join(held) + f'; {why}; ' + ('fix them outside the run and resume (narrow security loop), or abort'
+                                                   if used + 1 <= cap else f'the SECURITY budget is spent ({used} of {cap} reviews): abort'))
+
+    def _record_security_hold(self, request_id: Optional[str], tree: str) -> None:
+        """The tree of a SECURITY HOLD (the workspace is still that tree): its manifest and a workspace mirror, so a later fix,
+        the author's or the operator's, is reviewed as the delta since it."""
+        try:
+            self._capture_baseline('security-hold')
+            mirror = True
+        except (OSError, RuntimeError, subprocess.CalledProcessError):
+            mirror = False   # the reviewer gets the changed paths instead of the patch
+        self.state['lifecycle']['security_hold'] = {'request_id': request_id, 'tree': tree, 'mirror': mirror,
+                                                    'manifest': self._save_approval_manifest('security-hold')}
+        self.save()
+
+    def _open_security_fix(self, by: str, hold_tree: str, hold_request_id: Optional[str]) -> dict:
+        life = self.state['lifecycle']
+        hold = life.get('security_hold') if (life.get('security_hold') or {}).get('tree') == hold_tree else None
+        approval = life.get('docs_approval') if (life.get('docs_approval') or {}).get('tree') == hold_tree else None
+        fix = life['security_fix'] = {
+            'loop': len(life.get('security_fix_history', [])) + 1, 'by': by, 'hold_request_id': hold_request_id,
+            'hold_tree': hold_tree, 'hold_manifest': hold['manifest'] if hold else approval, 'mirror': bool(hold and hold['mirror']),
+            'finding_ids': [row['id'] for row in self._security_owned() if blocks_by_severity(row)]}
+        return fix
+
+    def _close_security_fix(self, outcome: str) -> None:
+        life = self.state['lifecycle']
+        if fix := life.pop('security_fix', None):
+            life.setdefault('security_fix_history', []).append({**fix, 'outcome': outcome})
+
+    def _enter_security_fix(self, by: str, hold_tree: str, hold_request_id: Optional[str], request: Optional[dict] = None,
+                            tree: Optional[str] = None) -> None:
+        """Open the narrow loop: stage EXEC (a new epoch, no EXEC round); the author fixes the delivered findings
+        ('security-fix'), or the EXEC reviewer reviews the operator's change. `request`: a SECURITY request to close first
+        with route SECURITY-FIX (the operator's changed tree, or a resume on the hold tree)."""
+        self._close_security_fix('superseded')
+        fix = self._open_security_fix(by, hold_tree, hold_request_id)
+        life = self.state['lifecycle']
+        if request is not None:
+            life = lifecycle_spine.complete(lifecycle_spine.begin(life, request),
+                                            {**request, 'status': 'HOLD', 'output_oid': tree, 'route': 'SECURITY-FIX'})
+        self.state['lifecycle'] = {key: value for key, value in life.items()
+                                   if key not in ('security_base', 'security_turn', 'security_review')}
+        self.state['lifecycle'].update(stage='EXEC', epoch=life['epoch'] + 1, candidate_oid=None)
+        rows = [row for row in self.open_findings() if row['id'] in fix['finding_ids']]
+        self.state.update(phase='EXEC', next='security-fix' if by == 'author' else 'reviewer',   # R5: no EXEC round
+                          delivered_review=worktree_lifecycle.delivered_findings('security', rows) if by == 'author' else '')
+        self.save()
+        print(f"NOTE: narrow security loop {fix['loop']}: " + (
+            f"the author fixes {', '.join(fix['finding_ids'])}; " if by == 'author' else "the operator's change since the "
+            'SECURITY HOLD is reviewed; ') + 'then the EXEC reviewer (the fix delta), FINISH, a docs touch-up and SECURITY')
+        self.progress('security-fix', loop=fix['loop'], by=by, findings=fix['finding_ids'][:20])
+
+    def _security_fix_paths(self, current: dict) -> Optional[list[str]]:
+        """The paths changed since the SECURITY hold, or None when its manifest is unknown."""
+        before = self._approval_manifest((self.state['lifecycle'].get('security_fix') or {}).get('hold_manifest'))
+        return None if before is None else worktree_lifecycle.manifest_delta(before, current)
+
+    def _security_fix_prompt(self, fix: dict) -> str:
+        """The EXEC reviewer's instructions in the narrow loop (post_gate_prompt): only the fix delta, only regressions block."""
+        if fix.get('mirror'):
+            where = f'the fix delta is {self.context / SECURITY_HOLD_PATCH} (from the tree SECURITY held on to the current tree)'
+        elif (paths := self._security_fix_paths(dict(git_snapshot(self.workspace)[1]))) is not None:
+            where = 'the fix changed these paths since the tree SECURITY held on: ' + (', '.join(paths[:50]) or 'none')
+        else:
+            where = 'the fix delta was not recorded; find it in the complete delta'
+        rows = [row for row in self.state['finding_ledger'] if row['id'] in fix.get('finding_ids', [])]
+        return ('## Narrow security loop\nThe adversarial gate ran once and its verdict stands. SECURITY held on the security '
+                f"findings below and {'the author' if fix['by'] == 'author' else 'the operator'} fixed them; {where}. Review only "
+                'this fix delta. Only a blocking regression introduced by it can keep this review from passing: start its '
+                'reachability with "regression:". Report every other finding as usual; the coordinator keeps it for the '
+                'BACKLOG. The security findings belong to the security reviewer, who rechecks them on the final tree; do not '
+                'dispose or report them.\n' + ''.join(f"- security finding {row['id']} [{row['severity']}]: {row['summary']}\n"
+                                                      for row in rows))
+
+    def worktree_security_fix_turn(self) -> None:
+        """WI-POSTGATE E(a): the persistent author fixes the delivered security findings (an EXEC author turn that uses no
+        EXEC round); the EXEC reviewer reviews the fix delta next. An author HOLD leaves the fix to the operator: the resume
+        after it goes to the EXEC reviewer."""
+        self.author_turn()
+        if self.state['status'] == 'ACTIVE' or self.state['next'] != 'security-fix':
+            return
+        last = next((turn for turn in reversed(self.state['turns']) if turn.get('role') == 'author'
+                     and turn.get('phase') == 'EXEC' and not turn.get('error')), {})
+        if (fix := self.state['lifecycle'].get('security_fix')) and (last.get('answer') or {}).get('status') == 'HOLD':
+            fix['author_held'] = last['sequence']
+            self.state.update(next='reviewer', delivered_review='')
+            self.save()
+            print('NOTE: the security fix author held; fix the findings outside the run and resume: the EXEC reviewer '
+                  'reviews your change (narrow security loop)')
+
+    def worktree_docs_touchup_turn(self) -> None:
+        """WI-POSTGATE E(d): in the narrow SECURITY loop, one docs writer updates only the docs that the fix delta changed.
+        No docs review runs (owner Q3): the delivery report lists the touch-up, and the security reviewer sees the final docs.
+        Its writes outside the docs allowlist or to a protected path are rolled back; an operator change outside the docs paths
+        goes to the EXEC reviewer (the loop stays open). Skipped (receipt `skipped`) without a docs path, when the delta
+        changes only docs and tests, or without room in the DOCS cap or the invocations. The receipt (stage DOCS, touchup)
+        routes to SECURITY."""
+        life, fix = self.state['lifecycle'], self.state['lifecycle']['security_fix']
+        allow = set(self._docs_allowlist())
+        request = worktree_lifecycle.stage_request(life, 'docs-writer')
+        base_file = self.evidence / f"{request['request_id']}-docs-base.json"
+        tree, manifest = git_snapshot(self.workspace)
+        delta = self._security_fix_paths(dict(manifest))
+        if life['pending'] != request:
+            if tree != life['candidate_oid']:
+                raise RuntimeError('DOCS touch-up tree differs from the FINISH-approved tree; restore it or abort')
+            docs = {*allow, *self._docs_owned()}
+            left = self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']
+            skip = ('no docs path configured' if not allow else
+                    'no change since the security hold' if delta == [] else
+                    'only docs and tests changed since the security hold' if delta and all(
+                        path in docs or worktree_lifecycle.is_test_path(path) or path.lower().endswith(worktree_lifecycle.DOC_SUFFIXES)
+                        for path in delta) else
+                    'the DOCS budget has no room' if self._stage_calls('DOCS') + 1 > self._worktree_run_cap('DOCS') else
+                    'no invocation is left for it' if left < 2 else None)   # the writer and the SECURITY recheck
+            if skip:
+                print(f'NOTE: docs touch-up skipped: {skip}')
+                return self._docs_touchup_done(request, tree, {'skipped': skip})
+            self._writer_capture(self._docs_capture_dir(request))   # the restore point of a rollback
+            atomic_json(base_file, manifest)
+        try:
+            base = dict(json.loads(base_file.read_text(encoding='utf-8')))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f'DOCS touch-up base manifest is unreadable: {exc}; abort') from exc
+        if self.state['lifecycle']['pending'] == request and self.state['lifecycle'].get('writer_git'):
+            self._docs_failed_writer_rollback(request, base)   # WI-DOCSFIX2: an errored writer's outside write
+
+        def prompt():   # called only for a dispatch, never for a reused recorded turn
+            self.materialize_review_context()   # the fix delta patch the writer may read
+            rows = [row for row in self.state['finding_ledger'] if row['id'] in fix.get('finding_ids', [])]
+            return (worktree_lifecycle.docs_prompt(self.state['config'].get('docs_file'), sorted(allow), self.run_dir.name,
+                                                   self.workitem.read_text(encoding='utf-8'))
+                    + self.operator_rulings_prompt('author')
+                    + '\n\nNarrow security fix: the documentation already matches the reviewed change. A security fix changed '
+                    + (', '.join(delta[:50]) if delta else 'the change') + ' since then'
+                    + (f' (patch: {self.context / SECURITY_HOLD_PATCH})' if fix.get('mirror') else '') + '. It fixes:\n'
+                    + ''.join(f"- {row['id']}: {row['summary']}\n" for row in rows)
+                    + 'Update only docs that describe behavior this fix changed and leave every other doc as it is; when '
+                    'nothing needs changing, answer READY without edits.'
+                    + opv.prompt_block(self, git_snapshot(self.workspace)[0], atomic_json))
+        result = self._lifecycle_writer(request, 'docs writer', prompt)
+        self.render(result, 'docs-writer', 'DOCS')
+        sequence = result['sequence']
+        tree, manifest = git_snapshot(self.workspace)
+        after = dict(manifest)
+        writer_before, writer_after = self._docs_writer_manifests(sequence, base, after, tree)
+        own = worktree_lifecycle.manifest_delta(writer_before, writer_after)
+        bad = [path for path in own if (path not in allow or worktree_lifecycle.docs_denied(path, after.get(path)))
+               and after.get(path) != base.get(path) and after.get(path) == writer_after.get(path)
+               and writer_before.get(path) == base.get(path)]   # only the writer's own write, while it is still there
+        extra = {}
+        if bad:
+            try:
+                extra = {'rolled_back': bad, 'rollback_diff': self._revert_paths(bad, self._docs_capture_dir(request), sequence,
+                                                                                  'docs-touchup-outside')}
+            except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+                raise RuntimeError(f'the docs touch-up writer changed paths outside the docs allowlist or protected paths '
+                                   f'({", ".join(bad[:10])}) and the rollback failed: {exc}; restore them or abort') from exc
+            print('NOTE: the docs touch-up writer changed paths it may not write; they were rolled back: ' + ', '.join(bad[:10]))
+            tree, manifest = git_snapshot(self.workspace)
+            after = dict(manifest)
+        if self._docs_operator_route(base, after, tree, request, sequence, exempt={path for path in own if path in allow}):
+            return   # an operator change outside the docs paths: the EXEC reviewer reviews it, the loop stays open
+        changed = worktree_lifecycle.manifest_delta(base, after)
+        extra.update(sequence=sequence, docs_paths=changed, docs_written={path: after.get(path) for path in changed if path in allow})
+        if result['answer']['status'] == 'HOLD':   # a docs writer HOLD answer stays a HOLD (integrity, as in DOCS)
+            self.state['lifecycle'] = lifecycle_spine.complete(self.state['lifecycle'], {
+                **request, 'status': 'HOLD', 'output_oid': tree, 'touchup': True, 'route': 'HOLD', **extra})
+            self.state['lifecycle'].pop('writer_git', None)
+            self.hold('docs writer: ' + result['answer']['body'])
+            return
+        if changed:
+            print('NOTE: the docs touch-up changed ' + ', '.join(changed[:10]) + '; no docs reviewer saw it (listed for your '
+                  'decision in the delivery report); the security reviewer sees the final docs')
+        self._docs_touchup_done(request, tree, extra)
+
+    def _docs_touchup_done(self, request: dict, tree: str, extra: dict) -> None:
+        life = self.state['lifecycle']
+        if life['pending'] != request:
+            life = lifecycle_spine.begin(life, request)
+        receipt = {**request, 'status': 'READY', 'output_oid': tree, 'touchup': True, 'route': 'SECURITY',
+                   'docs_paths': [], 'docs_written': {}, **extra}
+        life = lifecycle_spine.complete(life, receipt)
+        life.pop('writer_git', None)
+        life['docs_owned'] = {**life.get('docs_owned', {}), **receipt['docs_written']}
+        self.state['lifecycle'] = life
+        opv.void_stale(self, tree, atomic_json)
+        life.update(stage='SECURITY', candidate_oid=tree, docs_approval=self._save_approval_manifest('docs'))
+        self.state['next'] = 'security'
+        self.save()
 
     def _report_security_turn(self) -> None:
         """LG2-a3, report mode: the sensitive path scan and the preflight results become security findings, the
@@ -9214,7 +9475,7 @@ class Coordinator:
         blocking_ids = [row['id'] for row in self._security_owned() if blocks_by_severity(row)]
         review = {'sequence': sequence, 'status': answer['status'], 'finding_ids': open_ids,   # every open row is listed;
                   'reason': ('security reviewer findings: ' + ', '.join(blocking_ids) + '; fix them outside the run and '
-                             'resume (EXEC replays), or abort') if blocking_ids else None}   # v3.8.1: MINOR/LOW do not stop it
+                             'resume (narrow security loop), or abort') if blocking_ids else None}   # v3.8.1: MINOR/LOW do not stop it
         life['security_hold_tree'] = tree if blocking_ids else None   # only a review that wrote the ledger moves it
         life['security_review'] = {'request_id': request_id, 'review': review}
         self.save()
@@ -9276,7 +9537,7 @@ class Coordinator:
             ('; .gitignore does not cover: ' + ', '.join(result['uncovered_ignore']) + '. To recover, add the patterns to '
              'the tracked .gitignore in the worktree, neither committed nor staged (an edit made during the run counts and '
              'ships with the delivery; undo a commit by restoring HEAD to the run\'s parent, keeping the edit) and resume: '
-             'EXEC review and gate replay, then FINISH..SECURITY, within the EXEC round limit. If the change produces a '
+             'the narrow security loop (EXEC review of the edit, FINISH, SECURITY), within the EXEC round limit. If the change produces a '
              'round-limit HOLD, the round is already used: plain resume keeps the HOLD; resume --add-rounds N '
              '(1-10) continues with the pending review. An edit already present when '
              'the run started does not count as the run\'s own: restore the file to HEAD, or abort, commit it, start a new '
@@ -10442,7 +10703,8 @@ class Coordinator:
         confirm_after = self.state.pop('confirm_shadow_rows', None) if phase == 'EXEC' else None
         confirming = confirm_after is not None and result['sequence'] > confirm_after
         if (not leak and not failures and phase == 'EXEC' and self.args.shadow == 'on'   # R1 F8: a replay honors --shadow off
-                and not confirming):   # S3 R2 F2: a confirmation review of the same tree runs no new shadow
+                and not confirming   # S3 R2 F2: a confirmation review of the same tree runs no new shadow
+                and not self._security_fix_active()):   # WI-POSTGATE E: the narrow SECURITY loop runs no shadow
             self.materialize_review_context()
             shadow_snapshot, _ = git_snapshot(self.workspace)
             shadow = self._recorded_shadow_result(phase, result['sequence'])
@@ -10758,8 +11020,9 @@ class Coordinator:
             self.state['next'] = 'gate'
             self._allow_initial_gate()
         else:
-            if post_gate and self.state['gate_fail_round'].get('closed_at') is None:
-                self.state['gate_fail_round']['closed_at'] = result['sequence']   # S3 R2 F2: the gate repair review passed
+            if post_gate and (fail := self.state.get('gate_fail_round')) and fail.get('closed_at') is None:
+                fail['closed_at'] = result['sequence']   # S3 R2 F2: the gate repair review passed (a narrow SECURITY loop
+                # review, WI-POSTGATE E, may follow no gate FAIL)
             self._structural_block_hold('reviewer', result['sequence'], [])   # FIELD-5: an approval that ends the review breaks the run
             self.state['pending_reviewer_result_sequence'] = None
             self.start_polish_or_done()
@@ -10933,6 +11196,8 @@ class Coordinator:
         repair, from the FAIL until a repair review passes (S3 R2 F2: gate_fail_round.closed_at; a replay of the closing review
         stays in scope), outside a post-DONE rejection repair (Q4: the persistent reviewer reviews it in full) and report mode.
         A later FINISH or writer re-review keeps the ordinary threshold, so a writer's regression still blocks and rolls back."""
+        if phase == 'EXEC' and self._security_fix_active():   # WI-POSTGATE E: the narrow SECURITY loop review
+            return True
         fail = self.state.get('gate_fail_round')
         if phase != 'EXEC' or not fail or self.state.get('rejection_repair') or self.state['config'].get('review_report'):
             return False
@@ -10949,6 +11214,8 @@ class Coordinator:
                 row['post_gate_nonblocking'] = True
 
     def post_gate_prompt(self) -> str:
+        if self.state['phase'] == 'EXEC' and (fix := self._security_fix_active()):
+            return self._security_fix_prompt(fix)
         if not self._post_gate_review(self.state['phase']):
             return ''
         return ('## Post-gate review\nThe gate has run once. Review the complete change since the gate, but only the open '
@@ -11281,6 +11548,10 @@ class Coordinator:
                     self.worktree_docs_review_only_turn()   # v3.8.1: a docs-only author fix
                 elif self.state['next'] == 'security' and worktree_lifecycle.is_worktree(self.state):
                     self.worktree_security_turn()
+                elif self.state['next'] == 'security-fix' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_security_fix_turn()   # WI-POSTGATE E: the narrow SECURITY loop
+                elif self.state['next'] == 'docs-touchup' and worktree_lifecycle.is_worktree(self.state):
+                    self.worktree_docs_touchup_turn()
                 else:
                     return self.hold('invalid next action')
             except RuntimeError as exc:
@@ -11293,10 +11564,11 @@ class Coordinator:
         tree POLISH-Q reviewed it goes on to DOCS with no author turn; on a tree a fix already changed, the EXEC reviewer
         reviews that change (stage EXEC, a new epoch). Receipts, turns, ledger rows, verdicts and budgets are never
         rewritten; only the transient keys change, and state['post_gate_migration'] records the step. A --review-only run
-        keeps its fix leg (owner Q1)."""
+        keeps its fix leg (owner Q1). The SECURITY rows (both kinds of run) are _migrate_security_loop."""
         life = self.state.get('lifecycle')
-        if (not worktree_lifecycle.is_worktree(self.state) or self.state.get('review_only')
-                or self.state['config'].get('review_report') or life.get('stage') != 'POLISH-Q' or life.get('pending')
+        if (not worktree_lifecycle.is_worktree(self.state) or self.state['config'].get('review_report')
+                or self._migrate_security_loop() or self.state.get('review_only')
+                or life.get('stage') != 'POLISH-Q' or life.get('pending')
                 or self.state['next'] not in ('polish-fix', 'polish-recheck', 'reviewer') or self.blocking_open_findings()):
             return
         tree = git_snapshot(self.workspace)[0]
@@ -11318,6 +11590,39 @@ class Coordinator:
         print(f"NOTE: v3.17.0 post-gate rule: the POLISH-Q fix leg ({record['from']}) ends; the specialist findings are "
               + ('reported, DOCS runs next' if record['to'] == 'DOCS' else
                  'reported, and the EXEC reviewer reviews the change already made'))
+
+    def _migrate_security_loop(self) -> bool:
+        """WI-POSTGATE §3, SECURITY rows. A v3.16.x state (no security_hold record) at a SECURITY HOLD on the security
+        reviewer's findings, on the tree they were raised on, goes into author loop 1 (the mirror is taken now: the tree is
+        still the hold tree), unless the cap or the budgets leave it to the operator. A changed tree needs nothing here: the
+        SECURITY turn opens the operator loop. EXEC reopened by the v3.16.x SECURITY operator route (the latest receipt is
+        SECURITY route EXEC of the previous epoch, the EXEC reviewer is next) becomes an operator loop whose hold tree is that
+        receipt's candidate (no mirror: the reviewer gets the changed paths). Records, never rewrites; True when it acted."""
+        life = self.state['lifecycle']
+        if life.get('security_fix') or 'security_hold' in life or life.get('pending'):
+            return False
+        receipts = life['receipts']
+        if (life.get('stage') == 'SECURITY' and self.state['next'] == 'security'
+                and life.get('security_hold_tree') == life['candidate_oid'] == (tree := git_snapshot(self.workspace)[0])
+                and any(blocks_by_severity(row) for row in self._security_owned()) and not self._security_author_block()):
+            hold = self._last_security_request()
+            self._record_security_hold(hold, tree)
+            self._enter_security_fix('author', tree, hold, worktree_lifecycle.stage_request(life, 'security'), tree)
+            record = {'from': 'security-hold', 'to': 'SECURITY-FIX', 'by': 'author'}
+        elif (life.get('stage') == 'EXEC' and self.state['next'] == 'reviewer' and receipts
+              and receipts[-1]['stage'] == 'SECURITY' and receipts[-1].get('route') == 'EXEC'
+              and receipts[-1]['epoch'] == life['epoch'] - 1):
+            self._open_security_fix('operator', receipts[-1]['candidate_oid'],
+                                    next((row['request_id'] for row in reversed(receipts[:-1]) if row['stage'] == 'SECURITY'), None))
+            record = {'from': 'security-exec', 'to': 'SECURITY-FIX', 'by': 'operator'}
+        else:
+            return False
+        record.update(tree=git_snapshot(self.workspace)[0], sequence=self.state['sequence'], epoch=self.state['lifecycle']['epoch'])
+        self.state.setdefault('post_gate_migration', []).append(record)
+        self.save()
+        print(f"NOTE: v3.17.0 narrow security loop: the saved SECURITY {'HOLD' if record['by'] == 'author' else 'fix'} "
+              f"continues as loop 1 ({record['by']} fix, then the EXEC reviewer of the fix delta, FINISH, a docs touch-up, SECURITY)")
+        return True
 
     def _apply_resume_role_changes(self) -> list[dict]:
         config = self.state['config']

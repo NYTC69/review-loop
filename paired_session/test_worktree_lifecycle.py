@@ -1093,9 +1093,11 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual([item['status'] for item in co.state['finding_ledger'] if item['id'] == row['id']], ['withdrawn'])
         self.run_dir = self.root / 'major'
         env = {'FAKE_SECURITY_MINOR_ONCE': str(self.root / 'major-once'), 'FAKE_SECURITY_MINOR_SEVERITY': 'MAJOR'}
-        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: security reviewer findings: ', held.stdout, held.stdout + held.stderr)
+        with mock.patch.dict(os.environ, env), mock.patch.object(rc, 'SECURITY_FIX_LOOPS', 0), \
+                mock.patch('sys.stdout', io.StringIO()):   # WI-POSTGATE: no automatic security fix, the operator's HOLD
+            self.assertEqual(rc.Coordinator(self.args('--max-invocations', '60')).drive(), 'HOLD')
         state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertTrue(state['hold_reason'].startswith('security reviewer findings: '), state['hold_reason'])
         [row] = [row for row in state['finding_ledger'] if row['source'] == 'security-reviewer']
         co = rc.Coordinator(self.args('--max-invocations', '60'))
         co.state.update(status='DONE', acceptance_state='PENDING')   # even where withdrawal is allowed, MAJOR is refused
@@ -1607,9 +1609,12 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
         self.assertEqual((security['status'], security['candidate_oid']), ('HOLD', tree))
         rounds = co.state['exec_rounds']
         co.state['status'] = 'ACTIVE'
-        co.worktree_security_turn()   # resume: the changed tree is reviewed and gated again
+        co.worktree_security_turn()   # resume: the changed tree is reviewed again (WI-POSTGATE E: the narrow loop)
         self.assertEqual((co.state['next'], co.state['gate_ran'], co.state['exec_rounds'], co.state['lifecycle']['stage'],
                           co.state['lifecycle']['epoch']), ('reviewer', False, rounds, 'EXEC', 1))   # WI-GATE1 R5: no round
+        fix = co.state['lifecycle']['security_fix']
+        self.assertEqual((fix['by'], fix['hold_tree'], fix['mirror'], co.state['lifecycle']['receipts'][-1]['route']),
+                         ('operator', tree, False, 'SECURITY-FIX'))   # the tree changed during the stage: no mirror of it
 
     def test_security_preflight_fails_closed(self):
         co, _ = self.at_security()
@@ -1637,27 +1642,34 @@ class WorktreeLifecycleActivationTests(unittest.TestCase):
 
     def test_a_blocking_security_finding_holds_and_only_a_fix_on_a_new_tree_reaches_done(self):
         env = {'FAKE_Q_MINOR': '1', 'FAKE_Q_SEVERITY': 'CRITICAL', 'FAKE_Q_SECURITY_FLAG': '1'}
-        held = self.run_coordinator('--lifecycle-mode', 'on', '--max-invocations', '60', env=env)
-        self.assertIn('HOLD: security reviewer findings: ', held.stdout, held.stdout + held.stderr)
+        def drive(action):   # WI-POSTGATE: with the automatic security fix off (cap 0) the fix is the operator's
+            with mock.patch.dict(os.environ, env), mock.patch.object(rc, 'SECURITY_FIX_LOOPS', 0), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                co = rc.Coordinator(self.args('--max-invocations', '60', action=action))
+                return co.resume() if action == 'resume' else co.drive()
+        self.assertEqual(drive('run'), 'HOLD')
         state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertTrue(state['hold_reason'].startswith('security reviewer findings: '), state['hold_reason'])
+        self.assertIn('fix them outside the run and resume (narrow security loop)', state['hold_reason'])
         [finding] = [row for row in state['finding_ledger'] if row['source'] == 'security-reviewer']
         self.assertEqual((finding['owner_role'], finding['severity'], finding['security'], finding['status']),
                          ('security-reviewer', 'CRITICAL', True, 'open'))
         self.assertEqual((state['status'], state['lifecycle']['stage']), ('HOLD', 'SECURITY'))
         reviews = len([row for row in state['turns'] if row['phase'] == 'SECURITY'])
-        again = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
-        self.assertIn('HOLD: security findings need a fix on a new tree, not a re-review: ' + finding['id'], again.stdout,
-                      again.stdout + again.stderr)
+        self.assertEqual(drive('resume'), 'HOLD')
         state = json.loads((self.run_dir / 'state.json').read_text())
+        self.assertTrue(state['hold_reason'].startswith('security findings need a fix on a new tree, not a re-review: ' +
+                                                        finding['id']), state['hold_reason'])
         self.assertEqual(len([row for row in state['turns'] if row['phase'] == 'SECURITY']), reviews)
         (self.workspace / 'NOTES.md').write_text('operator fix outside the run\n')
         fixed = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '60')
-        # the blocking security finding does not gate EXEC, POLISH-Q or DOCS; its owner closes it at SECURITY
+        # the blocking security finding does not gate EXEC, POLISH-Q or DOCS; its owner closes it at SECURITY after the narrow
+        # loop (WI-POSTGATE E: the EXEC reviewer of the fix delta, FINISH, the docs touch-up)
         self.assertIn(DONE, fixed.stdout, fixed.stdout + fixed.stderr)
         state = json.loads((self.run_dir / 'state.json').read_text())
         self.assertEqual([row['status'] for row in state['finding_ledger'] if row['id'] == finding['id']], ['fixed'])
         routes = [row['route'] for row in state['lifecycle']['receipts'] if row['stage'] == 'SECURITY']
-        self.assertEqual(routes, ['HOLD', 'EXEC', 'DONE'])
+        self.assertEqual(routes, ['HOLD', 'SECURITY-FIX', 'DONE'])
         self.assertIsNone(state['lifecycle']['security_hold_tree'])
 
     def security_turn_stub(self, co, tree, answer, tool_calls=1):

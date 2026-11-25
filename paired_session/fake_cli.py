@@ -469,6 +469,9 @@ def main():
             if 'specialist blocker' in prompt:   # worktree-lifecycle POLISH-Q fix leg: one new tree per fixed id set
                 ids = ' '.join(re.findall(r'"id": "F(\d+)"', prompt))   # no finding ids in code: shadow independence
                 module.write_text(module.read_text() + f'# specialist fix {ids}\n')
+            if '"source": "security"' in prompt:   # WI-POSTGATE: the narrow SECURITY loop's author fix
+                ids = ' '.join(re.findall(r'"id": "F(\d+)"', prompt))   # one new tree per fixed id set
+                module.write_text(module.read_text() + f'# security fix {ids}\n')
             if secret := os.environ.get('FAKE_AUTHOR_SECRET'):   # V312-S: commits a credential, removes it on the scan finding
                 if 'hardcoded credential at ' + secret in prompt:
                     (Path.cwd() / secret).unlink(missing_ok=True)
@@ -492,7 +495,8 @@ def main():
             extra_observed_commands = [{'command': author_test}]
         if 'Advisory fix round' in prompt and (mark := os.environ.get('FAKE_AUTHOR_ADVISORY_TOUCH')):   # ADVFIX
             Path(mark).write_text('advisory round ran\n')
-        if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE'):
+        if os.environ.get('FAKE_AUTHOR_HOLD_AFTER_WRITE') or (
+                os.environ.get('FAKE_SECURITY_FIX_HOLD') and '"source": "security"' in prompt):   # WI-POSTGATE
             answer = {'status': 'HOLD', 'body': 'Fake author held after writing.'}
         if os.environ.get('FAKE_AUTHOR_COMMIT') and 'Phase: EXEC' in prompt:   # D-EFF git guard: an author that commits its change
             subprocess.run(['git', 'add', '-A'], check=True)
@@ -547,6 +551,8 @@ def main():
             target = Path.cwd() / os.environ['FAKE_LIFECYCLE_DOCS_FILE']
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('# Fake lifecycle guide\n')
+            if 'Narrow security fix' in prompt and os.environ.get('FAKE_DOCS_TOUCHUP_WRITE'):   # WI-POSTGATE: the touch-up
+                target.write_text(target.read_text() + '# security touch-up\n')
         if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
             Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: rolled back (WI-GATE1)
             module.write_text(module.read_text() + '# docs comment fix\n')

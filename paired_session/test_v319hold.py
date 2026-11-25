@@ -24,8 +24,8 @@ sys.path[0] = {folder!r}   # as when the coordinator file runs itself: its sibli
 sys.argv[0] = __file__ = {module!r}
 exec(compile(open({source!r}).read(), __file__, 'exec'))
 """
-UNCLASSIFIABLE_EXIT = ('; rename or remove the unclassifiable path and resume (EXEC review and gate replay, then '
-                       'FINISH..SECURITY, within the EXEC round limit), or abort')
+UNCLASSIFIABLE_EXIT = ('; rename or remove the unclassifiable path and resume (the narrow security loop: EXEC review of '
+                       'the change, FINISH, SECURITY, within the EXEC round limit), or abort')   # WI-POSTGATE E
 
 
 class HoldExitTests(unittest.TestCase):

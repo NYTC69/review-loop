@@ -115,19 +115,21 @@ class PostGateRunTests(unittest.TestCase):
     # --- AC2: a security-class specialist row goes to the SECURITY reviewer -------------------------------------------------
     def test_a_security_specialist_row_is_forwarded_to_the_security_reviewer(self):
         env = {**BLOCK, 'FAKE_SPECIALIST_SECURITY': '1', 'FAKE_SECURITY_KEEP_OPEN_ONCE': str(self.root / 'keep-open')}
-        held = self.run_coordinator(*ON, env=env)
-        self.assertIn('HOLD: security reviewer findings: ', held.stdout, held.stdout + held.stderr)
+        result = self.run_coordinator(*ON, env=env)   # step 2 (owner Q2): the forwarded row blocks SECURITY and gets the
+        self.assert_done(result)                       # narrow author loop; the security reviewer closes it on the fixed tree
         state = self.state()
         [row] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
-        self.assertEqual(row['status'], 'open')
-        self.assertIn(row['id'], state['hold_reason'])
         [polish] = self.receipts(state, 'POLISH-Q')
         self.assertEqual((polish['status'], polish.get('report_only'), polish['to_security']), ('READY', None, [row['id']]))
+        security = min(turn['sequence'] for turn in state['turns'] if turn['phase'] == 'SECURITY')
         after = self.after(state, self.last_polish_turn(state))
-        self.assertEqual(after[-1], ('reviewer', 'SECURITY'))
-        self.assertNotIn(('author', 'EXEC'), after)
-        security = next(turn for turn in reversed(state['turns']) if turn['phase'] == 'SECURITY')
-        prompt = (self.run_dir / 'evidence' / f"{security['sequence']:03d}-security-reviewer.prompt.txt").read_text()
+        self.assertNotIn(('author', 'EXEC'), after[:after.index(('reviewer', 'SECURITY'))])   # no fix between POLISH-Q and SECURITY
+        held = self.receipts(state, 'SECURITY')[0]
+        self.assertEqual((held['status'], held['route']), ('HOLD', 'SECURITY-FIX'))
+        self.assertIn(row['id'], held['review']['reason'])   # it blocks at SECURITY
+        self.assertEqual(self.after(state, security)[0], ('author', 'EXEC'))
+        self.assertEqual((row['status'], state['lifecycle']['security_fix_history'][0]['finding_ids']), ('fixed', [row['id']]))
+        prompt = (self.run_dir / 'evidence' / f"{security:03d}-security-reviewer.prompt.txt").read_text()
         ledger = prompt.split('Open finding ledger (', 1)[1]
         self.assertIn(f"- {row['id']}: ", ledger)
         self.assertIn('forwarded from POLISH-Q', ledger)
@@ -259,6 +261,211 @@ class PostGateRunTests(unittest.TestCase):
         self.assertIn(('author', 'EXEC'), self.after(state, first['specialist_turns'][-1]['sequence']))
         self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())
         self.assertNotIn('post_gate_migration', state)
+
+
+SECURITY_ONCE = {'FAKE_SECURITY_MINOR_SEVERITY': 'MAJOR'}   # one blocking security-reviewer row (no category: it blocks)
+SECURITY_ALWAYS = {'FAKE_Q_MINOR': '1', 'FAKE_Q_SEVERITY': 'CRITICAL', 'FAKE_Q_SECURITY_FLAG': '1'}   # a new one every review
+LOOP = [('author', 'EXEC'), ('reviewer', 'EXEC'), ('author', 'FINISH'), ('author', 'DOCS'), ('reviewer', 'SECURITY')]
+
+
+class SecurityLoopTests(unittest.TestCase):
+    """WI-POSTGATE step 2 (plan 2.E): the narrow SECURITY loop. A SECURITY HOLD on security-reviewer findings gets one author
+    fix (at most SECURITY_FIX_LOOPS), the EXEC reviewer reviews only the fix delta (no shadow, no re-gate), FINISH runs, a docs
+    touch-up without a docs review, then SECURITY again. Scan HOLDs, the cap and an author HOLD stay with the operator, whose
+    fix takes the same narrow chain."""
+    locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in (*twl._HELPERS, 'setUp')})
+    locals().update({name: getattr(docsfix.DocsOperatorEditTests, name) for name in ('state', 'assert_done', 'after')})
+    locals().update({name: getattr(PostGateRunTests, name) for name in ('receipts', 'accept', 'assert_history_kept')})
+
+    def env(self, extra=None):
+        return {**SECURITY_ONCE, 'FAKE_SECURITY_MINOR_ONCE': str(self.root / 'security-once'), **(extra or {})}
+
+    def drive(self, *extra, env=None, action='run', **patches):
+        """In-process drive (resume with action='resume'); `patches`: module attributes of rc (SECURITY_FIX_LOOPS) or
+        Coordinator methods."""
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env or {}), contextlib.redirect_stdout(out), contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(rc if name.isupper() else rc.Coordinator, name, value))
+            command = self.command(*ON, *extra)
+            command[2] = action
+            co = rc.Coordinator(rc.parser().parse_args(command[2:]))
+            status = co.resume() if action == 'resume' else co.drive()
+        return status, co.state.get('hold_reason', ''), out.getvalue()
+
+    def first_security(self, state):
+        return min(turn['sequence'] for turn in state['turns'] if turn['phase'] == 'SECURITY')
+
+    def prompt(self, sequence):
+        [path] = (self.run_dir / 'evidence').glob(f'{sequence:03d}-*.prompt.txt')
+        return path.read_text()
+
+    def loop_review(self, state, after):
+        return next(turn for turn in state['turns'] if turn['sequence'] > after and turn['role'] == 'reviewer'
+                    and turn['phase'] == 'EXEC')
+
+    # --- AC4: the author loop -----------------------------------------------------------------------------------------------
+    def test_a_blocking_security_finding_gets_the_narrow_author_loop(self):
+        result = self.run_coordinator(*ON, env=self.env({**DOCS_ENV, 'FAKE_DOCS_TOUCHUP_WRITE': '1'}))
+        self.assert_done(result)
+        state = self.state()
+        held = self.first_security(state)
+        self.assertEqual(self.after(state, held), LOOP)   # no shadow, POLISH-Q, docs reviewer or gate
+        [row] = [row for row in state['finding_ledger'] if row['source'] == 'security-reviewer']
+        self.assertEqual(row['status'], 'fixed')
+        self.assertEqual([item['route'] for item in self.receipts(state, 'SECURITY')], ['SECURITY-FIX', 'DONE'])
+        life = state['lifecycle']
+        self.assertNotIn('security_fix', life)
+        [loop] = life['security_fix_history']
+        self.assertEqual((loop['loop'], loop['by'], loop['finding_ids'], loop['mirror'], loop['outcome']),
+                         (1, 'author', [row['id']], True, 'passed'))
+        author = next(turn for turn in state['turns'] if turn['sequence'] > held)
+        self.assertIn(row['id'], self.prompt(author['sequence']))   # the author gets the security finding
+        review = self.loop_review(state, held)
+        prompt = self.prompt(review['sequence'])
+        self.assertIn('delta-since-security-hold.patch', prompt)
+        self.assertIn('regression:', prompt)
+        self.assertIn('+# security fix', (self.run_dir / 'context' / 'delta-since-security-hold.patch').read_text())
+        touchup = self.receipts(state, 'DOCS')[-1]
+        self.assertEqual((touchup['touchup'], touchup['route'], touchup['docs_paths']), (True, 'SECURITY', ['CHANGELOG.md']))
+        docs = self.prompt(next(turn['sequence'] for turn in state['turns'] if turn['sequence'] > held and turn['phase'] == 'DOCS'))
+        self.assertIn('sum_ints.py', docs.split('Narrow security fix', 1)[1])
+        self.assertIn(row['id'], docs)
+        findings = (self.run_dir / 'open-findings.md').read_text()
+        self.assertIn('touch-up', findings.split(DECISION, 1)[1])
+        report = self.accept()
+        self.assertIn('touch-up', report.split(DECISION, 1)[1].split('\n## ', 1)[0])
+        self.assertIn(f"SECURITY 窄修复环（WI-POSTGATE）：第 1 轮 作者修复 {row['id']}，SECURITY 通过", report)
+
+    def test_without_docs_config_the_loop_has_no_docs_touch_up(self):
+        self.assert_done(self.run_coordinator(*ON, '--docs-file', '', env=self.env()))
+        state = self.state()
+        self.assertEqual(self.after(state, self.first_security(state)), [step for step in LOOP if step != ('author', 'DOCS')])
+        touchup = self.receipts(state, 'DOCS')[-1]
+        self.assertEqual((touchup['touchup'], touchup['skipped'], touchup['route']),
+                         (True, 'no docs path configured', 'SECURITY'))
+
+    def test_the_security_fix_uses_no_exec_round(self):
+        status, reason, out = self.drive(env=self.env(), SECURITY_FIX_LOOPS=0)
+        self.assertEqual(status, 'HOLD', out)
+        rounds = self.state()['exec_rounds']
+        status, reason, out = self.drive(env=self.env(), action='resume')   # the same tree, the cap back at 2: loop 1
+        self.assertEqual(status, 'DONE', reason + out)
+        self.assertEqual(self.state()['exec_rounds'], rounds)
+
+    # --- the loop cap -------------------------------------------------------------------------------------------------------
+    def test_a_third_security_failure_is_an_operator_hold(self):
+        held = self.run_coordinator(*ON, env=SECURITY_ALWAYS)
+        state = self.state()
+        self.assertEqual(state['status'], 'HOLD', held.stdout + held.stderr)
+        self.assertEqual([item['route'] for item in self.receipts(state, 'SECURITY')], ['SECURITY-FIX', 'SECURITY-FIX', 'HOLD'],
+                         state['hold_reason'])
+        self.assertEqual([(row['loop'], row['by'], row['outcome']) for row in state['lifecycle']['security_fix_history']],
+                         [(1, 'author', 'held'), (2, 'author', 'held')])
+        self.assertRegex(state['hold_reason'], r'^security reviewer findings: F\d+; the automatic security fix ran 2 times '
+                                               r'\(its cap is 2\)')
+        self.assertIn('SECURITY budget', state['hold_reason'])   # 3 reviews: no room for a 4th
+        self.assertEqual(len([turn for turn in state['turns'] if turn['phase'] == 'SECURITY']), 3)
+        again = self.run_operator_action('resume', *ON)
+        self.assertIn('HOLD: security findings need a fix on a new tree, not a re-review', again.stdout, again.stdout + again.stderr)
+
+    # --- AC5: the operator variant ------------------------------------------------------------------------------------------
+    def test_the_operator_fix_takes_the_narrow_chain(self):
+        status, reason, out = self.drive(env=self.env(), SECURITY_FIX_LOOPS=0)
+        self.assertEqual(status, 'HOLD', out)
+        self.assertIn('fix them outside the run and resume (narrow security loop)', reason)
+        before = self.state()
+        module = self.workspace / 'sum_ints.py'
+        module.write_text(module.read_text() + '# operator security fix\n')
+        self.assert_done(self.run_operator_action('resume', *ON))
+        state = self.state()
+        self.assertEqual(self.after(state, before['sequence']),
+                         [('reviewer', 'EXEC'), ('author', 'FINISH'), ('author', 'DOCS'), ('reviewer', 'SECURITY')])
+        self.assertEqual([item['route'] for item in self.receipts(state, 'SECURITY')], ['HOLD', 'SECURITY-FIX', 'DONE'])
+        [loop] = state['lifecycle']['security_fix_history']
+        self.assertEqual((loop['by'], loop['mirror'], loop['hold_tree']), ('operator', True, before['lifecycle']['candidate_oid']))
+        self.assertIn('delta-since-security-hold.patch', self.prompt(self.loop_review(state, before['sequence'])['sequence']))
+        self.assertIn('+# operator security fix', (self.run_dir / 'context' / 'delta-since-security-hold.patch').read_text())
+
+    def test_an_operator_fix_of_tests_only_skips_the_docs_touch_up(self):
+        status, _, out = self.drive(env=self.env(), SECURITY_FIX_LOOPS=0)
+        self.assertEqual(status, 'HOLD', out)
+        before = self.state()
+        (self.workspace / 'tests').mkdir(exist_ok=True)
+        (self.workspace / 'tests' / 'test_security_case.py').write_text('# operator regression test\n')
+        self.assert_done(self.run_operator_action('resume', *ON))
+        state = self.state()
+        self.assertEqual(self.after(state, before['sequence']), [('reviewer', 'EXEC'), ('author', 'FINISH'), ('reviewer', 'SECURITY')])
+        self.assertEqual(self.receipts(state, 'DOCS')[-1]['skipped'], 'only docs and tests changed since the security hold')
+
+    def test_an_author_hold_in_the_loop_leaves_the_fix_to_the_operator(self):
+        held = self.run_coordinator(*ON, env=self.env({'FAKE_SECURITY_FIX_HOLD': '1'}))
+        state = self.state()
+        self.assertEqual((state['status'], state['next']), ('HOLD', 'reviewer'), held.stdout + held.stderr)
+        self.assertTrue(state['hold_reason'].startswith('implementer: '), state['hold_reason'])
+        self.assertIn('the EXEC reviewer reviews your change (narrow security loop)', held.stdout)
+        fix = state['lifecycle']['security_fix']
+        self.assertEqual((fix['by'], fix['author_held']), ('author', state['sequence']))
+        module = self.workspace / 'sum_ints.py'
+        module.write_text(module.read_text() + '# operator security fix\n')
+        self.assert_done(self.run_operator_action('resume', *ON))
+        self.assertEqual(self.after(self.state(), state['sequence']), LOOP[1:])
+
+    def test_a_scan_hold_stays_with_the_operator(self):
+        def blocked(co, request_id):
+            return {'status': 'blocked', 'reason': 'security preflight blocked (exit 1); fake-rule in sum_ints.py',
+                    'removed_paths': [], 'preexisting_findings': [], 'findings': []}
+        status, reason, out = self.drive(_security_preflight=blocked)
+        self.assertEqual(status, 'HOLD', out)
+        state = self.state()
+        self.assertEqual([item['route'] for item in self.receipts(state, 'SECURITY')], ['HOLD'])
+        self.assertNotIn('security_fix', state['lifecycle'])
+        self.assertTrue(state['lifecycle']['security_hold']['mirror'])   # the operator's later fix gets the patch
+
+    # --- AC8b: v3.16.x states -----------------------------------------------------------------------------------------------
+    def legacy_security_hold(self):
+        """A v3.16.x SECURITY HOLD on a blocking security-reviewer row: route HOLD, no hold record, no loop."""
+        status, _, out = self.drive(env=self.env(), SECURITY_FIX_LOOPS=0, _record_security_hold=lambda co, *a: None)
+        self.assertEqual(status, 'HOLD', out)
+        state = self.state()
+        self.assertFalse({'security_hold', 'security_fix', 'security_fix_history'} & set(state['lifecycle']))
+        return state
+
+    def test_a_saved_security_hold_on_the_same_tree_resumes_into_author_loop_1(self):
+        before = self.legacy_security_hold()
+        self.assert_done(self.run_operator_action('resume', *ON))
+        state = self.state()
+        self.assertEqual(self.after(state, before['sequence']), LOOP)
+        self.assert_history_kept(before, state, appended=True)   # the security reviewer closes its row on the fixed tree
+        [migration] = state['post_gate_migration']
+        self.assertEqual((migration['from'], migration['to']), ('security-hold', 'SECURITY-FIX'))
+        [loop] = state['lifecycle']['security_fix_history']
+        self.assertEqual((loop['loop'], loop['by'], loop['mirror']), (1, 'author', True))
+
+    def test_exec_reopened_by_the_v316_security_operator_route_resumes_as_an_operator_loop(self):
+        before = self.legacy_security_hold()
+        module = self.workspace / 'sum_ints.py'
+        module.write_text(module.read_text() + '# operator security fix\n')
+        co = rc.Coordinator(rc.parser().parse_args(['resume', *self.command(*ON)[3:]]))
+        life = co.state['lifecycle']   # what v3.16.x did at SECURITY on the changed tree, then a HOLD before the reviewer
+        request = rc.worktree_lifecycle.stage_request(life, 'security')
+        life = rc.lifecycle_spine.complete(rc.lifecycle_spine.begin(life, request), {
+            **request, 'status': 'HOLD', 'output_oid': rc.git_snapshot(self.workspace)[0], 'route': 'EXEC'})
+        co.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+        co.state.update(phase='EXEC', next='reviewer', delivered_review='', status='HOLD', hold_reason='invocation limit reached')
+        co.save()
+        saved = self.state()
+        self.assert_done(self.run_operator_action('resume', *ON))
+        state = self.state()
+        self.assertEqual(self.after(state, saved['sequence']),
+                         [('reviewer', 'EXEC'), ('author', 'FINISH'), ('author', 'DOCS'), ('reviewer', 'SECURITY')])
+        self.assert_history_kept(saved, state, appended=True)
+        [migration] = state['post_gate_migration']
+        self.assertEqual((migration['from'], migration['to']), ('security-exec', 'SECURITY-FIX'))
+        [loop] = state['lifecycle']['security_fix_history']
+        self.assertEqual((loop['by'], loop['mirror'], loop['hold_tree']), ('operator', False, before['lifecycle']['candidate_oid']))
+        prompt = self.prompt(self.loop_review(state, saved['sequence'])['sequence'])
+        self.assertIn('sum_ints.py', prompt.split('## Narrow security loop', 1)[1])   # no mirror: the changed paths
 
 
 if __name__ == '__main__':

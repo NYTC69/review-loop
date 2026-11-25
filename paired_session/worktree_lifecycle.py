@@ -260,7 +260,8 @@ def post_gate_class(row, review_only, blocks):
 
 def owner_decision_lines(state, classes):
     """WI-POSTGATE F: the lines of `## 不阻塞、需要你决定`: the 'decide' rows (classes: finding id -> post_gate_class),
-    risk-first, and a DOCS pass that spent its budget with the docs rows it left open."""
+    risk-first, a DOCS pass that spent its budget with the docs rows it left open, and every docs touch-up of the narrow
+    SECURITY loop that changed docs no docs reviewer saw."""
     rows = review_report.risk_first([row for row in state['finding_ledger'] if classes.get(row['id']) == 'decide'])
     lines = []
     for row in rows:
@@ -273,6 +274,9 @@ def owner_decision_lines(state, classes):
     if docs.get('budget_spent'):
         left = [row['id'] for row in state['finding_ledger'] if row.get('status') == 'open' and row.get('source') == 'docs-reviewer']
         lines.append('- DOCS 预算已用完，文档评审未关闭的发现：' + ('、'.join(left) if left else '无'))
+    for row in state['lifecycle']['receipts']:   # WI-POSTGATE E (owner Q3): the narrow security loop's docs touch-up
+        if row.get('stage') == 'DOCS' and row.get('touchup') and row.get('docs_paths'):
+            lines.append(f"- 安全修复后的文档补写（DOCS touch-up，{row['request_id']}）没有经过文档评审：" + '、'.join(row['docs_paths']))
     return lines
 
 
@@ -313,6 +317,10 @@ def delivery_report(state, run_id, workitem, delivery, decisions=()):
              f"内容命中 {content_hit_count} 条，"
              f"因大小未扫描 {len(preflight.get('skipped_preexisting_files') or [])} 个文件"
              + (f"；另有 {preflight['preexisting_truncated']} 条已有命中未列出" if preflight.get('preexisting_truncated') else ''),
+             *(['- SECURITY 窄修复环（WI-POSTGATE）：' + '；'.join(   # E: who fixed which findings, and how it ended
+                 f"第 {row['loop']} 轮 {'作者' if row['by'] == 'author' else '操作者'}修复 {'、'.join(row['finding_ids']) or '-'}，"
+                 + {'passed': 'SECURITY 通过', 'held': 'SECURITY 仍 HOLD', 'unchanged': '树未改变'}.get(row.get('outcome'), str(row.get('outcome')))
+                 for row in life['security_fix_history'])] if life.get('security_fix_history') else []),
              *writer_report_lines(state),   # D09 C1-a
              advisory_report_line(state),   # ADVFIX
              f"- 未关闭的发现：{len(open_ids)} 条" + (f"（{', '.join(open_ids)}）" if open_ids else ''),
