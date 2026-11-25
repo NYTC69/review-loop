@@ -1,4 +1,4 @@
-**Last updated**: 2026-11-25
+**Last updated**: 2026-11-26
 
 ## P0 — blocker / must-do-now
 
@@ -32,12 +32,14 @@
   - Audit labels: the past-cap review of a last-slot writer output is recorded as `operator_recheck` and printed as "recheck of the changed tree"; the failed-writer rollback diff path is not kept in the DOCS receipt; two NOTEs can contradict each other when the per-path rule splits a failed writer's writes (dogfood F005, F006, F013, F014). (2026-11-25)
   - Test gaps: git-guard-discarded writer turn, chaining across several failed turns, missing-snapshot fallback, retry inside one invoke() (dogfood F004, F009-F011). (2026-11-25)
   - Own-repo dogfood friction: attach-verification refuses a host log that contains vendor names (review-loop's own test output mentions claude/codex), so the operator trims those lines; the reviewer sandbox times out on the paired_session test modules, so each tree needs a host attach. (2026-11-25)
+- Optional follow-ups from the v3.17.0 reviews and dogfood run (WI-POSTGATE). (added 2026-11-26)
+  - Dogfood MINOR findings F004-F016, F020-F023 (audit wording, test gaps); F023: the docs touch-up does not re-check that an allowlisted docs path is a regular file before writing. (2026-11-26)
+  - Review notes: rejections scale the narrow-loop and stage caps differently; touch-up rollback order versus the writer git guard; a protected path written by a failed touch-up writer is not rolled back. (2026-11-26)
+  - `backlog_insert` cosmetics: CRLF files, missing blank line before an inserted section, case-sensitive `## P1`/`## P2` heading match. (2026-11-26)
+  - Gate note: the AC8 "unchanged state" holds byte for byte only for POLISH-Q; a migrated SECURITY HOLD appends ledger status history (intended). (2026-11-26)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-STALEFIX stale EXEC approval routes to re-review; docs/comment cleanups.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.4)
-  - Fixed: a reviewer approval of an older tree re-routes to the persistent reviewer in the same resume (once per live tree; a repeat on the same tree HOLDs as before; the gate stays spent).
-  - Docs/comments: combined correction sentence, README clarification and delta-patch wording, operator_hold named, prompt_block live-tree docstring, WI-I CHANGELOG mention; scenario_matrix split kept (_label_and_content validates labels, so it cannot give the raw typo-hint prefix).
 - ~~Review notes accepted as-is (no action; owner 2026-11-25 cleanup).~~ (added 2026-11-24, closed 2026-11-25, see v3.16.4)
   - History-scan: malformed declaration strips the line (consistent with "malformed grants nothing"); per-match workitem re-read (no cost issue); `.codex reviewed it` lookahead (prose regexes cover realistic forms).
   - Auto-split: transferred-scope line from finding summaries (descriptive); generous round 4-5 allowances (harmless).
@@ -49,3 +51,5 @@
   - Rollback covers only the writer turn's own writes; operator changes at a DOCS HOLD route to the docs review or the EXEC reviewer; one docs recheck per tree past the DOCS cap; the invocation-limit HOLD says attach-verification keeps the saved cap.
 - ~~WI-DOCSFIX2: DOCS last-slot writer dead end; errored-writer outside writes attributed to the operator.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.7)
   - One past-cap docs review per unreviewed tree; errored/discarded writer writes rolled back per path from evidence snapshots; v3.16.6 protected-path route documented; first release checked by a dogfood review-only lifecycle run. The two v3.16.5 review notes were closed as accepted (owner 2026-11-25).
+- ~~WI-POSTGATE: post-gate stages stop holding on non-blocking findings; narrow author loop for SECURITY findings.~~ (added 2026-11-25, closed 2026-11-26, see v3.17.0)
+  - POLISH-Q report-only after the gate (review-only keeps its fix leg); DOCS spends its budget and moves on; SECURITY-reviewer findings get up to 2 author fix loops (EXEC reviewer, FINISH, unreviewed docs touch-up, SECURITY); "needs your decision" report section; open rows land under ## P1 / ## P2 in BACKLOG at accept (token-meter field note); in-flight v3.16 runs migrate. Dogfood run found and fixed a touch-up TypeError.
