@@ -8307,8 +8307,9 @@ class Coordinator:
         """WI-DOCSFIX2 (AC2): before a docs writer is dispatched again, an outside-the-allowlist write by an errored or
         discarded docs writer turn of this request (timeout, unusable answer, git guard) is the writer's own, so it is rolled
         back as WI-GATE1 does, not taken for an operator edit. A path counts only when the turns' evidence snapshots chain
-        from the DOCS base to the current content; with any snapshot missing, or an edit in between, nothing is the
-        writer's and _docs_operator_route sends the change to the EXEC reviewer (an operator edit is never reverted)."""
+        from the DOCS base to the current content (judged per path); with any snapshot missing nothing is the writer's, and a
+        path edited between or after the turns is not the writer's: _docs_operator_route sends such changes to the EXEC
+        reviewer (an operator edit is never reverted)."""
         git_base = self.state['lifecycle'].get('writer_git')
         turns = [turn for turn in self.state['turns'] if turn.get('role') == 'author' and turn.get('phase') == 'DOCS'
                  and turn.get('sequence', 0) > git_base['sequence'] and (turn.get('error') or turn.get('discarded'))]
