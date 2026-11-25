@@ -1,5 +1,22 @@
 # Changelog
 
+### v3.16.5：审查备注中的小修复、补充测试和提示措辞（WI-SMALL）
+
+- 自动拆分写入运行 backlog 和仓库 BACKLOG 的条目，与交付报告使用同一排序：数据丢失、安全、资金类发现在前，其余保持账本顺序。EXEC 拆分的范围说明也按此排序。已保存的拆分条目不变。
+- 第 5 轮 shadow HOLD（含批准后的 HOLD）在剩余调用不足以让审查员和 shadow 再审一次时，HOLD 原因会给出可用的 `resume --max-invocations N`。预算本身不变。
+- POLISH-Q 操作者修复后的直接复审，在派发前与作者修复路径一样检查调用上限；不足时以 `the POLISH-Q recheck needs at least N more invocations; resume with a higher --max-invocations, or abort` HOLD，不记录复审授权，也不派发。
+- 非 lifecycle 运行在门审后发现批准过期时，改走与其他位置相同的过期批准转派：提示措辞一致，每棵树只转派一次，同一棵树再次过期时以 `stale EXEC approval: the reviewer did not review the current tree` HOLD。门审裁定继续有效。
+- 转派复审的过期批准在 `review-comparison.md` 中的有效裁定记为 `STALE`，不再显示为 APPROVE；同一棵树再次过期时仍由 hold() 记为 `HOLD`。
+- 文档：`paired_session/README.md` 说明操作者复审仍未关闭后，第二次操作者修改会先经作者修复轮再由负责的专项审查员复审；说明上述调用上限提示和拆分排序。两个 README 把同一棵树再次过期的表述改为“HOLDs”。
+- 补充测试：撤回与两条已送达说明同时存在时优先级说明的位置；审查结果重放处对同一棵树的第二次过期批准 HOLD。
+- 补记 v3.16.4 的测试说明：`test_opv_replay.py` 在批准后调用 `co.hold('fixture pause after approval')` 作为夹具暂停，模拟运行在批准后停住、操作者再修改工作区。
+- 已停住的运行无需特殊处理，用 v3.16.5 执行普通 `resume` 即可。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.4` 更新为 `3.16.5`。
+- 现有断言均未放宽。`test_opv_replay.py` 把批准后改树的准备步骤提取为共用方法，原断言保留并新增 `STALE` 断言；`test_wi_round_split.py` 的拆分用例新增排序断言。
+
 ### v3.16.4：过期的 EXEC 批准直接转入复审（WI-STALEFIX）
 
 - 重放 EXEC 批准或进入 FINISH 前发现工作区已变化时，打印一行提示，并在同一次运行中交给持久审查员复审当前树。每棵树只自动转派一次，再次发现同一棵树的批准过期时沿用原 HOLD 原因。调用上限照常，已完成的门审裁定继续有效。

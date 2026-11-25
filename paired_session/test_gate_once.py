@@ -123,6 +123,30 @@ class GateOnceTests(unittest.TestCase):
         self.assertEqual(reviewer['snapshot_before'], state['approved_snapshot'])
         self.assertEqual(state['approved_snapshot'], rc.git_snapshot(self.workspace)[0])
 
+    def test_stop_after_gate_stale_approval_rereviews_once_per_tree(self):
+        # v3.16.5: the stop-after-gate route uses the shared stale-approval route (one re-review per tree, then HOLD)
+        command = self.command(*OFF)
+        co = rc.Coordinator(rc.parser().parse_args(command[2:]))
+        tree, other = rc.git_snapshot(self.workspace)[0], 'f' * 64
+        co.state.update(turns=[{'role': 'reviewer', 'phase': 'EXEC', 'snapshot_before': other, 'sequence': 1},
+                               {'role': 'gate', 'phase': 'EXEC', 'snapshot_before': tree, 'sequence': 2}],
+                        gate_ran=True, phase='EXEC', next='gate', exec_comparisons=[
+                            {'round': 1, 'review_sequence': 1, 'effective_verdict': 'APPROVE',
+                             'persistent': {'verdict': 'APPROVE', 'findings': []}}])
+        co.save()
+        with mock.patch('builtins.print') as printed:
+            self.assertEqual(co.start_polish_or_done(), 'ACTIVE')
+        printed.assert_called_once_with(
+            'NOTE: the tree changed after the EXEC reviewer approved. The reviewer will review the current tree.')
+        self.assertEqual((co.state['next'], co.state['gate_ran'], co.state['stale_rereview_trees']), ('reviewer', True, [tree]))
+        self.assertEqual(co.state['exec_comparisons'][-1]['effective_verdict'], 'STALE')
+        command[2] = 'resume'
+        again = rc.Coordinator(rc.parser().parse_args(command[2:]))
+        self.assertEqual(again.start_polish_or_done(), 'HOLD')
+        self.assertEqual((again.state['hold_reason'], again.state['next'], again.state['gate_ran']),
+                         ('stale EXEC approval: the reviewer did not review the current tree', 'reviewer', True))
+        self.assertEqual(len(gates(again.state)), 1)
+
     def test_a_gate_fail_goes_to_the_author_and_every_later_review_carries_its_items_then_done(self):
         for mode in (OFF, ON):
             with self.subTest(mode=mode[1]):

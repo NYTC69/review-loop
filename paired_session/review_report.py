@@ -180,6 +180,15 @@ def _verdicts(state: dict) -> list:
               if receipt.get('stage') == 'SECURITY')]
 
 
+SPLIT_RISKS = {'data-loss': 'Data loss', 'security': 'Security', 'money': 'Money'}
+
+
+def risk_first(rows: list) -> list:
+    """Auto-split rows with data loss, security and money first (in that order), the rest after; ledger order within each."""
+    order = list(SPLIT_RISKS)
+    return sorted(rows, key=lambda row: order.index(row.get('category')) if row.get('category') in SPLIT_RISKS else len(order))
+
+
 def delivery_section(state: dict) -> str:
     """L120: the legacy Step 4 summary fields for both accept routes' delivery-report.md: every ledger finding per severity
     with its final status, the PLAN/EXEC rounds, the verdicts and the token totals per vendor (usage.md has the detail)."""
@@ -195,11 +204,9 @@ def delivery_section(state: dict) -> str:
     if splits:
         lines += ['', '## Follow-up work items (auto-split by rule)']
         targets = {finding_id: split['target'] for split in splits.values() for finding_id in split['ids']}
-        risks = {'data-loss': 'Data loss', 'security': 'Security', 'money': 'Money'}
-        rows = [row for row in state.get('finding_ledger', []) if row['id'] in targets]
-        for category, label in (*risks.items(), (None, None)):
-            lines.extend(f"- {f'**{label}** ' if label else ''}{row['id']} → {targets[row['id']]}: {row['summary']}"
-                         for row in rows if (row.get('category') if row.get('category') in risks else None) == category)
+        for row in risk_first([row for row in state.get('finding_ledger', []) if row['id'] in targets]):
+            label = SPLIT_RISKS.get(row.get('category'))
+            lines.append(f"- {f'**{label}** ' if label else ''}{row['id']} → {targets[row['id']]}: {row['summary']}")
         lines.extend(f"- {split['summary']}" for split in splits.values())
         criteria = [item['criterion'] for item in state.get('gate_fail_items', [])
                     if item['id'] in targets and item['basis'] == 'criterion']

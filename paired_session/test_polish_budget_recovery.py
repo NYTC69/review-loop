@@ -138,6 +138,23 @@ class PolishBudgetRecoveryTests(unittest.TestCase):
         after = self.assert_no_dispatch(before, before['hold_reason'])
         self.assertNotIn('operator_fixes', after['lifecycle'])
 
+    def test_operator_recheck_prechecks_the_invocation_limit(self):
+        before = self.hold_at_budget()
+        co = rc.Coordinator(rc.parser().parse_args(self.command(*RUN)[2:]))
+        before['invocations_used'] = co.invocation_limit() - before.get('q_reserved', 0)
+        self.save_state(before)
+        tree = self.edit()
+        reason = ('the POLISH-Q recheck needs at least 1 more invocations; '
+                  'resume with a higher --max-invocations, or abort')
+        after = self.assert_no_dispatch(before, reason)
+        self.assertNotIn('operator_fixes', after['lifecycle'])
+        result = self.run_operator_action('resume', '--lifecycle-mode', 'on', '--max-invocations', '120', env=self.fake_env)
+        self.assertIn(twl.DONE, result.stdout, result.stdout + result.stderr)
+        final = self.state()
+        self.assertEqual(final['turns'][len(before['turns'])]['role'], 'reviewer')
+        self.assertEqual(final['turns'][len(before['turns'])]['phase'], 'POLISH-Q')
+        self.assertEqual(final['lifecycle']['operator_fixes'][0]['tree'], tree)
+
     def test_interrupted_recheck_reuses_saved_owner_progress(self):
         second = 'python-reviewer'
         before = self.hold_at_budget(OWNER + ',' + second)

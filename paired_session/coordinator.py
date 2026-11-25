@@ -5345,6 +5345,7 @@ class Coordinator:
         if tree in retried:
             return self.hold(hold_reason)
         retried.append(tree)
+        self.set_effective_verdict('STALE')   # the approval was of another tree; hold() records 'HOLD' on a repeat
         print('NOTE: the tree changed after the EXEC reviewer approved. The reviewer will review the current tree.')
         self.save()
         return 'ACTIVE'
@@ -5376,12 +5377,9 @@ class Coordinator:
             return 'ACTIVE'
         if not self.state['config'].get('review_report'):   # R1 F7: the stop-after-gate DONE binds the reviewer's tree too
             reviewer, _ = worktree_lifecycle.reviewed_turns(self.state['turns'])
-            if reviewer and reviewer.get('snapshot_before') != git_snapshot(self.workspace)[0]:
-                print('NOTE: the tree changed after the EXEC reviewer approved; the reviewer reviews it before DONE '
-                      '(the gate verdict stands)')
-                self.state.update(next='reviewer', phase='EXEC')
-                self.save()
-                return 'ACTIVE'
+            if reviewer and reviewer.get('snapshot_before') != (live_tree := git_snapshot(self.workspace)[0]):
+                return self._rereview_stale_exec_approval(   # the gate verdict stands (gate_ran is not touched)
+                    live_tree, 'stale EXEC approval: the reviewer did not review the current tree')
         self.state.pop('rejection_repair', None)
         if self._automatic_initial_exec():
             self.state['initial_exec_converged'] = True
@@ -8389,7 +8387,8 @@ class Coordinator:
         ids = [row['id'] for row in rows]
         gate_ids = [item for item in self.state.get('gate_fail_items', []) if item['id'] in ids]
         gate_record = (' Gate FAIL. ' + ' '.join(gate_item_text(item) for item in gate_ids)) if gate_ids else ''
-        finding_details = ' '.join(f"{row['id']} {row['summary']}. {row['failure_scenario']}" for row in rows)
+        finding_details = ' '.join(f"{row['id']} {row['summary']}. {row['failure_scenario']}"
+                                   for row in review_report.risk_first(rows))   # as the delivery report orders them
         summary = (f'{target} — auto-split by rule. Scope and verification: {scope}. '
                    f'Finding IDs and repair evidence: {finding_details}{gate_record}')
         splits[phase] = dict(phase=phase, trigger=trigger, sequence=sequence, target=target, ids=ids,
@@ -9043,6 +9042,10 @@ class Coordinator:
         return [path for path in (*self._git(diff).split('\0'),
                                   *self._git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0')) if path]
 
+    def _require_polish_invocations(self, need: int, what: str) -> None:
+        if need > self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']:
+            raise RuntimeError(f'{what} needs at least {need} more invocations; resume with a higher --max-invocations, or abort')
+
     def worktree_polish_fix_turn(self) -> None:
         """POLISH-Q fix leg: the persistent author fixes the delivered specialist blockers (the EXEC author turn). R5: it uses no
         EXEC round; the POLISH-Q stage budgets bound it."""
@@ -9060,6 +9063,7 @@ class Coordinator:
             if can_recheck or operator_hold:
                 tree = git_snapshot(self.workspace)[0]
                 if can_recheck and tree != base:
+                    self._require_polish_invocations(len(owners), 'the POLISH-Q recheck')
                     life.setdefault('operator_fixes', []).append(
                         {'tree': tree, 'base': base, 'owners': owners, 'sequence': self.state['sequence']})
                     counts.update(dict.fromkeys(exhausted, 0))
@@ -9077,9 +9081,7 @@ class Coordinator:
             self._specialist_budget(name)
         if life.get('polish_calls', 0) + len(owners) + 1 > self._worktree_run_cap('POLISH-Q'):
             raise RuntimeError('POLISH-Q call budget cannot cover the re-reviews of this fix; abort')
-        if 1 + len(owners) > self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']:
-            raise RuntimeError(f'the POLISH-Q fix needs at least {1 + len(owners)} more invocations; '
-                               'resume with a higher --max-invocations, or abort')
+        self._require_polish_invocations(1 + len(owners), 'the POLISH-Q fix')
         self.author_turn()
         if self.state['status'] == 'ACTIVE':
             self.state['next'] = 'polish-recheck'
@@ -9149,9 +9151,7 @@ class Coordinator:
         done = self.state['lifecycle']['specialist_done']
         if self.state['config'].get('skip_quality_polish'):
             names = tuple(done)
-        if (need := len([name for name in names if name not in done])) > (
-                self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used']):
-            raise RuntimeError(f'POLISH-Q needs at least {need} more invocations; resume with a higher --max-invocations, or abort')
+        self._require_polish_invocations(len([name for name in names if name not in done]), 'POLISH-Q')
         if names:
             self.materialize_review_context()
         for name in names:
@@ -10027,7 +10027,8 @@ class Coordinator:
             self._finish_exec_split(result['sequence'], rows)
 
     def _finish_exec_split(self, sequence: int, rows: list[dict], gate_sequence: Optional[int] = None) -> None:
-        descriptions = [CLASS_LABEL_RE.sub('', row['summary']).removeprefix('[gate FAIL] ') for row in rows]
+        descriptions = [CLASS_LABEL_RE.sub('', row['summary']).removeprefix('[gate FAIL] ')
+                        for row in review_report.risk_first(rows)]
         scope = ' | '.join(dict.fromkeys(' '.join(LEDGER_ID_RE.sub('', text).split()) for text in descriptions))
         self._record_round_split('EXEC', 'round cap', sequence, rows, scope,
                                  gate_sequence=gate_sequence or (self._gate_verdict_turn() or {}).get('sequence'))
@@ -10319,8 +10320,11 @@ class Coordinator:
             return self._hold_reduced_plan(reason)
         if auto_exec and self.state['exec_rounds'] >= limit and shadow and shadow['answer']['status'] == 'HOLD':
             self.state['pending_reviewer_result_sequence'] = None
+            left = max(self.invocation_limit() - self.state.get('q_reserved', 0) - self.state['invocations_used'], 0)
+            raise_hint = (f'; the resume reviews again with the reviewer and shadow (2 invocations, {left} left): '
+                          f'resume --max-invocations {self.args.max_invocations + 2 - left}' if left < 2 else '')
             return self.hold(hold_explanation('shadow HOLD', shadow['answer']['full_review'],
-                                              shadow['answer'].get('self_run_evidence')))
+                                              shadow['answer'].get('self_run_evidence')) + raise_hint)
         rewrite = self.state.get('plan_history_rewrite') if phase == 'PLAN' else None
         auto_plan = (phase == 'PLAN' and not reduced and not (rewrite and rewrite.get('status') == 'written')
                      and self._plan_auto_transition(result['sequence'], blocking, answer['status'] == 'REVISE'))

@@ -725,11 +725,15 @@ The run-wide POLISH-Q allowance must have room for two calls per owner. The owne
 directly. If they clear the blockers, the EXEC reviewer and configured shadow replay with the saved gate
 verdict, followed by the rest of the lifecycle. If blockers remain, the run HOLDs on the rechecked tree.
 The coordinator detects this post-recheck state as `operator_hold`.
+The recheck used one call of the owners' reset budget, so a second operator edit after that HOLD is not
+rechecked directly: the author gets a fix turn on the edited tree, then the owners recheck it. The owners
+still have to close the blockers.
 Resuming on the same tree dispatches nothing at either HOLD, including after attaching verification alone.
 Blocking security findings still require their owner's verification and cannot be withdrawn.
 
-The recheck and replay may need a higher `--max-invocations`. If the EXEC replay returns REVISE on a
-run that is already at or past its EXEC round limit, it enters a round-limit HOLD. Use
+The recheck and replay may need a higher `--max-invocations`; a recheck that does not fit HOLDs before
+dispatch. If the EXEC replay returns REVISE on a run that is already at or past its EXEC round limit, it
+enters a round-limit HOLD. Use
 `resume --add-rounds N` to continue from that HOLD.
 
 ## Acceptance, rejection and round limits
@@ -756,10 +760,12 @@ that round. Unresolved reviewer blockers and a valid gate FAIL can ship at round
 independence, shadow and lifecycle checks pass. The gate FAIL receipt and exact unmet criteria stay in the
 audit and follow-up. Lifecycle reviews, including EXEC re-reviews on writer replay and after rejection, treat
 the transferred scope as out of scope and still review regressions within retained scope.
+A round-five shadow HOLD stops the run, also after an approval; resume dispatches the reviewer and shadow again.
+When the remaining invocations cannot cover both, the HOLD reason names the `resume --max-invocations` value.
 
 Each phase that splits records one follow-up in the run backlog and the delivery report using
-`auto-split by rule`, the target and the transferred IDs. The report highlights data loss, security and
-money findings first. Explicit acceptance carries the follow-up into the repository backlog.
+`auto-split by rule`, the target and the transferred IDs. The report and the backlog entries list data loss,
+security and money findings first. Explicit acceptance carries the follow-up into the repository backlog.
 
 At a current PLAN or EXEC round-limit HOLD, `resume --add-rounds N` (1-10)
 continues the same run with N more rounds of that phase. The saved cap stays;
@@ -768,7 +774,7 @@ next author turn. For a saved legacy HOLD after a lifecycle write or writer roll
 The gate runs once per work item (WI-GATE1) and returns PASS or FAIL with per-criterion results and evidence.
 If an EXEC approval is stale on resume, the run routes to the persistent reviewer for the current tree in
 the same resume. Configured shadow review follows the usual rules, and a completed gate verdict still applies.
-A repeat stale approval on the same tree can HOLD with `stale EXEC approval`.
+A repeat stale approval on the same tree HOLDs with `stale EXEC approval`.
 The four required parts of a FAIL item are the quoted unmet acceptance criterion or blocking class, evidence,
 the smallest change, and proof it is fixed. PASS requires every listed criterion met and an empty FAIL list.
 The EXEC reviewer checks each open FAIL item in full every round and may close it only as fixed.

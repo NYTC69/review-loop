@@ -240,6 +240,41 @@ class RoundSplitTests(unittest.TestCase):
         self.assertEqual(state['reduced_plan']['status'], 'approved')
         self.assertTrue(any(turn['phase'] == 'EXEC' for turn in state['turns']))
 
+    def test_round_five_shadow_hold_names_the_invocation_raise_only_when_short(self):
+        flags = ('--lifecycle-mode', 'off', '--adversarial-gate', 'off')
+        env = {'FAKE_EXEC_MIXED_REVISE': '1'}
+        for name, left in (('short', 1), ('roomy', None)):
+            with self.subTest(budget=name):
+                self.run_dir = self.root / name
+                co = rc.Coordinator(rc.parser().parse_args(self.command(*flags)[2:]))
+                invoke = co.invoke
+
+                def shadow_holds_at_five(role, phase, *args, **kwargs):
+                    result = invoke(role, phase, *args, **kwargs)
+                    if role == 'shadow' and co.state['exec_rounds'] == 5:
+                        result['answer'] = {**result['answer'], 'status': 'HOLD'}
+                        if left is not None:   # the round-5 allowance is nearly spent
+                            co.state['invocations_used'] = co.invocation_limit() - co.state.get('q_reserved', 0) - left
+                    return result
+
+                with mock.patch.dict(os.environ, env), mock.patch.object(co, 'invoke', side_effect=shadow_holds_at_five):
+                    self.assertEqual(co.drive(), 'HOLD')
+                state = self.state()
+                self.assertEqual(state['exec_rounds'], 5)
+                self.assertTrue(state['hold_reason'].startswith('shadow HOLD'), state['hold_reason'])
+                if left is None:
+                    self.assertNotIn('--max-invocations', state['hold_reason'])
+                    self.clean()
+                    continue
+                raise_to = state['config']['max_invocations'] + 2 - left
+                self.assertTrue(state['hold_reason'].endswith(
+                    f'; the resume reviews again with the reviewer and shadow (2 invocations, {left} left): '
+                    f'resume --max-invocations {raise_to}'), state['hold_reason'])
+                resumed = self.run_operator_action('resume', *flags, '--max-invocations', str(raise_to), env=env)
+                self.assertIn(lifecycle.DONE, resumed.stdout, resumed.stdout + resumed.stderr)
+                self.assertEqual([turn['role'] for turn in self.state()['turns'][len(state['turns']):]], ['reviewer', 'shadow'])
+                self.clean()
+
     def test_automatic_rounds_fit_the_default_invocation_budget(self):
         flags = ('--lifecycle-mode', 'off')
         env = {**self.script('PLAN', 'security:deferred input path', *(['keep'] * 4)),
@@ -407,6 +442,13 @@ class RoundSplitTests(unittest.TestCase):
             self.assertIn('ACCEPTED', accepted.stdout, accepted.stdout + accepted.stderr)
         repo = (self.workspace / 'BACKLOG.md').read_text()
         self.assertEqual(repo.count(split['target']), 1)
+        risk_first = [next(row['id'] for row in done['finding_ledger'] if row['id'] in split['ids'] and row['category'] == category)
+                      for category in ('data-loss', 'security', 'money', 'correctness')]
+        for name, text in (('run backlog', (self.run_dir / 'backlog.md').read_text()), ('repository BACKLOG', repo)):
+            with self.subTest(backlog=name):
+                places = [text.index(f'{finding_id} ') for finding_id in risk_first]
+                self.assertEqual(places, sorted(places), text)
+        self.assertEqual(split['scope'], 'data issue | security issue | shared issue')
         report = (self.run_dir / 'delivery-report.md').read_text()
         self.assertLess(report.index('**Data loss**'), report.index('**Security**'))
         self.assertLess(report.index('**Security**'), report.index('**Money**'))

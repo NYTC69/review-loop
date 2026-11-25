@@ -411,7 +411,7 @@ DONE follows EXEC convergence and `accept --auto-commit false` returns the uncom
 uses the author's vendor, and the test command is the one the skill confirms with you).
 
 If the workspace changes after EXEC approval, the run automatically requests a fresh review of the current
-tree. A repeat stale approval on the same tree can still HOLD. A completed gate verdict still applies.
+tree. A repeat stale approval on the same tree HOLDs. A completed gate verdict still applies.
 
 | Key | Default | Description |
 |-----|---------|-------------|

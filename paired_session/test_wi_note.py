@@ -280,6 +280,35 @@ class OperatorNoteTests(unittest.TestCase):
                     decisions = self.prompt(h, turn).split('## Operator decisions\n', 1)[1]
                     self.assertIn(f'{precedence}\n{prefix1}{first}\n{prefix2}{second}', decisions)
 
+    def test_withdrawal_with_two_delivered_notes_keeps_precedence_with_the_notes(self):
+        with self.harness() as h:
+            co = h.coordinator(*OFF)
+            first, second = 'Reject bool explicitly.', 'Accept bool as an integer.'
+            withdrawal = 'Keep accepting negative integers.'
+            precedence = 'Delivered notes follow in oldest-first order. If two notes conflict, follow the later note on that point.\n'
+            notes = []
+            for note_id, text in (('N001', first), ('N002', second)):
+                path = co.evidence / f'operator-note-{note_id}.txt'
+                path.write_text(text)
+                notes.append({'id': note_id, 'status': 'delivered', 'evidence': str(path),
+                              'sha256': hashlib.sha256(text.encode()).hexdigest()})
+            co.state.update(operator_notes=notes,
+                            operator_rulings=[{'id': 'O001', 'finding_ids': ['F001'], 'reason': withdrawal}],
+                            finding_ledger=[{'id': 'F001', 'summary': 'negative integers are accepted'}])
+            expected = {
+                'reviewer': (f'- O001: F001: {withdrawal}\nNo disposition is due',
+                             f'{precedence}N001: {first}\nN002: {second}\n'),
+                'author': (f'- O001: {withdrawal}\n  - F001: negative integers are accepted\n',
+                           f'{precedence}- {first}\n- {second}\n'),
+                'fresh': (f'operator decision: {withdrawal}\n',
+                          f'{precedence}operator decision: {first}\noperator decision: {second}\n')}
+            for audience, (withdrawn, decided) in expected.items():
+                with self.subTest(audience=audience):
+                    prompt = co.operator_rulings_prompt(audience)
+                    self.assertEqual(prompt.count(precedence), 1)
+                    self.assertTrue(prompt.endswith(decided), prompt)
+                    self.assertLess(prompt.index(withdrawn), prompt.index(precedence))
+
     def test_delivered_ruling_reaches_lifecycle_writers(self):
         with self.harness(lifecycle=True) as h:
             (h.workspace / 'test_feature.py').write_text(
