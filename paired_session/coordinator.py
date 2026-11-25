@@ -4433,6 +4433,10 @@ class Coordinator:
             self.state.pop('terminal_hold_kind', None)
         self.state['active'] = None
         self.save()
+        if reason.startswith('invocation limit reached') and not (self.state.get('config') or {}).get('review_report'):
+            cap = (self.state.get('config') or {}).get('max_invocations')
+            print(f'NOTE: resume with a higher --max-invocations; attach-verification and the other operator actions keep '
+                  f'the saved cap: omit --max-invocations there, or pass --max-invocations {cap}')
         self.write_ledger()
         self.write_comparison()
         self.write_open_findings()
@@ -8001,7 +8005,8 @@ class Coordinator:
     def _docs_writer_route(self, tree: str, rows: list[dict]) -> None:
         """WI-GATE1: a docs review REVISE in DOCS goes back to a new docs writer attempt on the reviewed tree (the DOCS
         stage cap bounds it); EXEC is not reopened."""
-        self.state['lifecycle'].update(candidate_oid=tree, docs_feedback=[row['id'] for row in rows])
+        self.state['lifecycle'].update(candidate_oid=tree, docs_feedback=[row['id'] for row in rows],
+                                       docs_candidate=self._save_approval_manifest('docs-candidate'))   # WI-DOCSFIX
         self.state['next'] = 'docs'
 
     def _docs_feedback_prompt(self) -> str:
@@ -8111,9 +8116,11 @@ class Coordinator:
 
     def worktree_docs_turn(self) -> None:
         """ADR-11 DOCS: a fresh docs writer; its allowlisted writes get a fresh docs review with an observed test, a
-        protected path HOLDs. WI-GATE1: DOCS never reopens EXEC: a write outside the allowlist is rolled back to the
-        pre-DOCS tree and recorded (HOLD only when the rollback fails), and a docs review REVISE goes back to the docs writer
-        (bounded by the DOCS stage cap)."""
+        protected path HOLDs. WI-GATE1: the docs writer never reopens EXEC: its write outside the allowlist is rolled back
+        to the pre-DOCS tree and recorded (HOLD only when the rollback fails), and a docs review REVISE goes back to the docs
+        writer (bounded by the DOCS stage cap). WI-DOCSFIX: only the writer turn's own write is rolled back; an operator
+        edit outside the docs paths goes to the EXEC reviewer (_docs_operator_route), and past the DOCS cap one docs review
+        of an operator-changed tree may run (_docs_beyond_cap)."""
         life, workspace = self.state['lifecycle'], self.workspace
         allow = set(self._docs_allowlist())
         request = worktree_lifecycle.stage_request(life, 'docs-writer')
@@ -8127,14 +8134,22 @@ class Coordinator:
             continued = (previous and previous['status'] == 'HOLD' and tree == previous['output_oid']
                          and all(path in allow and not worktree_lifecycle.docs_denied(path, dict(manifest).get(path))
                                  for path in previous['docs_paths']))
-            if tree != life['candidate_oid'] and not continued:
-                raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
+            operator_docs = []
+            if tree != life['candidate_oid'] and not continued:   # WI-DOCSFIX: an operator change since DOCS was handed the tree
+                expected = self._docs_candidate_manifest()
+                if expected is None or (previous and previous['status'] == 'HOLD' and tree == previous['output_oid']):
+                    raise RuntimeError('DOCS tree differs from the POLISH-Q-approved tree; restore it or abort')
+                if self._docs_operator_route(expected, dict(manifest), tree):
+                    return   # a change outside the docs paths: the EXEC reviewer
+                operator_docs = worktree_lifecycle.manifest_delta(expected, dict(manifest))
+                manifest = [list(item) for item in expected.items()]   # the base (its saved form): the writer's delta and
+                # the docs review include the operator's doc edits
             if continued:
                 try:
                     manifest = json.loads((self.evidence / f"{previous['request_id']}-docs-base.json").read_text(encoding='utf-8'))
                 except (OSError, ValueError) as exc:
                     raise RuntimeError(f'DOCS base manifest is unreadable: {exc}; abort') from exc
-            owned = {**self._docs_owned(), **(previous['docs_written'] if continued else {})}
+            owned = {**self._docs_owned(), **(previous['docs_written'] if continued else {}), **dict.fromkeys(operator_docs)}
             if touched := sorted(set(self._changed_paths(deleted=True)) & allow - set(owned)):   # DOCS reviews its own entries again
                 raise RuntimeError('the EXEC-reviewed change already touches docs allowlist paths: ' + ', '.join(touched) +
                                    '; abort, or rerun with those paths outside --docs-file/--docs-allowlist')
@@ -8156,16 +8171,39 @@ class Coordinator:
                                                    self.run_dir.name, self.workitem.read_text(encoding='utf-8'))
                     + self.operator_rulings_prompt('author') + self._docs_feedback_prompt()
                     + opv.prompt_block(self, git_snapshot(workspace)[0], atomic_json))
-        result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
-        self.render(result, 'docs-writer', 'DOCS')
+        recheck = False
+        pending = self.state['lifecycle']['pending'] == request
+        if not (pending and self._recorded_lifecycle_writer(request)):
+            if pending and (git_base := self.state['lifecycle'].get('writer_git')):   # the git guard HOLD comes first
+                self._check_lifecycle_writer_git('DOCS', git_base, 'docs writer')
+            tree, manifest = git_snapshot(workspace)   # WI-DOCSFIX: an operator change at a DOCS HOLD, before any dispatch
+            if self._docs_operator_route(dict(base), dict(manifest), tree, request):
+                return
+            recheck = self._docs_beyond_cap(request, tree, None)   # no docs writer beyond the DOCS cap
+        if recheck:
+            if self.state['lifecycle']['pending'] != request:   # the git baseline a later writer attempt of this request needs
+                self.state['lifecycle']['writer_git'] = {**self._writer_git_state(), 'sequence': self.state['sequence']}
+                self.state['lifecycle'] = lifecycle_spine.begin(self.state['lifecycle'], request)
+            self.state['lifecycle']['docs_recheck'] = {'request_id': request['request_id'], 'tree': tree}
+            self.save()
+            result, own, writer_before, writer_after = None, [], {}, {}
+        else:
+            result = self._lifecycle_writer(request, 'docs writer', writer_prompt)
+            self.render(result, 'docs-writer', 'DOCS')
+        sequence = result['sequence'] if result else None
         tree, manifest = git_snapshot(workspace)
         before, after = dict(base), dict(manifest)
-        changed = worktree_lifecycle.manifest_delta(before, after)
-        outside = [path for path in changed if path not in allow]
+        if result:
+            writer_before, writer_after = self._docs_writer_manifests(sequence, before, after, tree)
+            own = worktree_lifecycle.manifest_delta(writer_before, writer_after)   # what this writer turn itself changed
+        # WI-DOCSFIX (AC1): only the writer's own outside write is rolled back, while it is still there and the capture (the
+        # DOCS base) holds what the writer started from; anything else outside the docs paths is the operator's (EXEC below)
+        outside = [path for path in own if path not in allow and after.get(path) != before.get(path)
+                   and after.get(path) == writer_after.get(path) and writer_before.get(path) == before.get(path)]
         rollback_error = None
         if outside:   # WI-GATE1: DOCS never reopens EXEC; the outside write is put back to the pre-DOCS tree and recorded
             try:
-                rolled_back = self._revert_paths(outside, self._docs_capture_dir(request), result['sequence'], 'docs-outside')
+                rolled_back = self._revert_paths(outside, self._docs_capture_dir(request), sequence, 'docs-outside')
                 print('NOTE: the DOCS writer changed paths outside the docs allowlist; they were rolled back: '
                       + ', '.join(outside[:10]))
                 self.progress('docs-rollback', paths=outside[:20])
@@ -8174,31 +8212,41 @@ class Coordinator:
             if not rollback_error:
                 tree, manifest = git_snapshot(workspace)
                 after = dict(manifest)
-                changed = worktree_lifecycle.manifest_delta(before, after)
-                if left := [path for path in changed if path not in allow]:
+                if left := [path for path in outside if after.get(path) != before.get(path)]:
                     rollback_error = 'DOCS rollback left paths outside the docs allowlist changed: ' + ', '.join(left[:10]) + '; restore them or abort'
+        if not rollback_error and self._docs_operator_route(before, after, tree, request, sequence,
+                                                            exempt={path for path in own if path in allow}):
+            return
+        changed = worktree_lifecycle.manifest_delta(before, after)
         denied = [path for path in changed if worktree_lifecycle.docs_denied(path, after.get(path))]
-        receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': result['sequence'], 'docs_paths': changed,
+        receipt = {**request, 'status': 'READY', 'output_oid': tree, 'sequence': sequence, 'docs_paths': changed,
                    'docs_written': {path: after.get(path) for path in changed if path in allow},
                    **({'rolled_back_outside': outside, 'rollback_diff': rolled_back} if outside and not rollback_error else {})}
-        reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result['answer']['status'] == 'HOLD' else []),
+        reason = '; '.join([*(['docs writer: ' + result['answer']['body']] if result and result['answer']['status'] == 'HOLD' else []),
                             *([rollback_error] if rollback_error else []),
                             *(['DOCS writer changed protected paths: ' + ', '.join(denied) + '; restore them or abort']
                               if denied else [])]) or None
         outside = [path for path in changed if path not in allow]   # empty unless the rollback failed (then the run HOLDs)
-        if changed and not denied and not outside:   # v3.7.2: a docs-only change keeps the operator's records for the tree it left
-            writer = next((turn for turn in self.state['turns'] if turn.get('sequence') == result['sequence']), {})
+        if result and changed and not denied and not outside:   # v3.7.2: a docs-only change keeps the operator's records for the tree it left
+            writer = next((turn for turn in self.state['turns'] if turn.get('sequence') == sequence), {})
             from_trees = {request['candidate_oid'], *([writer['snapshot_before']] if writer.get('snapshot_before') else [])}
-            if carried := opv.carry_docs_only(self, from_trees, tree, changed, result['sequence'], atomic_json):
+            if carried := opv.carry_docs_only(self, from_trees, tree, changed, sequence, atomic_json):
                 receipt['opv_carried'] = carried
                 print(f"NOTE: operator verification {', '.join(carried)} carried over to the DOCS tree "
                       f"(docs-only change: {', '.join(changed[:10])})")
         opv.void_stale(self, tree, atomic_json)   # any other change voids them, as after every author turn
         owned = self._docs_owned()
         revise = False
-        if not reason and (changed or owned):   # every DOCS-written doc gets a fresh docs review
-            review = self._docs_review_turn(tree, sorted({*changed, *owned}))
+        if not reason and (changed or owned or recheck):   # every DOCS-written doc gets a fresh docs review
+            if not recheck and self._docs_beyond_cap(request, tree, result['snapshot'] if result else None):
+                recheck = True
+                self.state['lifecycle']['docs_recheck'] = {'request_id': request['request_id'], 'tree': tree}
+                self.save()
+            review = self._docs_review_turn(tree, sorted({*changed, *owned}), recheck=recheck)
             receipt['review'] = review
+            if recheck:
+                receipt['sequence'] = receipt['sequence'] or review['sequence']
+                receipt['writer_skipped'] = result is None
             revise = review['status'] != 'APPROVE'   # WI-GATE1: its findings go back to the docs writer
         if not reason and not revise and (blocking := self.blocking_open_findings()):
             reason = 'DOCS cannot advance with open blocking findings: ' + ', '.join(row['id'] for row in blocking)
@@ -8207,6 +8255,7 @@ class Coordinator:
             self.state['lifecycle'], {**receipt, 'status': 'HOLD' if reason else 'READY'})
         self.state['lifecycle'].pop('writer_git', None)
         self.state['lifecycle'].pop('docs_feedback', None)
+        self.state['lifecycle'].pop('docs_recheck', None)
         if not reason:   # reviewed (SECURITY) or about to be (a docs writer fix): DOCS owns what it wrote (values: audit only)
             self.state['lifecycle']['docs_owned'] = {**self.state['lifecycle'].get('docs_owned', {}), **receipt['docs_written']}
         if reason:
@@ -8218,6 +8267,78 @@ class Coordinator:
                                            docs_approval=self._save_approval_manifest('docs'))
             self.state['next'] = 'security'
         self.save()
+
+    def _docs_candidate_manifest(self) -> Optional[dict]:
+        """WI-DOCSFIX: the manifest of the tree DOCS was handed (candidate_oid): the POLISH-Q approval, the tree a docs review
+        REVISE handed back, or an earlier DOCS base of the same candidate. None (an older state) keeps today's refusal."""
+        life = self.state['lifecycle']
+        rows = [*life['receipts'], *([life['pending']] if life['pending'] else [])]
+        records = [life.get('docs_candidate'), life.get('polish_approval'),
+                   *({'tree': row['candidate_oid'], 'manifest_file': str(self.evidence / f"{row['request_id']}-docs-base.json")}
+                     for row in rows if row.get('stage') == 'DOCS')]
+        return next((manifest for record in records if isinstance(record, dict) and record.get('tree') == life['candidate_oid']
+                     and (manifest := self._approval_manifest(record)) is not None), None)
+
+    def _docs_writer_manifests(self, sequence: int, base: dict, current: dict, tree: str) -> tuple[dict, dict]:
+        """WI-DOCSFIX (AC1): the docs writer turn's own before/after manifests (its evidence snapshots), so a rollback is
+        measured against the tree the writer actually started from, not the DOCS base. Without readable snapshots: the
+        DOCS base and the current tree when the tree is still the one the writer left, else nothing counts as the
+        writer's own (a change outside the docs paths then goes to the EXEC reviewer, never to a rollback)."""
+        turn = next(row for row in self.state['turns'] if row.get('sequence') == sequence)
+        prefix = self.evidence / f'{sequence:03d}-docs-author'
+        try:
+            sides = [json.loads(prefix.with_suffix(f'.snapshot-{side}.json').read_text(encoding='utf-8'))
+                     for side in ('before', 'after')]
+            if [side.get('digest') for side in sides] == [turn.get('snapshot_before'), turn.get('snapshot_after')]:
+                return dict(sides[0]['manifest']), dict(sides[1]['manifest'])
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+        return (base, current) if turn.get('snapshot_after') == tree else ({}, {})
+
+    def _docs_operator_route(self, base: dict, current: dict, tree: str, request: Optional[dict] = None,
+                             sequence: Optional[int] = None, exempt=frozenset()) -> bool:
+        """WI-DOCSFIX (AC2): a change since the DOCS base on a path the DOCS writer may not edit (code, outside the docs
+        allowlist or in the DOCS HOLD set) that the docs writer did not make is the operator's: it is never rolled back and
+        never accepted by DOCS. EXEC review runs again (stage EXEC, a new epoch, the reviewer), as for the docs-only fix
+        route with another open blocker; the docs allowlist paths changed since the base are owned by the next DOCS pass,
+        which reviews them. A pending DOCS request is closed with route EXEC. False when there is no such change."""
+        allow = set(self._docs_allowlist())
+        delta = worktree_lifecycle.manifest_delta(base, current)
+        paths = [path for path in delta if path not in exempt and
+                 (path not in allow or worktree_lifecycle.docs_denied(path, current.get(path)))]
+        if not paths:
+            return False
+        written = {path: current.get(path) for path in delta if path in allow}
+        life = self.state['lifecycle']
+        if request is not None and life['pending'] == request:
+            life = lifecycle_spine.complete(life, {**request, 'status': 'READY', 'output_oid': tree, 'sequence': sequence,
+                                                   'docs_paths': delta, 'docs_written': written, 'operator_paths': paths,
+                                                   'route': 'EXEC'})
+        for key in ('writer_git', 'docs_feedback', 'docs_recheck'):
+            life.pop(key, None)
+        life['docs_owned'] = {**life.get('docs_owned', {}), **written}
+        self.state['lifecycle'] = {**life, 'stage': 'EXEC', 'epoch': life['epoch'] + 1, 'candidate_oid': None}
+        self.state.update(phase='EXEC', next='reviewer', delivered_review='')
+        self.save()
+        print('NOTE: the workspace changed outside the docs paths since the DOCS stage began (' + ', '.join(paths[:10]) +
+              '); nothing was rolled back: the EXEC reviewer reviews the change, then FINISH..SECURITY run again')
+        self.progress('docs-operator-change', paths=paths[:20])
+        return True
+
+    def _docs_beyond_cap(self, request: dict, tree: str, writer_after: Optional[str]) -> bool:
+        """WI-DOCSFIX (AC3): False while the DOCS cap has room for the next call. Beyond it, no docs writer runs, but one
+        docs review of a tree changed since the last DOCS writer or review may (once per tree; a replay of that recheck,
+        marked by docs_recheck, continues it); otherwise the DOCS budget HOLD, which names this route."""
+        replay = self.state['lifecycle'].get('docs_recheck') == {'request_id': request['request_id'], 'tree': tree}
+        if not replay and self._stage_calls('DOCS') + 1 <= self._worktree_run_cap('DOCS'):
+            return False
+        reviewed = any(turn.get('role') == 'reviewer' and turn.get('phase') == 'DOCS' and not turn.get('error')
+                       and turn.get('snapshot_before') == tree for turn in self.state['turns'])
+        if not replay and (reviewed or tree == writer_after):
+            self._docs_budget()
+        self._require_polish_invocations(1, 'the DOCS recheck')
+        print(f'NOTE: the DOCS budget is spent; one docs review recheck of the changed tree {tree[:12]} runs beyond it')
+        return True
 
     def _docs_writer_skip(self, request: dict) -> bool:
         """v3.8.1 DOCS skip: when no non-doc path changed since the last DOCS approval, the writer is not dispatched again:
@@ -8315,9 +8436,10 @@ class Coordinator:
             self.state['next'] = 'security'
         self.save()
 
-    def _docs_review_turn(self, tree: str, paths: list[str]) -> dict:
+    def _docs_review_turn(self, tree: str, paths: list[str], recheck: bool = False) -> dict:
         """Fresh docs reviewer over the full diff (a reviewer-only fast replay). A HOLD, an unusable review
         or a missing observed test raises before the DOCS receipt, so resume reuses the writer and reviews again.
+        recheck (WI-DOCSFIX): the one review _docs_beyond_cap allows past the DOCS cap.
         v3.8.1: it disposes the open docs rows no other role owns (fixed, withdrawn or still_open), so a docs fix the
         EXEC author made is closed here without the EXEC reviewer."""
         owned = [row for row in self.open_findings() if row.get('source') == 'docs-reviewer' and not row.get('owner_role')]
@@ -8338,7 +8460,8 @@ class Coordinator:
                    'fixes it; a row the tree does not fix stays still_open.\n' if owned else '') +
                   'Return only JSON matching the supplied schema.' + opv.prompt_block(self, tree, atomic_json) +
                   self.operator_rulings_prompt('fresh'))
-        self._docs_budget()
+        if not recheck:
+            self._docs_budget()
         result = self.invoke('reviewer', 'DOCS', prompt, review_schema(), fresh=True)
         turn = next(t for t in self.state['turns'] if t['sequence'] == result['sequence'])
         if turn.get('snapshot_before') != tree:
@@ -8375,7 +8498,7 @@ class Coordinator:
         return {'sequence': result['sequence'], 'status': 'REVISE' if blocking or still else 'APPROVE', 'observed_test': self._observed_test(answer),
                 'finding_ids': [row['id'] for row in self.state['finding_ledger']
                                 if row.get('source') == 'docs-reviewer' and row.get('origin_round') == result['sequence']],
-                **self._test_provenance(proof, result['sequence'])}
+                **({'operator_recheck': True} if recheck else {}), **self._test_provenance(proof, result['sequence'])}
 
     def _record_round_split(self, phase: str, trigger: str, sequence: int, rows: list[dict], scope: str,
                             **audit) -> None:
@@ -8541,7 +8664,11 @@ class Coordinator:
     def _docs_budget(self) -> None:
         used = self._stage_calls('DOCS')
         if used + 1 > self._worktree_run_cap('DOCS'):
-            raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run); abort')
+            blocking = [row['id'] for row in self.blocking_open_findings()]
+            raise RuntimeError(f'DOCS budget exhausted ({used} writer and review calls in this run)'
+                               + (f"; open blocking findings: {', '.join(blocking)}" if blocking else '')
+                               + '; fix the documentation in the workspace and resume: one docs review of the changed tree '
+                               'runs beyond the cap, and a change outside the docs paths goes back to the EXEC reviewer; or abort')
 
     def _gate_lacks_test_proof(self, reviewed: int) -> bool:
         """S3 R2 F10: before dispatch, recheck the evidence used by an EXEC approval that reused a test result."""

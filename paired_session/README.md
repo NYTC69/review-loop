@@ -349,7 +349,13 @@ go to an author fix that the owning specialist re-reviews before EXEC review
 runs again) and DOCS (a fresh docs writer; a
 write outside the docs allowlist, a protected path included, is rolled back to the pre-DOCS tree, an allowlisted
 write gets a fresh docs review that must run the test, and its REVISE goes back to
-the docs writer; a docs finding on a path the writer cannot edit goes to the run's `backlog.md`, not to a repair)
+the docs writer; a docs finding on a path the writer cannot edit goes to the run's `backlog.md`, not to a repair;
+the rollback covers only what the docs writer turn itself wrote, so an operator edit made at a DOCS HOLD is never
+rolled back: an edit of a docs allowlist path stays in DOCS and is docs-reviewed, any other edit, found before a docs
+writer dispatch or after a recorded one, sends the run back to the EXEC reviewer in a new epoch, then FINISH..SECURITY
+again; once the DOCS stage cap is spent no docs writer runs, but one docs review of a tree changed since the last DOCS
+writer or review runs beyond the cap (once per tree, after an invocation-limit check), and the DOCS budget HOLD names
+this fix-and-resume route)
 and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
 security reviewer, then reaches DONE (acceptance pending).

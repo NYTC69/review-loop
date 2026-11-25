@@ -157,9 +157,26 @@ class ResumeAccountingTests(unittest.TestCase):
     def test_docs_denied_write_then_hold_is_rolled_back_and_resume_continues(self):
         self.rolled_back_then_resumed('CLAUDE.md')
 
-    def test_docs_external_tree_change_after_hold_still_refuses(self):
-        _, before = self.docs_hold()
+    def test_docs_external_docs_change_after_hold_is_docs_reviewed(self):
+        # WI-DOCSFIX (AC2): an operator edit of a docs allowlist path at the DOCS HOLD stays in DOCS and is docs-reviewed
+        first, before = self.docs_hold()
         (self.workspace / 'CHANGELOG.md').write_text('# operator changed this\n')
+        self.assert_done(self.run_operator_action('resume', *ON))
+        state = self.state()
+        second = [r for r in state['lifecycle']['receipts'] if r['stage'] == 'DOCS'][1]
+        self.assertEqual((second['candidate_oid'], second['docs_paths'], second['route'], second['review']['status']),
+                         (first['candidate_oid'], ['CHANGELOG.md'], 'SECURITY', 'APPROVE'))
+        self.assertGreater(second['sequence'], before['sequence'])
+        self.assertEqual((self.workspace / 'CHANGELOG.md').read_text(), '# operator changed this\n')
+
+    def test_docs_external_tree_change_after_hold_still_refuses_without_a_candidate_manifest(self):
+        # an older state, with no readable manifest of the tree DOCS was handed, keeps the refusal
+        first, before = self.docs_hold()
+        (self.workspace / 'CHANGELOG.md').write_text('# operator changed this\n')
+        (self.run_dir / 'evidence' / f"{first['request_id']}-docs-base.json").unlink()
+        saved = self.state()
+        saved['lifecycle'].pop('polish_approval', None)
+        (self.run_dir / 'state.json').write_text(json.dumps(saved))
         self.docs_refused(before)
 
 

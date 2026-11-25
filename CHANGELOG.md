@@ -1,5 +1,25 @@
 # Changelog
 
+### v3.16.6：DOCS 回滚不再撤销操作者的修改，DOCS 预算耗尽后可复审操作者修复（WI-DOCSFIX）
+
+- 数据丢失修复：DOCS 写入者越界回滚只针对该写入者回合自己写的路径。判断依据是该回合证据中的前后快照，不再拿请求开始前的 DOCS base 比较。写入者开始前或之后由操作者做的修改一律不回滚。写入者自己的越界写入仍会回滚并记录（WI-GATE1 行为不变）。
+- 在 DOCS HOLD 时修改工作区，在派发任何 DOCS 写入者之前按以下规则处理。待处理请求和新请求两条路径规则一致：
+  - 只改了 docs allowlist 内的文档：继续 DOCS 阶段，这些路径并入写入者的变更集，由新的 docs 审查覆盖。
+  - 改了其他路径（代码、allowlist 外的文档、或 DOCS 受保护路径如 `CLAUDE.md`）：交给 EXEC 审查员。生命周期进入新 epoch 的 EXEC 阶段，沿用 docs-only 修复路径已有的重开方式，随后重走 FINISH..SECURITY。待处理的 DOCS 请求以 `route: EXEC` 和 `operator_paths` 结束。allowlist 内同时被改的文档由下一轮 DOCS 认领并审查。写入者回合已经记录、之后操作者又改了工作区时，同样走这条路径。
+- DOCS 预算耗尽后不再只能 abort。超出上限后不再派发写入者。若当前树在上一次 DOCS 写入或审查之后有变化，且还没做过 docs 审查，resume 会做一次超额 docs 复审，每棵树最多一次。复审前先检查调用上限，不足时以 `the DOCS recheck needs at least 1 more invocations; resume with a higher --max-invocations, or abort` HOLD。复审 APPROVE 且没有未关闭的阻塞项时进入 SECURITY。REVISE 或仍有阻塞项时 HOLD，原因中列出发现 ID；操作者再次修改得到新树后，可以再复审一次。DOCS 预算 HOLD 的原因现在会列出未关闭的阻塞发现，并说明“在工作区修复后 resume”的路线。操作者改动若涉及非文档路径，先走 EXEC 审查。
+- 达到调用上限 HOLD 时额外打印一行说明：`attach-verification` 等操作者命令沿用已保存的上限，应省略 `--max-invocations` 或传入保存值，只有 `resume` 可以提高上限（AC5，只改提示，`attach-verification` 的配置比对不变）。
+- 已停住的运行：
+  - 停在 DOCS 预算 HOLD 或有待处理 DOCS 请求的运行，用 v3.16.6 执行普通 `resume` 即可继续。
+  - 现场运行（token-meter 1862edcf）的情况：r1 写入者回合已记录，操作者事后手工恢复了 `ARCHITECTURE.md`、`CLAUDE.md`、`src/token_meter/adapters/claude.py` 和 `CHANGELOG.md`。普通 `resume` 会复用已记录的写入者回合，不再派发写入者，也不回滚任何文件。由于改动包含代码和 allowlist 外的路径，r1 请求以 `route: EXEC` 结束，持久 EXEC 审查员（及已配置的 shadow）复审当前树，门审裁定沿用。之后 FINISH、POLISH-Q 增量和 DOCS 依次运行。DOCS 上限已用尽，因此不派发写入者，只对当前树做一次超额 docs 复审，通过后进入 SECURITY。
+  - 不需要先执行 `attach-verification`。早先附加的验证记录已在 DOCS 回合后作废。如果审查员的沙箱跑不了配置的测试，请先为当前树重新 `attach-verification`（不带 `--max-invocations`，或传入保存值 100）。后续流程大约还需要 10 次调用，剩余额度不足时执行 `resume --max-invocations N` 提高上限。EXEC 审查若给出 REVISE，按原有 EXEC 轮次规则继续。
+- 文档：`paired_session/README.md` 的 DOCS 段落补充回滚范围、操作者修改的处理路线和预算耗尽后的复审规则。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.5` 更新为 `3.16.6`。
+- `paired_session/test_v317fc.py`：原 `test_docs_external_tree_change_after_hold_still_refuses` 断言 DOCS 写入者 HOLD 后操作者修改 `CHANGELOG.md` 会以 `DOCS tree differs from the POLISH-Q-approved tree; restore it or abort` 拒绝。按 AC2 改为 `test_docs_external_docs_change_after_hold_is_docs_reviewed`，断言 resume 到达 DONE，第二个 DOCS 回执覆盖 `CHANGELOG.md`，docs 审查 APPROVE，操作者内容保留。原拒绝断言保留在新用例 `test_docs_external_tree_change_after_hold_still_refuses_without_a_candidate_manifest` 中，覆盖没有候选树清单的旧状态。
+- 新增 `paired_session/test_wi_docsfix.py`，共 7 个用例，覆盖 AC1 到 AC5 和现场状态。其余现有断言均未改动。
+
 ### v3.16.5：审查备注中的小修复、补充测试和提示措辞（WI-SMALL）
 
 - 自动拆分写入运行 backlog 和仓库 BACKLOG 的条目，与交付报告使用同一排序：数据丢失、安全、资金类发现在前，其余保持账本顺序。EXEC 拆分的范围说明也按此排序。已保存的拆分条目不变。
