@@ -223,13 +223,29 @@ reviewer, the shadow or the gate goes back to the author; FINISH fixes what bloc
 FINISH or POLISH-Q write returns to EXEC review without using an EXEC round. The gate runs once per work item: it answers PASS
 or FAIL, each FAIL item names an unmet acceptance criterion or a blocking-class defect (correctness, data loss, security,
 money) with evidence, the smallest change and its proof, and every later EXEC review checks the open items until they are
-fixed. A DOCS write outside the docs is rolled back, and a DOCS-review REVISE goes back to the docs writer. SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
+fixed.
+
+After the gate, the stages report instead of reopening EXEC (v3.17.0). In a delivery run a POLISH-Q specialist finding never
+goes back to the author: a blocking one flagged or categorized as security goes to the SECURITY reviewer, a blocking one
+about correctness, data loss or money (or without a category) is listed for your decision, and every other one goes to the
+backlog. A review-only run (code-quality-loop) keeps the POLISH-Q fix leg. DOCS never stops the run on its findings or its
+budget: a DOCS write outside the docs is rolled back, a docs writer runs only while the DOCS budget has room for it and its
+review, a DOCS-review REVISE goes back to the docs writer while the budget lasts, and a spent budget moves DOCS on to
+SECURITY with the docs findings still open. The findings for your decision head the delivery report under
+`## 不阻塞、需要你决定` (and `open-findings.md` at DONE) and go to BACKLOG.md under `## P1` at accept.
+
+SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
 additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
 256 MiB, for a `.gitignore` coverage gap, and for any blocking security reviewer finding. The same hits in files that were already
 committed and left unchanged are printed once as a NOTE and recorded in the SECURITY receipt; a path the run removed
 and that is still in the index is also named in a NOTE. Such a file over 8 MiB is not content-scanned and is named in the NOTE.
 A file that passes through a Git filter, for example Git LFS, or an end-of-line conversion counts as changed.
-A SECURITY HOLD is never repaired by the run: fix it outside the run and resume (the EXEC review runs again).
+When SECURITY stops only on the security reviewer's findings (forwarded POLISH-Q and DOCS rows included), the run
+repairs them in a narrow loop: the author fixes them without using an EXEC round, the EXEC reviewer reviews only the fix
+delta (no shadow; the gate verdict stands), FINISH runs, a docs writer updates the docs the fix affects (no docs review;
+the delivery report lists it), and SECURITY runs again. The author gets at most two such fixes per run, each only while
+the SECURITY budget (3 reviews) and the invocations leave room. Scan hits, a third failure and an author HOLD stay with
+you: fix it outside the run and resume, and your change takes the same narrow chain.
 A review of existing code (`run --review-only`) has no PLAN: its EXEC review of the change is round 1.
 
 Use `run --fast-plan` to skip PLAN review for a small delivery. The work item must list one to three
@@ -269,13 +285,15 @@ flowchart TD
   REV -->|"approval after gate"| F
   F -->|"tree changed"| REV
   F --> Q["POLISH-Q: language + quality specialists"]
-  Q -->|"specialist blocker: fix, then specialist re-reviews"| AUTH
+  Q -.->|"review-only: specialist blocker fix, then specialist re-reviews"| AUTH
   Q -.->|"code-quality-loop: optional advisory fix"| AUTH
   Q -.->|"optional: simplifier / test-writer (main: off; review-only: both by default)"| REV
-  Q --> D["DOCS: docs writer, then docs reviewer"]
-  D -->|"docs-review blocker: docs writer revises"| D
+  Q -->|"findings reported; security rows go to SECURITY"| D["DOCS: docs writer, then docs reviewer"]
+  D -->|"docs-review REVISE: docs writer revises while the budget lasts"| D
   D --> S["SECURITY: secret + .gitignore scan, security reviewer"]
-  S -->|"finding: you fix it outside the run, then resume"| REV
+  S -->|"reviewer finding: the author fixes it"| SF["narrow loop: delta review, FINISH, docs touch-up"]
+  S -->|"scan hit, cap or author HOLD: you fix it, then resume"| SF
+  SF --> S
   S --> DONE["DONE: acceptance pending"]
   DONE -->|"accept"| ACC["ACCEPTED: local commit or UNCOMMITTED list + delivery report"]
   DONE -->|"reject with a note"| AUTH
@@ -562,7 +580,8 @@ passing host record attached with `attach-verification` also supplies proof and 
 failure. The roles review independently, and missing host verification is never a finding. When test evidence
 is the only obstacle, the run HOLDs without using a round. The coordinator rechecks reused proof before the gate.
 Open advisory rows go to the run's `backlog.md` and, at `accept`, to the workspace `BACKLOG.md` (not when it is a symbolic link,
-not a regular file or ignored by git; then they stay in `backlog.md`). See
+not a regular file or ignored by git; then they stay in `backlog.md`). Since v3.17.0 accept writes only the rows still open
+at that point, under `## P2` (the rows that need your decision under `## P1`), creating a missing section before `## Done`. See
 [the advisory rules](paired_session/README.md#minor-only-review-revisions).
 
 **Quality Polish (POLISH-Q)** — With lifecycle on, after the gate and FINISH, read-only specialists review the change: the language
@@ -580,11 +599,14 @@ findings after the first clean POLISH-Q. Tune with `quality_focus` and `skip_qua
 
 Under quota pressure, keep the configured fresh shadow and drop specialists first with the one-way
 `resume --skip-quality-polish true` on a lifecycle-on delivery run. This also skips POLISH-Q quality writers whose
-batch is still unscheduled. Existing blockers still go through author fix and owner recheck, with one or two
-calls per owner, or eligible operator withdrawal at the POLISH-Q fix HOLD. See the [resume details](paired_session/README.md#skipping-quality-polish-on-resume).
+batch is still unscheduled. A delivery run's specialist findings never block (v3.17.0). In a review-only run, existing
+blockers still go through author fix and owner recheck, with one or two calls per owner, or eligible operator withdrawal
+at the POLISH-Q fix HOLD. See the [resume details](paired_session/README.md#skipping-quality-polish-on-resume).
 
-At a POLISH-Q specialist budget HOLD, apply the fix in the workspace and run plain `resume` on v3.16.2 or later.
-If the run-wide POLISH-Q allowance can cover the owner rechecks, the owners review the edit before EXEC replays.
+At a POLISH-Q specialist budget HOLD of a review-only run, apply the fix in the workspace and run plain `resume` on
+v3.16.2 or later. If the run-wide POLISH-Q allowance can cover the owner rechecks, the owners review the edit before EXEC
+replays. A delivery run held in the POLISH-Q fix leg by v3.16.x resumes under the v3.17.0 rule: on the tree POLISH-Q
+reviewed it goes on to DOCS with no author turn, and a fix already in the workspace goes to the EXEC reviewer.
 See [Recovering from a POLISH-Q specialist budget HOLD](paired_session/README.md#recovering-from-a-polish-q-specialist-budget-hold).
 
 ## File Structure

@@ -181,7 +181,8 @@ class ThresholdRunTests(unittest.TestCase):
         self.assertEqual(accepted.stdout.strip().splitlines()[-1], 'ACCEPTED', accepted.stdout + accepted.stderr)
         self.assertIn('in the accepted commit', accepted.stdout)
         committed = self.git('show', 'HEAD:BACKLOG.md')
-        self.assertTrue(committed.startswith('# Backlog\n\n## P1\n\n- existing item\n- '), committed)   # appended at the end
+        self.assertTrue(committed.startswith('# Backlog\n\n## P1\n\n- existing item\n\n## P2\n\n- '),   # WI-POSTGATE: under
+                        committed)                                                                # a new P2 section
         self.assertIn(f'- major behavior issue (review-loop run {self.run_dir.name}, sum_ints.py) (added ', committed)
         self.assertEqual(self.git('status', '--porcelain'), '')
         again = self.run_operator_action('accept', '--lifecycle-mode', 'on', '--auto-commit', 'true')
@@ -215,7 +216,7 @@ class ThresholdRunTests(unittest.TestCase):
                           if name.casefold() == 'backlog.md'], ['Backlog.md'])
         self.assertEqual(self.git('status', '--porcelain'), '')
         committed = self.git('show', 'HEAD:Backlog.md')
-        self.assertIn('- existing item\n- advisory exec polish', committed)
+        self.assertIn('- existing item\n\n## P2\n\n- advisory exec polish', committed)   # WI-POSTGATE: a new P2 section
         journal = json.loads((self.run_dir / 'evidence/delivery-commit.json').read_text())
         self.assertEqual(journal['backlog']['path'], str(self.workspace / 'Backlog.md'))
 

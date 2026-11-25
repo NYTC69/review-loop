@@ -344,9 +344,10 @@ worktree lifecycle of `docs/e2e-6-worktree-lifecycle.md` (D12, ADR-11):
 `lifecycle_mode=on` from the command line or an
 operator `--config` starts a worktree-lifecycle run that runs PLAN and EXEC and
 then runs FINISH (a fresh author turn; a change reopens EXEC review)
-and POLISH-Q (fresh report-only specialists, legacy Step 3.5; their blockers
-go to an author fix that the owning specialist re-reviews before EXEC review
-runs again) and DOCS (a fresh docs writer; a
+and POLISH-Q (fresh report-only specialists, legacy Step 3.5; since v3.17.0 a
+delivery run only reports their findings, see [After the gate](#after-the-gate-v3170), while in a
+`--review-only` run their blockers go to an author fix that the owning specialist
+re-reviews before EXEC review runs again) and DOCS (a fresh docs writer; a
 write outside the docs allowlist, a protected path included, is rolled back to the pre-DOCS tree, an allowlisted
 write gets a fresh docs review that must run the test, and its REVISE goes back to
 the docs writer; a docs finding on a path the writer cannot edit goes to the run's `backlog.md`, not to a repair;
@@ -356,15 +357,18 @@ there), so an operator edit made at a DOCS HOLD is never rolled back: an edit of
 is docs-reviewed, any other edit, found before a docs writer dispatch or after a recorded one, sends the run back to the
 EXEC reviewer in a new epoch, then FINISH..SECURITY again; since v3.16.6 this includes a protected-path write the docs
 writer left at an earlier DOCS HOLD (`CLAUDE.md`, say) together with any operator edit, which before v3.16.6 made the
-resume refuse; once the DOCS stage cap is spent no docs writer runs, but one docs review of a tree no docs review has
-seen runs beyond the cap (once per tree, after an invocation-limit check): an operator-changed tree, or since v3.16.7
-the output of a docs writer dispatched on the last DOCS slot; the DOCS budget HOLD names this fix-and-resume route)
+resume refuse; since v3.17.0 a docs writer is dispatched only while the DOCS stage cap has room for it and its review;
+once the cap is spent no docs writer runs, but one docs review of a tree no docs review has seen runs beyond the cap
+(once per tree, after an invocation-limit check): an operator-changed tree, or the output of a docs writer that a
+v3.16.x run recorded on the last DOCS slot; otherwise DOCS moves on to SECURITY with the docs findings still open, with
+no DOCS budget HOLD)
 and the SECURITY scans
 (`sensitive_policy` paths and `scripts/security_preflight.py`) with a fresh
 security reviewer, then reaches DONE (acceptance pending).
 SECURITY stops the run for sensitive-looking paths or content hits in files the run added or changed, including
 additions left in the index after a rename or deletion, for added or changed files over 8 MiB, for content scans over
-256 MiB, for a `.gitignore` coverage gap, and for any security reviewer finding. The same hits in files that were already
+256 MiB, for a `.gitignore` coverage gap, and for any blocking security reviewer finding (since v3.17.0 the run repairs
+those in the [narrow SECURITY loop](#after-the-gate-v3170)). The same hits in files that were already
 committed and left unchanged are printed once as a NOTE and recorded in the SECURITY receipt; a path the run removed
 and that is still in the index is also named in a NOTE. A file name with a TAB or a backslash is classified (a backslash
 counts as a path separator); a name the path scan still cannot classify, such as one with a line break, stops the run
@@ -681,6 +685,77 @@ since the last dispatch, the run HOLDs until the clock is past that time again;
 elapsed time is never refunded. A scope-change successor starts without a
 deadline; pass the time it may use as its own `--wi-deadline`.
 
+## After the gate (v3.17.0)
+
+In a lifecycle-on run the stages after the gate report instead of reopening EXEC (owner decision D-POSTGATE, 2026-11-25).
+
+**Post-gate classes.** Every open POLISH-Q specialist row and DOCS `docs-reviewer` row is classified on each read; the
+ledger is never rewritten, so a saved state follows the rule on resume:
+- `security`: it blocks by severity and category and is flagged `security`, categorized `security` or of SECURITY
+  severity. The SECURITY reviewer owns it (its prompt marks it "forwarded from POLISH-Q …"), may mark it fixed or
+  withdrawn, and only SECURITY and DONE block on it.
+- `decide`: it blocks and its category is correctness, data-loss or money, or it has no category. It never blocks; it is
+  listed for the owner's decision.
+- `report`: any other row (a non-blocking severity or category, or a row outside its pass's delta). It goes to the backlog.
+
+In a `--review-only` run (and in report mode) POLISH-Q rows are not classified: a specialist blocker still takes the fix
+leg (author fix, owner recheck, EXEC review). DOCS rows are classified in both kinds of run.
+
+**POLISH-Q** in a delivery run completes READY with `report_only` and `to_security` (the row ids) and goes on to DOCS; a
+NOTE names the rows. The opt-in quality writers and the advisory fix round are unchanged.
+
+**DOCS** never HOLDs on docs findings or on its budget. A docs writer is dispatched only while the DOCS cap has room for
+it and its review. A docs-review REVISE goes back to the docs writer while the budget lasts. Once the budget is spent, the
+one docs review past the cap described above still runs; otherwise DOCS completes READY with route SECURITY,
+`budget_spent: true` and `leftover` (the open docs rows). The rollback, protected-path and git-guard HOLDs and a docs
+writer's HOLD answer stay HOLDs, and an operator code edit at a DOCS stop still goes to the EXEC reviewer.
+
+**Owner decision.** The `decide` rows (risk-first), a spent DOCS budget with its leftover rows, and every docs touch-up no
+docs reviewer saw are listed under `## 不阻塞、需要你决定`: at DONE in `open-findings.md` (with a note: `reject --text`
+fixes them now, `accept` leaves them to the backlog) and in a DONE NOTE, after accept at the top of `delivery-report.md`,
+right after 结论. Their run-backlog entries are P1 (`[P1]` in `backlog.md`). At accept, BACKLOG.md gets only the rows
+still open in the ledger: the P1 rows as `[P1 needs owner decision]` under `## P1`, the others under `## P2`; a missing
+section is created before `## Done` (at the end when there is none).
+
+**The narrow SECURITY loop.**
+- Trigger: a SECURITY HOLD whose only reason is the security reviewer's blocking findings (its own and forwarded rows) on
+  an unchanged tree. The SECURITY receipt gets route `SECURITY-FIX`, and the stage becomes EXEC in a new epoch.
+- The persistent author fixes the delivered findings (`next: security-fix`) without using an EXEC round.
+- The persistent EXEC reviewer, with no shadow, reviews only the fix delta, `context/delta-since-security-hold.patch` (from
+  a workspace mirror of the held tree to the current tree; without a mirror its prompt lists the changed paths). Only a
+  finding whose reachability starts with `regression:` blocks; the others go to the backlog. The security findings stay
+  with the security reviewer. The gate verdict stands; there is no second gate.
+- FINISH runs unchanged. A FINISH write goes back to the delta review; the delta still starts at the held tree.
+- A docs touch-up: one docs writer updates only the docs that describe behavior the fix changed, and no docs review runs.
+  Its writes outside the docs allowlist or to protected paths are rolled back. It is skipped (receipt `skipped`) when no
+  docs path is configured, nothing changed since the hold, only docs and tests changed, the DOCS cap has no room, or fewer
+  than two invocations are left. Its receipt is stage DOCS, `touchup: true`, route SECURITY.
+- SECURITY runs again; READY reaches DONE, and a new findings HOLD starts the next loop.
+- Cost: 5 calls with an author fix (4 without a docs path); 4 with an operator fix (3 when the touch-up is skipped).
+- Limits: the author fixes at most `SECURITY_FIX_LOOPS` (2) times per run, scaled by counted rejections like the stage
+  caps, and only while one more SECURITY review fits `BUDGET_CAPS['SECURITY']` (3 reviews per run) and the invocations
+  cover the loop (4, or 5 with a docs path). Otherwise the HOLD names the reason and ends with "fix them outside the run
+  and resume (narrow security loop), or abort", or with "the SECURITY budget is spent (…): abort".
+- The operator variant: a scan HOLD (sensitive paths, preflight, `.gitignore`), the cap and an author HOLD answer stay with
+  the operator. Every SECURITY HOLD on an unchanged tree records `lifecycle.security_hold` (tree, mirror, manifest). A
+  resume on a changed tree enters the loop `by: operator` and goes straight to the EXEC delta review, then FINISH, the
+  touch-up and SECURITY. A resume on the held tree starts the author loop when the limits allow it, and otherwise refuses
+  ("security findings need a fix on a new tree").
+- Records: `lifecycle.security_fix` = `{loop, by, hold_request_id, hold_tree, hold_manifest, mirror, finding_ids}`; the
+  next SECURITY moves it to `security_fix_history` with the outcome `passed`, `held`, `unchanged` or `superseded`. The
+  delivery report adds a "SECURITY 窄修复环" line.
+
+**Resuming a v3.16.x run.** `resume` migrates the saved state once and records it in `post_gate_migration`; receipts,
+turns, ledger rows, verdicts and budgets are not rewritten:
+- A delivery run at a POLISH-Q fix HOLD or recheck: on the tree POLISH-Q reviewed it goes on to DOCS with no author turn;
+  on a tree a fix changed, the EXEC reviewer reviews the change in a new epoch. A review-only run keeps its fix leg.
+- A DOCS HOLD, the budget HOLD included: nothing changes; the next DOCS turn moves on to SECURITY.
+- A SECURITY HOLD on findings: on the same tree, author loop 1 (the mirror is taken at resume); on a changed tree, the
+  operator loop.
+- EXEC reopened by the v3.16.x SECURITY operator route: an operator loop whose held tree is that SECURITY receipt's
+  candidate (no mirror; the reviewer gets the changed paths).
+- A migration that fails HOLDs and leaves the state unchanged.
+
 ## Changing role settings or moving an install
 
 A continuing `resume` can change any of `--author-model`, `--reviewer-model`, `--gate-model`,
@@ -722,10 +797,14 @@ continues the run: if that resume stops first (uncertain-turn recovery HOLD, a r
 `NOTE: --skip-quality-polish true was not saved.` Pass the flag again on the
 resume that continues. A profile `skip_quality_polish` value never downgrades a saved run.
 
-Existing blockers still go through author fix and owner recheck, with one or two calls per owner.
+A delivery run's specialist findings never block (v3.17.0). In a review-only run, existing blockers still go through
+author fix and owner recheck, with one or two calls per owner.
 An eligible blocker can also be withdrawn at the existing POLISH-Q fix HOLD.
 
 ## Recovering from a POLISH-Q specialist budget HOLD
+
+Since v3.17.0 a delivery run's specialist findings never block, so this recovery is for review-only runs; a delivery
+run that v3.16.x held in the POLISH-Q fix leg resumes under the [post-gate rule](#after-the-gate-v3170).
 
 When a blocking finding's owner has exhausted its per-epoch POLISH-Q budget, apply the fix in the
 workspace and use plain `resume` on v3.16.2 or later with the original workspace, work item, and run directory.
@@ -831,7 +910,8 @@ on the host's own judgment. First issue the same
 command with `--intent-only`, then submit it with `--expect <digest>`; ids and
 reason are bound to the intent and mutation runs under the run/workspace leases.
 Allowed states are DONE (acceptance pending), a PLAN/EXEC round-limit HOLD, a
-rejected-tree HOLD, and (v3.8.4) a POLISH-Q fix HOLD: "POLISH-Q blockers remain after
+rejected-tree HOLD, and (v3.8.4) a POLISH-Q fix HOLD (since v3.17.0 specialist rows block only in a review-only run):
+"POLISH-Q blockers remain after
 the fix", "POLISH-Q fix left the tree unchanged" or "POLISH-Q specialist budget
 exhausted". Unknown or closed ids, an empty reason, CRITICAL/MAJOR/SECURITY
 security-tagged or security-reviewer rows, specialist-owned rows (except at a POLISH-Q

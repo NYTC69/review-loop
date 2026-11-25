@@ -1,5 +1,63 @@
 # Changelog
 
+### v3.17.0：gate 之后只报告，SECURITY 失败走窄循环（WI-POSTGATE）
+
+所有者决定 D-POSTGATE（Yuan 2026-11-25）：门审之后的各阶段只报告，不再重开 EXEC。只有 SECURITY 发现自动修复，而且只走窄循环。POLISH-Q 的修复环保留给 review-only 运行（Q1）；SECURITY 审查员的发现由作者自动修复，最多 2 轮，扫描命中、到达上限和作者 HOLD 交给操作者（Q2）；窄循环里的文档补写不做文档评审，在报告中标出（Q3）；资金类和正确性、数据丢失一起列为“需要你决定”（Q4）。
+
+- 门审之后的分类（`worktree_lifecycle.post_gate_class`，每次读取时计算，不改写账本，已保存的状态 resume 时自动遵循）：适用于未关闭的 POLISH-Q 专家行和 DOCS 的 `docs-reviewer` 行。
+  - `security`：按严重度和类别会阻塞，并且带 `security` 标记、类别为 `security` 或严重度为 SECURITY。转交 SECURITY 审查员，只在 SECURITY 和 DONE 阻塞。
+  - `decide`：会阻塞，类别是 correctness、data-loss、money 或没有类别。不阻塞，列给所有者决定。
+  - `report`：其余各行（不阻塞的严重度或类别、增量之外的行）。进入 backlog。
+  - review-only 运行和报告模式不对 POLISH-Q 行分类；DOCS 行在两类运行中都分类。
+- POLISH-Q：交付运行中回执为 READY，带 `report_only` 和 `to_security`（行 ID），打印 NOTE 后进入 DOCS，不再有作者修复、专家复审和 EXEC 重放。review-only 运行（code-quality-loop）的修复环不变。可选的质量写入者和 advisory 修复轮不变。
+- 转交 SECURITY：`security` 行出现在 SECURITY 审查员的所有行里（提示中标为 “forwarded from POLISH-Q …”），审查员可以把它们标为 fixed 或 withdrawn。
+- DOCS 不再阻塞：不会因 docs 发现或预算 HOLD。只有 DOCS 上限还能容纳写入者和它的审查（+2）时才派发写入者；docs 审查 REVISE 在预算内仍回到写入者。预算用完后，docs 审查没见过的树仍可获一次超额审查（操作者改过的树，或 v3.16.x 记录在最后一个名额上的写入者输出）；其余情况 DOCS 以 READY、路由 SECURITY、`budget_spent: true` 和 `leftover`（未关闭的 docs 行）结束。回滚、受保护路径、git 守卫和写入者 HOLD 答复仍然 HOLD；DOCS 停住时操作者改了代码，仍交给 EXEC 审查员。
+- 所有者决定：`decide` 行（按风险排序）、DOCS 预算用完时剩下的 docs 行、以及没有经过文档评审的窄循环文档补写，列在 `## 不阻塞、需要你决定` 下：DONE 时写入 `open-findings.md`（附说明：现在修用 `reject --text`，拆到 backlog 用 `accept`）并打印 NOTE；accept 后放在 `delivery-report.md` 的“结论”之后。这些行在运行 backlog 中标为 P1（`[P1]`），accept 时以 `[P1 needs owner decision]` 写入仓库 BACKLOG.md。
+- SECURITY 窄循环：
+  - 触发：SECURITY HOLD 的唯一原因是安全审查员的阻塞发现（包括转交来的行），且树没变。SECURITY 回执路由为 `SECURITY-FIX`，阶段转为新 epoch 的 EXEC。
+  - 调用顺序：作者修复（`next: security-fix`，不占 EXEC 轮次）→ 持久 EXEC 审查员只审修复增量 `context/delta-since-security-hold.patch`（没有工作区镜像时提示改为列出变更路径；没有 shadow，不重新门审，门审裁定沿用；只有 reachability 以 `regression:` 开头的发现阻塞，其余进 backlog）→ FINISH（照常运行；FINISH 写入后回到增量审查，增量仍从 HOLD 时的树算起）→ 文档补写（一个 docs 写入者只更新这次修复影响到的文档，不做文档评审，越界或受保护路径写入会回滚）→ SECURITY 复查，READY 即 DONE。
+  - 文档补写在以下情况跳过（回执 `skipped`）：未配置 docs 路径、HOLD 之后没有变化、只改了文档和测试、DOCS 上限没有余量、剩余调用少于 2 次。回执为 DOCS 阶段、`touchup: true`、路由 SECURITY。
+  - 成本：作者修复 5 次调用（无 docs 路径时 4 次）；操作者修复 4 次（跳过文档补写时 3 次）。
+  - 上限：`SECURITY_FIX_LOOPS = 2`（与阶段上限一样随计入的拒绝次数放大），并且要求 SECURITY 预算（每次运行 3 次审查）还能再审一次、调用余量够整轮（4 次，有 docs 路径时 5 次）。否则 HOLD 说明原因，并提示“在运行外修复后 resume（narrow security loop）或 abort”；SECURITY 预算已用完时提示 abort。
+  - 操作者变体：扫描 HOLD（敏感路径、preflight、`.gitignore`）、到达上限和作者 HOLD 答复都交给操作者。每次树未变的 SECURITY HOLD 都记录 `lifecycle.security_hold`（树、镜像、清单）。在改过的树上 resume，以 `by: operator` 进入窄循环，直接做 EXEC 增量审查；在原树上 resume，条件允许时进入作者修复，否则拒绝（“security findings need a fix on a new tree”）。
+  - 记录：`lifecycle.security_fix` = `{loop, by, hold_request_id, hold_tree, hold_manifest, mirror, finding_ids}`，下一次 SECURITY 结束时移入 `security_fix_history`，结果为 `passed`、`held`、`unchanged` 或 `superseded`。交付报告增加 “SECURITY 窄修复环” 一行。
+- BACKLOG 追加修复（现场运行 token-meter 1862edcf，accept 把 72 行追加到文件末尾，落在 “## Done (recent 5)” 下，其中不少早已修复）：accept 只写入账本中仍未关闭的行（没有账本 ID 的行照常写入），`[P1 needs owner decision]` 行放在 `## P1` 末尾，其余放在 `## P2` 末尾；缺少该节时在 `## Done` 之前（没有则在文件末尾）新建；空文件模板不变。
+- 其他：迁移失败时 HOLD 并保持状态不变，不再抛出 traceback；DOCS 预算在写入者之后用完时，回执保留 `rolled_back_outside`、`rollback_diff` 和 `opv_carried`。
+- 文档：`README.md` 的阶段说明、流程图和 POLISH-Q 段落；`paired_session/README.md` 的生命周期段落、新增 “After the gate (v3.17.0)” 一节、撤回发现和 POLISH-Q 预算 HOLD 的适用范围；`paired_session/docs/e2e-6-worktree-lifecycle.md`；`docs/protocol/paired-session-entry.md`；两个 guide。
+
+**已停住的运行（v3.16.x）**：普通 `resume` 时迁移一次，记录在 `state.post_gate_migration`；回执、回合、账本行、裁定和预算都不改写。
+
+- 交付运行停在 POLISH-Q 修复 HOLD 或复审处：树仍是 POLISH-Q 审过的树时，直接进入 DOCS，不派发作者；树已被修复改过时，交给 EXEC 审查员（新 epoch）。review-only 运行保留修复环。
+- POLISH-Q 进行中（`next=polish-q`）：不迁移，按新规则只报告。
+- DOCS HOLD（包括预算 HOLD）：状态不变，下一次 DOCS 回合直接进入 SECURITY；操作者改了代码仍交给 EXEC 审查员。
+- SECURITY 因审查发现 HOLD：树未变时进入作者修复第 1 轮（resume 时建立镜像）；树已变时进入操作者窄循环。
+- v3.16.x 的 SECURITY 操作者路线已重开 EXEC：转为操作者窄循环，HOLD 树取那条 SECURITY 回执的候选树（没有镜像，审查员看到变更路径列表）。
+- 其他运行无需特殊处理。
+
+**按意图更新的测试断言**
+
+- `tests/skills/contracts/review-loop.json` 的 `plugin_version_pinned_plugin_json`、`plugin_version_pinned_marketplace_metadata`、`plugin_version_pinned_marketplace_plugins_first` 和 `plugin_version_pinned_codex_plugin_json` 从 `3.16.7` 更新为 `3.17.0`。其他契约 needle 没有改动（本次改写的文档句子没有被 needle 固定）。
+- POLISH-Q 修复环用例改为 `--review-only` 运行，断言不变（交付运行的 POLISH-Q 只报告；Q1 保留 review-only 的修复环）：
+  - `test_worktree_lifecycle`：`test_a_specialist_blocker_goes_to_the_fix_leg_and_only_its_owner_can_close_it`、`test_the_operator_withdraws_specialist_blockers_at_a_polish_fix_hold_and_the_run_reaches_done`、`test_a_withdrawal_at_a_budget_hold_raised_mid_pass_still_reaches_done`、`test_a_fix_that_leaves_the_tree_unchanged_cannot_close_a_blocker`、`test_a_recheck_replay_keeps_the_owners_already_done`、`test_the_fix_leg_checks_round_limit_and_owner_budget_before_the_author_writes`、`test_a_fix_author_that_stopped_before_routing_still_goes_to_the_owners`、`test_a_fixed_specialist_blocker_replays_exec_review_then_finish_and_polish_q`、`test_a_same_tree_re_review_of_a_held_blocker_is_refused`、`test_a_polish_q_replay_after_a_mid_stage_hold_reuses_completed_specialists`、`test_mid_polish_downgrade`、`test_fresh_stage_reviewers_see_operator_rulings`、`test_specialist_cross_owner_duplicate`、`test_withdrawing_a_shared_specialist_row_leaves_no_open_attached_claim`（新增 `existing_change()` 辅助方法和 `polish_at(..., review_only=True)`）。
+  - `test_polish_budget_recovery` 全部 7 个用例。
+  - `test_d09_c1a::test_a_specialist_blocker_is_fixed_before_the_writers_are_checked`（保留“先 HOLD 后 READY”的顺序覆盖）、`test_gate_once::test_a_polish_q_fix_is_reviewed_without_a_gate`、`test_l100::test_a_w_polish_fix_at_the_exec_cap_uses_no_round`、`test_rounds_threshold::test_r5_finish_and_polish_q_writes_use_no_exec_round`。
+- `test_worktree_lifecycle::test_a_file_restored_to_its_base_content_is_still_in_the_polish_q_delta`：`assertIn(row, blocking_open_findings())` 改为断言分类为 `decide`（`out_of_delta` 为 False 的检查保留）。交付运行中增量内的专家行列给所有者决定；增量外的行会是 `report`，所以增量区分仍被覆盖。
+- `test_wi_docsfix`（DOCS 不再 HOLD）：
+  - `test_docs_budget_hold_names_the_route_and_one_recheck_runs_per_operator_tree`：v3.16.x 预算 HOLD 改为模拟构造；操作者修改后的复审仍须在调用上限内（HOLD 文本不变）；之后复审一次（REVISE、`operator_recheck`、`writer_skipped`），不派发写入者，进入 SECURITY 到 DONE，最后的 DOCS 回执带 `budget_spent` 和 `leftover`。
+  - `test_a_docs_writer_on_the_last_docs_slot_gets_its_review_beyond_the_cap`：上限 1 时不再派发写入者，回执 `budget_spent`、路由 SECURITY；新增上限 2 时写入者和审查都在上限内。
+  - `test_a_revise_of_the_review_beyond_the_cap_holds_without_another_docs_writer`：上限 1 的预算 HOLD 改为上限 2：写入者加 REVISE 审查，不派发第二个写入者，到达 DONE，最后的 DOCS 回执 `budget_spent`、路由 SECURITY、`leftover` 为该发现。
+  - `test_a_run_held_with_an_unreviewed_writer_output_on_the_last_slot_resumes`：首次运行的上限从 1 改为 2（resume 仍为 1，断言全部保留），因为只有派发了写入者才能构造 v3.16.6 状态。
+- SECURITY 窄循环（Q2）：
+  - `test_worktree_lifecycle::test_a_blocking_security_finding_holds_and_only_a_fix_on_a_new_tree_reaches_done`：首次运行和同树 resume 改为进程内驱动并设 `SECURITY_FIX_LOOPS = 0`，HOLD 文本通过 `state['hold_reason']` 检查（前缀保留，新增 “fix them outside the run and resume (narrow security loop)”）；SECURITY 路由从 `['HOLD', 'EXEC', 'DONE']` 改为 `['HOLD', 'SECURITY-FIX', 'DONE']`；其他断言保留。
+  - `test_worktree_lifecycle::test_a_minor_security_reviewer_finding_is_listed_but_reaches_done_and_is_withdrawable`（MAJOR 部分）：改为进程内驱动、`SECURITY_FIX_LOOPS = 0`，断言 `HOLD` 和 `hold_reason` 以 `security reviewer findings: ` 开头；“MAJOR 不能撤回”的断言保留。
+  - `test_worktree_lifecycle::test_a_tree_changed_during_security_holds_and_resume_replays_exec`：断言保留，新增操作者窄循环的断言（`security_fix` by operator、hold_tree 为 SECURITY 候选树、mirror 为 False、最后的 SECURITY 回执路由 `SECURITY-FIX`）。
+  - `test_v319hold` 的 `UNCLASSIFIABLE_EXIT`：“(EXEC review and gate replay, then FINISH..SECURITY, within the EXEC round limit)” 改为 “(the narrow security loop: EXEC review of the change, FINISH, SECURITY, within the EXEC round limit)”（WI-GATE1 之后已没有门审重放）。
+  - `test_wi_postgate::test_a_security_specialist_row_is_forwarded_to_the_security_reviewer`（第 1 步 AC2）：运行从停在 SECURITY 改为到达 DONE；保留 POLISH-Q 回执 READY 带 `to_security`、POLISH-Q 与第一次 SECURITY 审查之间没有作者 EXEC 回合、该行在提示中列为所有并标为转交；“在 SECURITY 阻塞”的检查移到第一个 SECURITY 回执（HOLD、`SECURITY-FIX`、原因列出该行）；新增：下一个派发是作者、该行最终 `fixed`、循环记录列出它。
+- BACKLOG 分节写入：
+  - `test_rounds_threshold::test_accept_with_auto_commit_puts_the_rows_in_the_accepted_commit`：“追加在末尾”（`'# Backlog\n\n## P1\n\n- existing item\n- '`）改为 `'# Backlog\n\n## P1\n\n- existing item\n\n## P2\n\n- '`；重放不重复写入的断言保留。
+  - `test_rounds_threshold::test_r3f11_accept_and_journal_replay_keep_the_tracked_backlog_spelling`：`'- existing item\n- advisory exec polish'` 改为 `'- existing item\n\n## P2\n\n- advisory exec polish'`；文件名大小写和日志重放的断言保留。
+- FINISH 用例（AC7）、`test_the_docs_budget_caps_writer_and_review_dispatches` 和 `.gitignore` 恢复用例未改动。新增 `paired_session/test_wi_postgate.py`（25 个用例）；`paired_session/fake_cli.py` 新增 `FAKE_SPECIALIST_SECURITY`、`FAKE_DOCS_REVIEW_BLOCK`、`FAKE_SECURITY_KEEP_OPEN_ONCE`、`FAKE_DOCS_TOUCHUP_WRITE` 和 `FAKE_SECURITY_FIX_HOLD`。
+
 ### v3.16.7：最后一个 DOCS 名额上的写入者输出可获一次超额审查，出错写入者的越界写入照常回滚（WI-DOCSFIX2）
 
 - 死路修复：DOCS 写入者占用最后一个 DOCS 阶段名额时，它的输出不再直接进入无法解除的 DOCS 预算 HOLD。v3.16.6 的超额复审只覆盖操作者改过的树。现在规则改为：超出上限后，docs 审查从未见过的树可获一次超额 docs 审查，每棵树最多一次，审查前同样检查调用上限。这类树包括操作者改过的树，以及最后名额上写入者的输出。上限对写入者仍然有效，超出后不派发写入者。超额审查 REVISE 时以 DOCS 预算 HOLD 结束，原因列出发现 ID 并说明“在工作区修复后 resume”的路线。同一棵树不会再审第二次。

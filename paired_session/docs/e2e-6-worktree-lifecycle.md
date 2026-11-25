@@ -49,7 +49,8 @@ depends on it.
   findings feed POLISH-Q. Implemented deviation (W2a-2): the fix leg reuses the persistent EXEC author turn
   with the open specialist blockers as its delivered review; the owning specialists then re-review on the
   new tree (only an owner closes its finding), and the write replays EXEC review, then FINISH and
-  POLISH-Q in the next epoch. A blocker left after the re-review HOLDs; resume runs another fix round, and
+  POLISH-Q in the next epoch (since v3.17.0 only in a `--review-only` run; a delivery run reports the
+  specialist findings). A blocker left after the re-review HOLDs; resume runs another fix round, and
   a fix that leaves the tree unchanged since the last review HOLDs. Specialist counts are per epoch
   (legacy 3.5.2 caps one Step 3.5 run): 4 per specialist with room for two dispatches, so an owner gets
   its review plus up to two re-reviews per epoch, checked before the author writes. POLISH-Q stays capped
@@ -64,9 +65,9 @@ depends on it.
 | Stage | Dispatch (real path) | Writes | Exit / HOLD | Legacy step matched |
 |---|---|---|---|---|
 | FINISH | fresh author session, same author flags | worktree | unchanged digest → POLISH-Q; changed → EXEC replay | Step 3.4 spent; executor readiness |
-| POLISH-Q | fresh reviewer turns per detected language plus code/silent-failure/test reviewers, inlined `agents/*.md` bodies in the frozen role manifest; fixes via the polish author/reviewer turn implementations; one simplifier pass and test consolidation by fresh author sessions | fix, simplify and test writers only | open specialist blocker, zero tool use after one retry, cap → HOLD; any write → EXEC replay; `skip_quality_polish: true` → no-op receipt | Step 3.5 (static-analysis fix 2, code review 3, simplify 1, tests 2 rounds), tool-use guard |
-| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` or `"docs_file": ""` in a profile; `paired-session-config.example.json` leaves the key out so the default applies; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | paths outside the allowlist → rollback, HOLD if rollback fails; missing retest → HOLD | Step 3.6; see the `docs_file` entry below |
-| SECURITY | coordinator `sensitive_policy` path scan and `scripts/security_preflight.py`; fresh security reviewer | none | a sensitive path the run added or changed (an unchanged committed one is a note; see below), any preflight result other than a clean exit 0, any open blocking finding → HOLD (no automatic repair, no `.gitignore` edit); a no-op run still scans; tree change during the stage → HOLD; `BUDGET_CAPS['SECURITY']` (3 reviews per run) | Step 3.7 scans; the reviewer follows the parity map W3a |
+| POLISH-Q | fresh reviewer turns per detected language plus code/silent-failure/test reviewers, inlined `agents/*.md` bodies in the frozen role manifest; fixes via the polish author/reviewer turn implementations; one simplifier pass and test consolidation by fresh author sessions | fix, simplify and test writers only | open specialist blocker (review-only runs; v3.17.0 delivery runs report it), zero tool use after one retry, cap → HOLD; any write → EXEC replay; `skip_quality_polish: true` → no-op receipt | Step 3.5 (static-analysis fix 2, code review 3, simplify 1, tests 2 rounds), tool-use guard |
+| DOCS | fresh author session as docs writer; fresh docs reviewer over the full diff with an observed test run | frozen `docs_allowlist` (W default `docs_file` = `CHANGELOG.md` since W2b-1, off with an explicit `--docs-file ''` or `"docs_file": ""` in a profile; `paired-session-config.example.json` leaves the key out so the default applies; the fake lifecycle keeps `''`; W docs paths must be exact documentation files outside the HOLD set, reached without symlinks) | paths outside the allowlist → rollback, HOLD if rollback fails; missing retest → HOLD; a spent budget → SECURITY with the open docs rows (v3.17.0) | Step 3.6; see the `docs_file` entry below |
+| SECURITY | coordinator `sensitive_policy` path scan and `scripts/security_preflight.py`; fresh security reviewer | none | a sensitive path the run added or changed (an unchanged committed one is a note; see below), any preflight result other than a clean exit 0, any open blocking finding → HOLD (no `.gitignore` edit; since v3.17.0 the reviewer's findings alone get the narrow author-fix loop); a no-op run still scans; tree change during the stage → HOLD; `BUDGET_CAPS['SECURITY']` (3 reviews per run) | Step 3.7 scans; the reviewer follows the parity map W3a |
 | DONE | after SECURITY only | — | acceptance pending | Delivery gate |
 | DELIVERY | operator `accept --expect <digest>` from W DONE only (existing intent: tree, HEAD, index, state) | `auto_commit: false` (default): none. `auto_commit: true`: one hook-free local commit of the accepted manifest; drift → HOLD | external push/PR/merge refused (D8) | Step 4; differences from W04 below |
 
@@ -177,7 +178,10 @@ There is no CLOSE stage on the real path: legacy review-loop never closes a Comp
   checked), and a HOLD, unusable or malformed review is discarded so resume reviews again. A resume on the tree its
   findings were left open on is refused ("security findings need a fix on a new tree"); the operator's fix
   outside the run changes the tree, EXEC replays, and the next security reviewer disposes its findings (only
-  the owner closes them). Until then those findings gate only SECURITY and DONE: the EXEC reviewer cannot see
+  the owner closes them). Changed in v3.17.0 (WI-POSTGATE): a HOLD on the reviewer's findings alone gets the
+  narrow SECURITY loop (at most 2 author fixes per run), and an operator fix takes the same narrow chain:
+  the EXEC reviewer reviews only the delta since the held tree (no shadow, no re-gate), FINISH, a docs
+  touch-up without docs review, then SECURITY (paired_session/README.md, "After the gate"). Until then those findings gate only SECURITY and DONE: the EXEC reviewer cannot see
   or close them, so EXEC, POLISH-Q and DOCS do not count them as blockers. `reject` on a W DONE is refused
   until W3b, like `accept`.
 - Added in W1b: FINISH binds `candidate_oid` to the last reviewed snapshot. Since v3.16.4, a tree mismatch

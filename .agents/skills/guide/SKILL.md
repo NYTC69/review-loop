@@ -10,7 +10,9 @@ description: "Codex guide for review-loop - the paired-session entry, review-pr 
 A review-loop request goes to the Codex `review-loop` skill, which resolves the `entry` key in
 `.review-loop/config.md` and hands the work item to the Codex `paired-session` skill. That skill
 runs the coordinator through plan, implementation and review. With lifecycle on, finish, polish, docs
-and security follow, up to DONE. With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree.
+and security follow, up to DONE. After the gate the stages report: POLISH-Q and DOCS findings never reopen EXEC (a
+review-only run keeps the POLISH-Q fix leg), and a security reviewer finding gets a narrow fix loop (author fix, delta
+review, FINISH, docs touch-up, SECURITY). With lifecycle off, it stops after the gate; acceptance returns the uncommitted tree.
 It accepts only on your explicit acceptance.
 A request to review existing code hands off the same way as `run --review-only`, and an existing
 plan becomes the work item (PLAN drafts and reviews it again). `entry: legacy`, asking for "the legacy
@@ -72,8 +74,8 @@ Not on Codex:
   A moved install can continue with matching frozen inputs and the same custom gate prompt path.
   See [resume settings and relocation](../../../paired_session/README.md#changing-role-settings-or-moving-an-install).
 - Under quota pressure, keep the fresh shadow and use the one-way `resume --skip-quality-polish true` to skip new
-  specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. Existing blockers still need
-  the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
+  specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. In a review-only run, existing
+  blockers still need the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
   See the [resume details](../../../paired_session/README.md#skipping-quality-polish-on-resume).
 - A review of existing code is a review-only run. With lifecycle on, `accept` normally makes one local commit (never a push);
   `auto_commit: false` in `.review-loop/config.md` keeps the accepted change uncommitted. Lifecycle off stops after the gate; acceptance returns the uncommitted tree.

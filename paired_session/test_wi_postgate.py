@@ -64,11 +64,25 @@ class PostGateClassTests(unittest.TestCase):
         self.assertIn('DOCS', lines[2])
         self.assertEqual(rc.worktree_lifecycle.owner_decision_lines({**state, 'lifecycle': {'receipts': []}}, {}), [])
 
+    def test_backlog_rows_go_to_the_end_of_their_section_or_a_new_one_before_done(self):
+        for text, priority, expected in (
+                ('# Backlog\n\n## P2\n\n', 'P2', '# Backlog\n\n## P2\n\n- row\n'),   # the empty-file template
+                ('# Backlog\n\n## P2\n\n', 'P1', '# Backlog\n\n## P1\n\n- row\n\n## P2\n\n'),
+                ('# B\n\n## P2 — normal\n\n- old\n\n## Done (recent 5)\n\n- done\n', 'P2',
+                 '# B\n\n## P2 — normal\n\n- old\n- row\n\n## Done (recent 5)\n\n- done\n'),
+                ('# B\n\n## P1 — high\n\n## P3\n\n- later\n\n## Done\n- done', 'P2',
+                 '# B\n\n## P1 — high\n\n## P2\n\n- row\n\n## P3\n\n- later\n\n## Done\n- done\n'),
+                ('# B\n\n## P1\n\n- item\n## Done\n', 'P2', '# B\n\n## P1\n\n- item\n\n## P2\n\n- row\n\n## Done\n'),
+                ('# B\n\n## P20\n\n- x\n', 'P2', '# B\n\n## P20\n\n- x\n\n## P2\n\n- row\n')):
+            with self.subTest(text=text, priority=priority):
+                self.assertEqual(rc.backlog_insert(text, priority, ['- row\n']), expected)
+
 
 class PostGateRunTests(unittest.TestCase):
     locals().update({name: getattr(twl.WorktreeLifecycleActivationTests, name) for name in (*twl._HELPERS, 'setUp')})
     locals().update({name: getattr(docsfix.DocsOperatorEditTests, name) for name in (
-        'state', 'assert_done', 'coordinator_for', 'after', 'docs_rows', 'resume_in_process', 'drive_with_docs_cap')})
+        'state', 'assert_done', 'coordinator_for', 'after', 'docs_rows', 'docs_cap', 'resume_in_process',
+        'drive_with_docs_cap')})
 
     def receipts(self, state, stage):
         return [row for row in state['lifecycle']['receipts'] if row['stage'] == stage]
@@ -261,6 +275,62 @@ class PostGateRunTests(unittest.TestCase):
         self.assertIn(('author', 'EXEC'), self.after(state, first['specialist_turns'][-1]['sequence']))
         self.assertIn('# specialist fix', (self.workspace / 'sum_ints.py').read_text())
         self.assertNotIn('post_gate_migration', state)
+
+    # --- step 3: repository BACKLOG sections, migration failures, the DOCS budget receipt after a writer -------------------
+    COMPASS_BACKLOG = ('# Backlog\n\n## P0 — blocker\n\n## P1 — high priority\n\n- existing p1\n\n'
+                       '## P2 — normal\n\n- existing p2\n\n## Done (recent 5)\n\n- done item\n')
+
+    def test_accept_writes_only_open_rows_under_their_priority_sections(self):
+        (self.workspace / 'BACKLOG.md').write_text(self.COMPASS_BACKLOG)
+        rc.subprocess.run(['git', 'add', 'BACKLOG.md'], cwd=self.workspace, check=True)
+        rc.subprocess.run(['git', 'commit', '-qm', 'backlog'], cwd=self.workspace, check=True)
+        self.assert_done(self.run_coordinator(*ON, env=BLOCK))
+        state = self.state()
+        [blocker] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
+        fixed = {'id': 'F900', 'status': 'fixed', 'status_history': [], 'source': 'docs-reviewer', 'phase': 'DOCS',
+                 'severity': 'MINOR', 'file': 'CHANGELOG.md', 'summary': 'stale wording fixed later'}
+        state['finding_ledger'].append(fixed)   # listed at an earlier DONE, fixed before this accept (the field run)
+        state['backlog'] += [{'source': 'docs-reviewer', 'phase': 'DOCS', 'sequence': 1, 'severity': 'MINOR',
+                              'file': 'CHANGELOG.md', 'summary': fixed['summary'], 'failure_scenario': '', 'id': 'F900'},
+                             {'source': 'persistent-reviewer', 'phase': 'PLAN', 'sequence': 1, 'severity': 'MINOR',
+                              'file': 'notes.md', 'summary': 'an observation without a ledger id', 'failure_scenario': ''}]
+        (self.run_dir / 'state.json').write_text(json.dumps(state))
+        self.accept()
+        text = (self.workspace / 'BACKLOG.md').read_text()
+        self.assertNotIn('stale wording fixed later', text)
+        p1, p2, done = (text.index(heading) for heading in ('## P1 —', '## P2 —', '## Done'))
+        decide = text.index('- [P1 needs owner decision] specialist blocker (review-loop run')
+        observation = text.index('- an observation without a ledger id (review-loop run')
+        self.assertTrue(p1 < text.index('- existing p1') < decide < p2 < text.index('- existing p2') < observation < done, text)
+        self.assertTrue(text.endswith('## Done (recent 5)\n\n- done item\n'), text)
+        self.assertEqual(blocker['status'], 'open')
+
+    def test_a_failing_post_gate_migration_holds_instead_of_a_traceback(self):
+        for error in (RuntimeError('migration boom'), KeyError('fix_base')):
+            with self.subTest(error=type(error).__name__):
+                self.run_dir = self.root / f'migration-{type(error).__name__}'
+                status, reason, _ = self.drive_with_docs_cap(None, {}, _migrate_security_loop=mock.Mock(side_effect=error))
+                self.assertEqual(status, 'HOLD')
+                self.assertIn('post-gate migration', reason)
+                self.assertIn(str(error.args[0]), reason)
+                state = self.state()
+                self.assertEqual((state['status'], state['next'], state['turns']), ('HOLD', 'author', []))
+
+    def test_a_budget_spent_after_a_writer_keeps_the_rollback_and_carried_records(self):
+        original = rc.Coordinator._docs_beyond_cap
+
+        def beyond(co, request, tree, need=1, docs=True):   # the writer had room; its review finds the budget spent
+            return 'spent' if need == 1 else original(co, request, tree, need, docs)
+
+        env = {**DOCS_ENV, 'FAKE_DOCS_CODE_ONCE': str(self.root / 'docs-code')}
+        with mock.patch.object(rc.opv, 'carry_docs_only', return_value=['V001']):
+            status, reason, out = self.drive_with_docs_cap(None, env, _docs_beyond_cap=beyond)
+        self.assertEqual(status, 'DONE', reason + out)
+        [docs] = self.docs_rows(self.state())
+        self.assertEqual((docs['route'], docs['budget_spent'], docs['rolled_back_outside'], docs['opv_carried']),
+                         ('SECURITY', True, ['sum_ints.py'], ['V001']))
+        self.assertTrue(docs['rollback_diff'])
+        self.assertNotIn('# docs comment fix', (self.workspace / 'sum_ints.py').read_text())
 
 
 SECURITY_ONCE = {'FAKE_SECURITY_MINOR_SEVERITY': 'MAJOR'}   # one blocking security-reviewer row (no category: it blocks)

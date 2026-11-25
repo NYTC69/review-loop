@@ -25,6 +25,8 @@ review-loop entry (resolves `entry`, runs the stage A checks)
     ├── EXEC   author implements → reviewer + shadow review → iterate
     ├── GATE   adversarial gate
     ├── with lifecycle on: FINISH → POLISH-Q specialists → docs → security
+    │   (after the gate the stages report: POLISH-Q and DOCS findings never reopen EXEC; a security
+    │    reviewer finding gets a narrow fix loop: author fix, delta review, FINISH, docs touch-up, SECURITY)
     └── DONE (or HOLD) → you accept or reject; nothing ships without your decision
 ```
 
@@ -130,8 +132,8 @@ Unset paired-session caps are plan 3 / exec 4 rounds. `reviewer_model` and `exec
 `docs/paired-session-migration.md` (Config mapping).
 
 Under quota pressure, keep the fresh shadow and use the one-way `resume --skip-quality-polish true` to skip new
-specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. Existing blockers still need
-the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
+specialist passes and any POLISH-Q quality writer batch still awaiting scheduling. In a review-only run, existing
+blockers still need the author fix and one or two recheck calls per owner, or eligible withdrawal at the POLISH-Q fix HOLD.
 See the [resume details](../../paired_session/README.md#skipping-quality-polish-on-resume).
 
 ### review_focus examples

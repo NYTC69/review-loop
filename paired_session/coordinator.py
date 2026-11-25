@@ -282,6 +282,31 @@ def blocks_by_severity(row: dict) -> bool:
     severity = str(row.get('severity', '')).upper()
     return (severity in BLOCKING_REVIEW_SEVERITIES or (row.get('source') == 'adversarial-gate' and severity in ('CRITICAL', 'HIGH'))) \
         and category_blocks(row)
+
+
+def backlog_insert(text: str, priority: str, lines: list[str]) -> str:
+    """WI-POSTGATE: `lines` (each ending in a newline) go at the end of the BACKLOG.md section whose heading starts with
+    '## <priority>' ('## P2 — normal' included), before its trailing blank lines. A missing section is created before the
+    first later priority or '## Done…' heading, at the end of the text when there is none."""
+    rows = text.splitlines(keepends=True)
+    if rows and not rows[-1].endswith('\n'):
+        rows[-1] += '\n'
+    heading = lambda line, pattern: re.match(rf'## (?:{pattern})(?![\w-])', line)
+    start = next((index for index, line in enumerate(rows) if heading(line, priority)), None)
+    if start is None:
+        later = '|'.join([f'P{rank}' for rank in range(int(priority[1:]) + 1, 10)] + ['Done'])
+        at = next((index for index, line in enumerate(rows) if heading(line, later)), None)
+        if at is not None:
+            gap = ['\n'] if at and rows[at - 1].strip() else []
+            return ''.join(rows[:at] + gap + [f'## {priority}\n', '\n', *lines, '\n'] + rows[at:])
+        return ''.join(rows + (['\n'] if rows and rows[-1].strip() else []) + [f'## {priority}\n', '\n', *lines])
+    end = next((index for index in range(start + 1, len(rows)) if rows[index].startswith(('# ', '## '))), len(rows))
+    at = end
+    while at > start + 1 and not rows[at - 1].strip():
+        at -= 1
+    if at == start + 1:   # an empty section: heading, one blank line, the rows (a blank line before a next heading)
+        return ''.join(rows[:at] + ['\n', *lines] + rows[at + (end == len(rows)):])
+    return ''.join(rows[:at] + lines + rows[at:])
 # L105: .review-loop/config.md review guidance (operator text) and the prompts it reaches: reviews, and the POLISH-Q specialists.
 GUIDANCE_KEYS = (('review_focus', 'Review focus'), ('review_style', 'Review style'), ('quality_focus', 'Quality focus'))
 REVIEW_GUIDANCE, QUALITY_GUIDANCE = ('review_focus', 'review_style'), ('quality_focus', 'review_style')
@@ -8300,7 +8325,8 @@ class Coordinator:
         revise = False
         if not reason and (changed or owned or recheck):   # every DOCS-written doc gets a fresh docs review
             if not recheck and (beyond := self._docs_beyond_cap(request, tree)) == 'spent':   # an unchanged, reviewed tree
-                self._docs_spent(request, changed, sequence)
+                self._docs_spent(request, changed, sequence, {key: receipt[key] for key in (
+                    'rolled_back_outside', 'rollback_diff', 'opv_carried') if key in receipt})   # the writer's audit records
                 return
             if not recheck and beyond:
                 recheck = True
@@ -8444,11 +8470,13 @@ class Coordinator:
         print(f'NOTE: the DOCS budget has no room for a docs writer; one docs review of the changed tree {tree[:12]} runs')
         return True
 
-    def _docs_spent(self, request: dict, paths: list[str], sequence: Optional[int] = None) -> None:
+    def _docs_spent(self, request: dict, paths: list[str], sequence: Optional[int] = None,
+                    audit: Optional[dict] = None) -> None:
         """WI-POSTGATE D: the DOCS budget is spent. DOCS completes its request READY with route SECURITY, budget_spent and
         the open docs rows it leaves (leftover: reported for the owner's decision, never a HOLD), and SECURITY binds the tree.
         `paths`: the docs paths changed since the DOCS base. Callers reach it only without an outside or protected change
-        (the operator route, the rollback and the protected-path HOLDs come first), so integrity HOLDs are unchanged."""
+        (the operator route, the rollback and the protected-path HOLDs come first), so integrity HOLDs are unchanged.
+        `audit`: a docs writer's rollback and carried-verification records, kept in the receipt."""
         tree, manifest = git_snapshot(self.workspace)
         current, allow = dict(manifest), set(self._docs_allowlist())
         life = self.state['lifecycle']
@@ -8458,7 +8486,7 @@ class Coordinator:
         written = {path: current.get(path) for path in paths if path in allow}
         life = lifecycle_spine.complete(life, {**request, 'status': 'READY', 'output_oid': tree, 'sequence': sequence,
                                                'docs_paths': list(paths), 'docs_written': written, 'route': 'SECURITY',
-                                               'budget_spent': True, 'leftover': leftover})
+                                               'budget_spent': True, 'leftover': leftover, **(audit or {})})
         for key in ('writer_git', 'docs_feedback', 'docs_recheck', 'docs_skip', 'docs_only'):
             life.pop(key, None)
         life['docs_owned'] = {**life.get('docs_owned', {}), **written}
@@ -8715,12 +8743,15 @@ class Coordinator:
 
     def _repo_backlog_plan(self) -> Optional[dict]:
         """WI-GATE1 S3 (owner Q1): at accept, the run backlog goes to the workspace BACKLOG.md (created with a '## P2' heading
-        when missing; appended at the end otherwise), one line per row; a line already there is not written again (a
-        replayed accept). Returns {path, text, rows} (the whole new text), or None. S3 R2 F4: a BACKLOG.md that is a symbolic
+        when missing), one line per row; a line already there is not written again (a replayed accept). WI-POSTGATE: only
+        rows still open in the ledger at accept (or without a ledger id) are written, the owner-decision rows under '## P1'
+        and the others under '## P2', each section created before '## Done…' when missing (backlog_insert). Returns {path, text, rows} (the whole new text), or None. S3 R2 F4: a BACKLOG.md that is a symbolic
         link, not a regular file, or ignored by git is never written; the rows stay in the run backlog (state repo_backlog
         records why)."""
         self._backlog_open_nonblocking()
-        entries = self.state.get('backlog') or []
+        status = {row['id']: row.get('status') for row in self.state.get('finding_ledger') or []}
+        entries = [row for row in self.state.get('backlog') or []   # WI-POSTGATE: only rows still open at accept
+                   if status.get(row.get('id'), 'open') == 'open']
         if not entries:
             return None
         tracked = self._git_names(['ls-files', '-z', '--', ':(icase,literal)BACKLOG.md'])
@@ -8735,21 +8766,21 @@ class Coordinator:
             return None
         text = path.read_text(encoding='utf-8') if path.is_file() else ''
         today = datetime.now().astimezone().strftime('%Y-%m-%d')
-        lines = []
+        lines = {'P1': [], 'P2': []}
         for row in entries:
-            head = (f"- {'[P1 needs owner decision] ' if row.get('priority') == 'P1' else ''}"
+            priority = 'P1' if row.get('priority') == 'P1' else 'P2'
+            head = (f"- {'[P1 needs owner decision] ' if priority == 'P1' else ''}"
                     f"{' '.join(row['summary'].split())} (review-loop run {self.run_dir.name}"
                     + (f", {row['file']}" if row['file'] else '') + ')')
-            if head not in text and head not in lines:
-                lines.append(head)
-        if not lines:
+            if head not in text and head not in lines[priority]:
+                lines[priority].append(head)
+        if not any(lines.values()):
             return None
-        body = ''.join(f'{line} (added {today})\n' for line in lines)
-        if not text:
-            text = '# Backlog\n\n## P2\n\n'
-        elif not text.endswith('\n'):
-            text += '\n'
-        return {'path': str(path), 'text': text + body, 'rows': len(lines)}
+        text = text or '# Backlog\n\n## P2\n\n'
+        for priority, heads in lines.items():
+            if heads:
+                text = backlog_insert(text, priority, [f'{line} (added {today})\n' for line in heads])
+        return {'path': str(path), 'text': text, 'rows': sum(map(len, lines.values()))}
 
     def _append_repo_backlog(self) -> bool:
         """An accept without a commit: the planned BACKLOG.md text is written to the working tree. Returns True when it was."""
@@ -8946,7 +8977,8 @@ class Coordinator:
     def worktree_security_turn(self) -> None:
         """ADR-11 SECURITY over the DOCS-approved tree: the sensitive path scan and scripts/security_preflight.py
         run every time, a no-op run included, then a fresh security reviewer (parity map W3a); any
-        hit in a changed file or blocking reviewer finding HOLDs (no repair), and DONE (acceptance pending) follows only this stage."""
+        hit in a changed file or blocking reviewer finding HOLDs (a HOLD on the reviewer's findings alone opens the narrow
+        SECURITY loop, WI-POSTGATE E), and DONE (acceptance pending) follows only this stage."""
         if self.state['config'].get('review_report'):
             return self._report_security_turn()
         life = self.state['lifecycle']
@@ -11510,7 +11542,14 @@ class Coordinator:
             return self.hold('uncertain in-flight CLI turn; inspect evidence, then use resume --retry-uncertain')
         if self._reconcile_polish_reservation():
             self.save()
-        self._migrate_post_gate()
+        before = copy.deepcopy(self.state)
+        try:
+            self._migrate_post_gate()
+        except Exception as exc:   # WI-POSTGATE: a v3.16.x state the migration cannot read HOLDs unchanged, no traceback
+            self.state.clear()
+            self.state.update(before)
+            return self.hold(f'post-gate migration failed ({type(exc).__name__}: {exc}); the state was left unchanged: '
+                             'inspect it, then resume, or abort')
         while self.state['status'] == 'ACTIVE':
             if self.state['config'].get('review_report'):
                 record = self.state.get('review_only') or {}   # no writer: the frozen tree holds before EVERY dispatch
