@@ -28,18 +28,13 @@
   - v3.16.1 note (Opus R1): TRANSIENT_PROVIDER_RE lacks Gemini-native overload wording (503 UNAVAILABLE / "The model is overloaded"); widen it from a real agy capture. (2026-11-24)
   - v3.16.1 note (Opus R1): a Gemini capacity failure made ineligible by an ignored-file edit HOLDs with the transient resume hint, not the "changed ignored files, check them by hand" note (path still in voided.ignored_changed); add that note when touched. (2026-11-24)
   - v3.16.1 note (Opus R1): no test for the Gemini context-digest condition or the Gemini writer Git guard on the transient path (the no-work guard is mutation-tested). (2026-11-24)
-- Optional follow-ups from the v3.16.5 review (WI-SMALL). (added 2026-11-25)
-  - v3.16.5 note (Sol R1, declined as blocking under the threat model): in the non-lifecycle stop-after-gate route, an editor save between the reviewer-tree check and done()'s own snapshot records the unreviewed tree as approved (pre-existing check-then-done() window; fixing it needs done() to re-route instead of its "replays EXEC review and gate" HOLD). (2026-11-25)
-  - v3.16.5 note (Sol R1): refresh review-comparison.md when a stale re-review is queued, so STALE shows during the re-review (state has it at once; the Markdown updates on the next terminal write). (2026-11-25)
-- Optional follow-ups from the v3.16.6 review (WI-DOCSFIX). (added 2026-11-25)
-  - A DOCS writer turn that errored or was discarded after writing a code file: before the re-dispatch that file now counts as an operator change and goes to the EXEC reviewer instead of the WI-GATE1 rollback (nothing lost; attribution only). Fix: treat paths changed by errored DOCS author turns of the same request as the writer's own. (2026-11-25)
-  - A DOCS writer dispatched on the last DOCS slot leaves no room for its review and ends in a budget HOLD; pre-check room for writer plus review before dispatching. (2026-11-25)
-  - A protected-path DOCS writer leftover at an earlier DOCS HOLD plus any operator edit now routes to the EXEC reviewer (before: refused); name it in a CHANGELOG/README line. (2026-11-25)
+- Optional follow-ups from the v3.16.7 review and dogfood run (WI-DOCSFIX2). (added 2026-11-25)
+  - Audit labels: the past-cap review of a last-slot writer output is recorded as `operator_recheck` and printed as "recheck of the changed tree"; the failed-writer rollback diff path is not kept in the DOCS receipt; two NOTEs can contradict each other when the per-path rule splits a failed writer's writes (dogfood F005, F006, F013, F014). (2026-11-25)
+  - Test gaps: git-guard-discarded writer turn, chaining across several failed turns, missing-snapshot fallback, retry inside one invoke() (dogfood F004, F009-F011). (2026-11-25)
+  - Own-repo dogfood friction: attach-verification refuses a host log that contains vendor names (review-loop's own test output mentions claude/codex), so the operator trims those lines; the reviewer sandbox times out on the paired_session test modules, so each tree needs a host attach. (2026-11-25)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-OPVVOID resume voids operator test records bound to the live tree; shadow EXEC HOLD loops (token-meter field blocker, run 1862edcf).~~ (added 2026-11-24, closed 2026-11-25, see v3.16.3)
-  - Fixed: operator-verification lookups are read-only; records are voided only against the live tree (resume at EXEC reviewer/gate, accept, writer turns, attach). Held runs: attach-verification again on the live tree, then resume.
 - ~~WI-STALEFIX stale EXEC approval routes to re-review; docs/comment cleanups.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.4)
   - Fixed: a reviewer approval of an older tree re-routes to the persistent reviewer in the same resume (once per live tree; a repeat on the same tree HOLDs as before; the gate stays spent).
   - Docs/comments: combined correction sentence, README clarification and delta-patch wording, operator_hold named, prompt_block live-tree docstring, WI-I CHANGELOG mention; scenario_matrix split kept (_label_and_content validates labels, so it cannot give the raw typo-hint prefix).
@@ -52,3 +47,5 @@
   - Tests/docs: withdrawal plus two notes, second stale replay at the replay site, README on a second operator edit and "a repeat HOLDs", CHANGELOG names the test_opv_replay fixture pause.
 - ~~WI-DOCSFIX: DOCS rollback reverted operator edits; DOCS budget HOLD offered only abort (token-meter 1862edcf).~~ (added 2026-11-25, closed 2026-11-25, see v3.16.6)
   - Rollback covers only the writer turn's own writes; operator changes at a DOCS HOLD route to the docs review or the EXEC reviewer; one docs recheck per tree past the DOCS cap; the invocation-limit HOLD says attach-verification keeps the saved cap.
+- ~~WI-DOCSFIX2: DOCS last-slot writer dead end; errored-writer outside writes attributed to the operator.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.7)
+  - One past-cap docs review per unreviewed tree; errored/discarded writer writes rolled back per path from evidence snapshots; v3.16.6 protected-path route documented; first release checked by a dogfood review-only lifecycle run. The two v3.16.5 review notes were closed as accepted (owner 2026-11-25).
