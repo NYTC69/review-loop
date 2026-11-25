@@ -26,8 +26,7 @@ class PolishBudgetRecoveryTests(unittest.TestCase):
 
     def hold_at_budget(self, owners=OWNER):
         self.fake_env = {'FAKE_POLISH_BUDGET_OWNERS': owners}
-        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
-                                                    '        raise TypeError("ints only")\n    return sum(values)\n')   # the change under review
+        twl.WorktreeLifecycleActivationTests.existing_change(self)   # the change the --review-only run reviews
         result = self.run_coordinator(*RUN, env=self.fake_env)
         self.assertIn('HOLD: POLISH-Q blockers remain after the fix:', result.stdout, result.stdout + result.stderr)
         result = self.resume()

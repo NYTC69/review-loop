@@ -9236,8 +9236,8 @@ class Coordinator:
             base = dict(json.loads(base_file.read_text(encoding='utf-8')))
         except (OSError, ValueError) as exc:
             raise RuntimeError(f'DOCS touch-up base manifest is unreadable: {exc}; abort') from exc
-        if self.state['lifecycle']['pending'] == request and self.state['lifecycle'].get('writer_git'):
-            self._docs_failed_writer_rollback(request, base)   # WI-DOCSFIX2: an errored writer's outside write
+        if self.state['lifecycle']['pending'] == request and (writer_git := self.state['lifecycle'].get('writer_git')):
+            self._docs_failed_writer_rollback(request, base, writer_git['sequence'])   # WI-DOCSFIX2: an errored writer's outside write
 
         def prompt():   # called only for a dispatch, never for a reused recorded turn
             self.materialize_review_context()   # the fix delta patch the writer may read

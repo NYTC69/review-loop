@@ -553,6 +553,12 @@ def main():
             target.write_text('# Fake lifecycle guide\n')
             if 'Narrow security fix' in prompt and os.environ.get('FAKE_DOCS_TOUCHUP_WRITE'):   # WI-POSTGATE: the touch-up
                 target.write_text(target.read_text() + '# security touch-up\n')
+            if ('Narrow security fix' in prompt and (marker := os.environ.get('FAKE_DOCS_TOUCHUP_FAIL_ONCE'))
+                    and not Path(marker).exists()):   # WI-POSTGATE: a touch-up writer that writes outside, then fails
+                Path(marker).write_text('failed\n')
+                module.write_text(module.read_text() + '# touch-up comment fix\n')
+                print('fake docs touch-up writer failed after writing', file=sys.stderr)
+                return 1
         if 'Phase: DOCS' in prompt and (marker := os.environ.get('FAKE_DOCS_CODE_ONCE')) and not Path(marker).exists():
             Path(marker).write_text('written\n')   # one comment fix outside the docs allowlist: rolled back (WI-GATE1)
             module.write_text(module.read_text() + '# docs comment fix\n')

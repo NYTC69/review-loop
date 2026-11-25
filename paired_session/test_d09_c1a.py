@@ -150,8 +150,7 @@ class D09C1aTests(unittest.TestCase):
 
     def test_a_specialist_blocker_is_fixed_before_the_writers_are_checked(self):   # test 9: polish-fix first
         env = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer', 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
-        (self.workspace / 'sum_ints.py').write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
-                                                    '        raise TypeError("ints only")\n    return sum(values)\n')   # WI-POSTGATE: the fix leg is review-only (Q1)
+        twl.WorktreeLifecycleActivationTests.existing_change(self)   # WI-POSTGATE: the POLISH-Q fix leg is review-only (Q1)
         done = self.run_coordinator('--review-only', '--lifecycle-mode', 'on', '--quality-writers', 'both', '--max-invocations', '60',
                                     env=env)
         self.assertIn(DONE, done.stdout, done.stdout + done.stderr)

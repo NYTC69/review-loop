@@ -23,7 +23,7 @@
   - 作者 HOLD 后操作者什么都没改就 resume：先跑增量审查和 FINISH，再自动开始下一轮作者修复，这一轮计入上限。
   - 记录：`lifecycle.security_fix` = `{loop, by, hold_request_id, hold_tree, hold_manifest, mirror, finding_ids}`，下一次 SECURITY 结束时移入 `security_fix_history`，结果为 `passed`、`held`、`unchanged` 或 `superseded`。交付报告增加 “SECURITY 窄修复环” 一行。
 - BACKLOG 追加修复（现场运行 token-meter 1862edcf，accept 把 72 行追加到文件末尾，落在 “## Done (recent 5)” 下，其中不少早已修复）：accept 只写入账本中仍未关闭的行（没有账本 ID 的行照常写入），`[P1 needs owner decision]` 行放在 `## P1` 末尾，其余放在 `## P2` 末尾；缺少该节时在 `## Done` 之前（没有则在文件末尾）新建；空文件模板不变。
-- 其他：迁移失败时 HOLD 并保持状态不变，不再抛出 traceback；DOCS 预算在写入者之后用完时，回执保留 `rolled_back_outside`、`rollback_diff` 和 `opv_carried`。
+- 其他：迁移失败时 HOLD 并保持状态不变，不再抛出 traceback；DOCS 预算在写入者之后用完时，回执保留 `rolled_back_outside`、`rollback_diff` 和 `opv_carried`；窄循环的文档补写写入者出错后 resume，先把它越界写入的文件回滚（以该次写入者的 git 基线序号为起点，与普通 DOCS 写入者相同），再重新派发写入者（此前这一调用少传基线序号参数，resume 时会抛出 `TypeError`）。
 - 文档：`README.md` 的阶段说明、流程图和 POLISH-Q 段落；`paired_session/README.md` 的生命周期段落、新增 “After the gate (v3.17.0)” 一节、撤回发现和 POLISH-Q 预算 HOLD 的适用范围；`paired_session/docs/e2e-6-worktree-lifecycle.md`；`docs/protocol/paired-session-entry.md`；两个 guide。
 
 **已停住的运行（v3.16.x）**：普通 `resume` 时迁移一次，记录在 `state.post_gate_migration`；回执、回合、账本行、裁定和预算都不改写。
@@ -58,7 +58,8 @@
 - BACKLOG 分节写入：
   - `test_rounds_threshold::test_accept_with_auto_commit_puts_the_rows_in_the_accepted_commit`：“追加在末尾”（`'# Backlog\n\n## P1\n\n- existing item\n- '`）改为 `'# Backlog\n\n## P1\n\n- existing item\n\n## P2\n\n- '`；重放不重复写入的断言保留。
   - `test_rounds_threshold::test_r3f11_accept_and_journal_replay_keep_the_tracked_backlog_spelling`：`'- existing item\n- advisory exec polish'` 改为 `'- existing item\n\n## P2\n\n- advisory exec polish'`；文件名大小写和日志重放的断言保留。
-- FINISH 用例（AC7）、`test_the_docs_budget_caps_writer_and_review_dispatches` 和 `.gitignore` 恢复用例未改动。新增 `paired_session/test_wi_postgate.py`（27 个用例）；`paired_session/fake_cli.py` 新增 `FAKE_SPECIALIST_SECURITY`、`FAKE_DOCS_REVIEW_BLOCK`、`FAKE_SECURITY_KEEP_OPEN_ONCE`、`FAKE_DOCS_TOUCHUP_WRITE` 和 `FAKE_SECURITY_FIX_HOLD`。
+- FINISH 用例（AC7）、`test_the_docs_budget_caps_writer_and_review_dispatches` 和 `.gitignore` 恢复用例未改动。新增 `paired_session/test_wi_postgate.py`（28 个用例，其中 `test_a_failed_touch_up_writer_resumes_with_its_outside_write_rolled_back` 覆盖文档补写写入者出错后 resume：越界写入被回滚、安全修复保留、随后 DOCS 写入者和 SECURITY 复查到达 DONE）；`paired_session/fake_cli.py` 新增 `FAKE_SPECIALIST_SECURITY`、`FAKE_DOCS_REVIEW_BLOCK`、`FAKE_SECURITY_KEEP_OPEN_ONCE`、`FAKE_DOCS_TOUCHUP_WRITE`、`FAKE_DOCS_TOUCHUP_FAIL_ONCE` 和 `FAKE_SECURITY_FIX_HOLD`。
+- 只改测试准备、不改断言：`test_d09_c1a`、`test_gate_once`、`test_polish_budget_recovery` 和 `test_wi_postgate` 中 review-only 运行的待审改动改由 `test_worktree_lifecycle` 的 `existing_change()` 写入；`test_wi_postgate` 用 `review_report.ROLE_NAMES` 中 “EXEC reviewer” 对应的角色名代替字面量 `persistent-reviewer`（取值相同）。
 
 ### v3.16.7：最后一个 DOCS 名额上的写入者输出可获一次超额审查，出错写入者的越界写入照常回滚（WI-DOCSFIX2）
 

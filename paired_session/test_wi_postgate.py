@@ -16,6 +16,7 @@ ON = ('--lifecycle-mode', 'on', '--max-invocations', '80')
 DOCS_ENV = {'FAKE_LIFECYCLE_DOCS_FILE': 'CHANGELOG.md'}
 BLOCK = {'FAKE_SPECIALIST_BLOCK': 'code-reviewer'}
 DECISION = '## 不阻塞、需要你决定'
+EXEC_SOURCE = next(role for role, name in rc.review_report.ROLE_NAMES.items() if name == 'EXEC reviewer')   # the EXEC role
 
 
 class PostGateClassTests(unittest.TestCase):
@@ -40,9 +41,9 @@ class PostGateClassTests(unittest.TestCase):
                     self.assertEqual(self.classify({**base, **row}), expected)
         self.assertIsNone(self.classify({**specialist, 'severity': 'CRITICAL'}, review_only=True))   # Q1: the fix leg stays
         self.assertEqual(self.classify({**docs, 'severity': 'CRITICAL'}, review_only=True), 'decide')   # DOCS: both kinds
-        for row in ({'phase': 'EXEC', 'source': 'persistent-reviewer', 'severity': 'CRITICAL'},
+        for row in ({'phase': 'EXEC', 'source': EXEC_SOURCE, 'severity': 'CRITICAL'},
                     {'phase': 'SECURITY', 'source': 'security-reviewer', 'owner_role': 'security-reviewer', 'severity': 'MAJOR'},
-                    {'phase': 'DOCS', 'source': 'persistent-reviewer', 'severity': 'CRITICAL'}):
+                    {'phase': 'DOCS', 'source': EXEC_SOURCE, 'severity': 'CRITICAL'}):
             with self.subTest(row=row):
                 self.assertIsNone(self.classify(row))
         self.assertIsNone(rc.worktree_lifecycle.post_gate_class({**docs, 'status': 'fixed', 'severity': 'CRITICAL'}, False, True))
@@ -158,7 +159,7 @@ class PostGateRunTests(unittest.TestCase):
         next(item for item in co.state['finding_ledger'] if item['id'] == row['id'])['status'] = 'open'
         with self.assertRaisesRegex(RuntimeError, 'requires its owning specialist'):   # nobody else gains ownership
             co.apply_dispositions([{'id': row['id'], 'disposition': 'fixed', 'evidence': 'not mine'}], 999, [row['id']],
-                                  'persistent-reviewer')
+                                  EXEC_SOURCE)
 
     # --- AC3 + AC6: DOCS never HOLDs on findings or its budget --------------------------------------------------------------
     def test_docs_spends_its_budget_and_moves_on_with_the_leftover_rows(self):
@@ -262,9 +263,7 @@ class PostGateRunTests(unittest.TestCase):
     # --- AC9: a --review-only run keeps the POLISH-Q fix leg ----------------------------------------------------------------
     def test_a_review_only_run_keeps_the_polish_q_fix_leg(self):
         env = {**BLOCK, 'FAKE_SPECIALIST_BLOCK_ONCE': str(self.root / 'block-once')}
-        module = self.workspace / 'sum_ints.py'   # the existing change under review
-        module.write_text('def sum_ints(values):\n    if not all(type(x) is int for x in values):\n'
-                          '        raise TypeError("ints only")\n    return sum(values)\n')
+        twl.WorktreeLifecycleActivationTests.existing_change(self)   # the existing change under review
         self.assert_done(self.run_coordinator('--review-only', *ON, env=env))
         state = self.state()
         [row] = [row for row in state['finding_ledger'] if row['source'] == 'specialist:code-reviewer']
@@ -292,7 +291,7 @@ class PostGateRunTests(unittest.TestCase):
         state['finding_ledger'].append(fixed)   # listed at an earlier DONE, fixed before this accept (the field run)
         state['backlog'] += [{'source': 'docs-reviewer', 'phase': 'DOCS', 'sequence': 1, 'severity': 'MINOR',
                               'file': 'CHANGELOG.md', 'summary': fixed['summary'], 'failure_scenario': '', 'id': 'F900'},
-                             {'source': 'persistent-reviewer', 'phase': 'PLAN', 'sequence': 1, 'severity': 'MINOR',
+                             {'source': EXEC_SOURCE, 'phase': 'PLAN', 'sequence': 1, 'severity': 'MINOR',
                               'file': 'notes.md', 'summary': 'an observation without a ledger id', 'failure_scenario': ''}]
         (self.run_dir / 'state.json').write_text(json.dumps(state))
         self.accept()
@@ -406,6 +405,28 @@ class SecurityLoopTests(unittest.TestCase):
         report = self.accept()
         self.assertIn('touch-up', report.split(DECISION, 1)[1].split('\n## ', 1)[0])
         self.assertIn(f"SECURITY 窄修复环（WI-POSTGATE）：第 1 轮 作者修复 {row['id']}，SECURITY 通过", report)
+
+    def test_a_failed_touch_up_writer_resumes_with_its_outside_write_rolled_back(self):
+        env = self.env({**DOCS_ENV, 'FAKE_DOCS_TOUCHUP_WRITE': '1',
+                        'FAKE_DOCS_TOUCHUP_FAIL_ONCE': str(self.root / 'touchup-fail')})
+        held = self.run_coordinator(*ON, env=env)
+        state = self.state()
+        self.assertEqual(state['status'], 'HOLD', held.stdout + held.stderr)
+        life = state['lifecycle']
+        self.assertTrue(life['pending'] and life.get('writer_git'), life)   # the touch-up request is still open
+        [writer] = [turn for turn in state['turns'] if turn['sequence'] > self.first_security(state) and turn['phase'] == 'DOCS']
+        self.assertTrue(writer.get('error'), writer)
+        self.assertIn('# touch-up comment fix', (self.workspace / 'sum_ints.py').read_text())
+        resumed = self.run_operator_action('resume', *ON, env=env)
+        self.assertNotIn('Traceback', resumed.stderr, resumed.stdout + resumed.stderr)
+        self.assert_done(resumed)
+        state = self.state()
+        self.assertEqual(self.after(state, writer['sequence']), [('author', 'DOCS'), ('reviewer', 'SECURITY')])
+        module = (self.workspace / 'sum_ints.py').read_text()
+        self.assertNotIn('# touch-up comment fix', module)   # the errored writer's outside write
+        self.assertIn('# security fix', module)   # the reviewed security fix stays
+        self.assertIn('docs-rollback', docsfix.DocsOperatorEditTests.progress_kinds(self))
+        self.assertEqual([item['route'] for item in self.receipts(state, 'SECURITY')], ['SECURITY-FIX', 'DONE'])
 
     def test_without_docs_config_the_loop_has_no_docs_touch_up(self):
         self.assert_done(self.run_coordinator(*ON, '--docs-file', '', env=self.env()))
