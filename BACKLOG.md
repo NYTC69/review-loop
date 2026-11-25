@@ -31,11 +31,13 @@
 - Optional follow-ups from the v3.16.5 review (WI-SMALL). (added 2026-11-25)
   - v3.16.5 note (Sol R1, declined as blocking under the threat model): in the non-lifecycle stop-after-gate route, an editor save between the reviewer-tree check and done()'s own snapshot records the unreviewed tree as approved (pre-existing check-then-done() window; fixing it needs done() to re-route instead of its "replays EXEC review and gate" HOLD). (2026-11-25)
   - v3.16.5 note (Sol R1): refresh review-comparison.md when a stale re-review is queued, so STALE shows during the re-review (state has it at once; the Markdown updates on the next terminal write). (2026-11-25)
+- Optional follow-ups from the v3.16.6 review (WI-DOCSFIX). (added 2026-11-25)
+  - A DOCS writer turn that errored or was discarded after writing a code file: before the re-dispatch that file now counts as an operator change and goes to the EXEC reviewer instead of the WI-GATE1 rollback (nothing lost; attribution only). Fix: treat paths changed by errored DOCS author turns of the same request as the writer's own. (2026-11-25)
+  - A DOCS writer dispatched on the last DOCS slot leaves no room for its review and ends in a budget HOLD; pre-check room for writer plus review before dispatching. (2026-11-25)
+  - A protected-path DOCS writer leftover at an earlier DOCS HOLD plus any operator edit now routes to the EXEC reviewer (before: refused); name it in a CHANGELOG/README line. (2026-11-25)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-POLBUDGET POLISH-Q specialist-budget HOLD has no exit after an operator fix (token-meter field blocker, run 1862edcf).~~ (added 2026-11-24, closed 2026-11-24, see v3.16.2)
-  - Fixed: at that HOLD a plain resume on a changed tree (operator edit) resets the exhausted owners' epoch counts and dispatches their recheck (no author turn); clear -> new epoch with EXEC replay; still open -> HOLD. Security rows stay owner-only; held runs resume in place.
 - ~~WI-OPVVOID resume voids operator test records bound to the live tree; shadow EXEC HOLD loops (token-meter field blocker, run 1862edcf).~~ (added 2026-11-24, closed 2026-11-25, see v3.16.3)
   - Fixed: operator-verification lookups are read-only; records are voided only against the live tree (resume at EXEC reviewer/gate, accept, writer turns, attach). Held runs: attach-verification again on the live tree, then resume.
 - ~~WI-STALEFIX stale EXEC approval routes to re-review; docs/comment cleanups.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.4)
@@ -48,3 +50,5 @@
 - ~~WI-SMALL optional review-note follow-ups (8 items).~~ (added 2026-11-25, closed 2026-11-25, see v3.16.5)
   - Fixed: risk-first order in auto-split backlog entries; POLISH-Q operator recheck pre-checks the invocation limit; a re-routed stale approval records STALE; the stop-after-gate re-route is bounded once per tree; the round-5 shadow HOLD names the --max-invocations value.
   - Tests/docs: withdrawal plus two notes, second stale replay at the replay site, README on a second operator edit and "a repeat HOLDs", CHANGELOG names the test_opv_replay fixture pause.
+- ~~WI-DOCSFIX: DOCS rollback reverted operator edits; DOCS budget HOLD offered only abort (token-meter 1862edcf).~~ (added 2026-11-25, closed 2026-11-25, see v3.16.6)
+  - Rollback covers only the writer turn's own writes; operator changes at a DOCS HOLD route to the docs review or the EXEC reviewer; one docs recheck per tree past the DOCS cap; the invocation-limit HOLD says attach-verification keeps the saved cap.
