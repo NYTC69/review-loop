@@ -130,20 +130,18 @@ accepted manifest). Residuals: the bits of ignored files (their type, size, mtim
 lstat below), of symlinks and directories, and ACLs, extended attributes and file flags.
 A workspace below the repository top is not a case: the coordinator requires `.git` in the workspace.
 
-**Ignored entries (eff-e).** For Gemini read-only roles the read-only sandbox is the first barrier and this is the second
-line. Codex reviewer-type roles (workspace-write since v3.6.0) and, since v3.7.2, Claude reviewer-type roles may write
-ignored paths: a changed entry is recorded in the receipt as `readonly_ignored_kept` and the turn stands.
+**Ignored entries (eff-e).** Reviewer-type roles may write ignored paths: Codex (workspace-write since v3.6.0), Claude
+(since v3.7.2) and Gemini (since v3.17.2). A changed entry is recorded in the receipt as `readonly_ignored_kept` and the
+turn stands.
 - `capture()` records the lstat metadata (type, size, mtime_ns, mode, symlink target) of each ignored entry exactly as
   `git ls-files -o -i --exclude-standard --directory` lists it, so a collapsed directory is one entry.
-- For a Gemini role, an entry that changed or is gone after the turn voids the verdict and HOLDs with the changed paths.
-  Nothing is restored, and there is no re-dispatch.
+- Nothing in an ignored entry is restored. A failed Gemini turn that changed one counts as a turn that did work, so a
+  transient provider error is not retried.
 - **Residuals:** a change inside a collapsed ignored directory that leaves the directory entry itself unchanged, and a new ignored
   file outside the recorded entries, are not detected.
 - The capture is bounded (`IGNORED_LIMIT` entries, `IGNORED_SECONDS`). Past either bound the receipt says `ignored set too large:
   not checked`.
-- For a Gemini role, a CLI home or cache the CLI writes to inside an ignored workspace path (for example `__pycache__`
-  or a test runner cache such as `.pytest_cache`, `target/` or `node_modules/.cache` when the vendor sandbox allows the write)
-  HOLDs every read-only turn. Keep such caches outside the workspace. `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
+- `.review-loop/runs/`, `.review-loop/codex-home/`, `.review-loop/pr/` and `.review-loop/logs/`
   are excluded from workspace scans, so the recommended isolated homes may live there.
 
 **An unreadable workspace after the turn (eff-e)**, for example a broken `.git/index`, is an unverifiable violation. The

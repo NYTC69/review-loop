@@ -505,8 +505,8 @@ in is writable, `.git` stays read-only), `$TMPDIR` writable
 may therefore write build output and caches. The post-turn guard still undoes a
 change to HEAD, the branch, the index, a tracked file or a non-ignored untracked
 file and re-dispatches once after the restore verifies. Ignored paths stay free (recorded in the receipt
-as `readonly_ignored_kept`; since v3.7.2 for Claude reviewer-type roles too, so a turn that only changed a git-ignored
-path, such as a test's temp cluster dir, stands). TMPDIR/TMP/TEMP are set to a fresh 0700
+as `readonly_ignored_kept`; since v3.7.2 for Claude and since v3.17.2 for Gemini reviewer-type roles too, so a turn
+that only changed a git-ignored path, such as a test's temp cluster dir, stands). TMPDIR/TMP/TEMP are set to a fresh 0700
 `<scratch_root>/role-tmp/<seq>-<role>` outside any repo for that one dispatch
 (legacy runs without `scratch_root` retain `<run_dir>/role-tmp/<seq>-<role>`), so a `tmp_path`-style
 test has a usable temp dir. The coordinator lists that root in the turn's
@@ -614,9 +614,9 @@ If a run is held, inspect `state.json`, `open-findings.md`,
 `findings-ledger.md`, and the latest receipts under `evidence/` before resuming.
 A reviewer, gate or shadow turn that changes HEAD, the branch, the index, a tracked
 file or a non-ignored untracked file is voided. A verified restore allows one automatic
-re-dispatch. A second change or a failed restore holds. For Gemini read-only roles, a
-detected edit to an existing ignored file voids the verdict and holds, leaving the
-edit on disk for manual inspection.
+re-dispatch. A second change or a failed restore holds. Ignored paths are free for a
+reviewer-type role of every vendor (Gemini since v3.17.2): a changed ignored entry is
+recorded as `readonly_ignored_kept` and the verdict stands.
 An author turn that changes HEAD or the branch holds.
 `--max-rate-limit-wait SECONDS` (`max_rate_limit_wait` in the JSON profile) is
 a nonnegative integer fixed at run start and cannot be raised on resume. The

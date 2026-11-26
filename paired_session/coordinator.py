@@ -7702,7 +7702,7 @@ class Coordinator:
                 voided = self._void_readonly_turn(role, receipt, snapshot_workspace, recorded, keep, prefix, before)
             if recorded and (note := recorded.get('ignored_note')): receipt['readonly_ignored'] = note
             touched = readonly_guard.ignored_changes(snapshot_workspace, recorded) if recorded and not snapshot_failure else []
-            if touched and receipt['vendor'] in ('codex', 'claude') and role != 'author':   # v3.6.0 Codex, v3.7.2 Claude: ignored paths are free for a reviewer-type role
+            if touched and receipt['vendor'] in ('codex', 'claude', 'gemini') and role != 'author':   # v3.6.0 Codex, v3.7.2 Claude, v3.17.2 Gemini: ignored paths are free for a reviewer-type role
                 receipt['readonly_ignored_kept'], touched = touched[:50], []
             if touched: receipt['voided'] = {**receipt.get('voided', {}), 'ignored_changed': touched[:50]}   # eff-e: no ignored content is kept
             if role in READONLY_SCRATCH_ROLES and (env_overrides or {}).get('TMPDIR'):   # b295-f1: listed in the receipt before it is removed
@@ -7799,7 +7799,7 @@ class Coordinator:
                 if classify_transient_failure(process.returncode, error_text, output_text, agy_result=terminal):   # V327-RETRY
                     retryable = voided is None and after == before and not failed_turn_did_work(receipt['vendor'], stdout_path)
                     if receipt['vendor'] == 'gemini':
-                        retryable = retryable and not touched and context_before == context_after
+                        retryable = retryable and not touched and not receipt.get('readonly_ignored_kept') and context_before == context_after   # a kept ignored change is work too
                     if retryable:   # the provider failed before any work: refunded like a rate limit, retried once by invoke()
                         self.state['invocations_used'] -= 1
                         receipt['invocation_budget_counted'] = False

@@ -76,9 +76,9 @@ what it would have held. `permission-probe` and strict mode were removed in v3.7
 and `--strict` or `"safety_mode": "strict"` in a profile only prints a NOTE (a run saved strict resumes in the
 default mode). A reviewer turn that changes HEAD, the branch, the index, a tracked file or a non-ignored
 untracked file is voided. A verified restore allows one automatic re-dispatch. A second change or a failed
-restore is a HOLD. A detected change to an existing ignored file by a Gemini reviewer also voids the verdict and
-HOLDs, leaving the edit on disk for manual inspection. An author turn that changes HEAD or the branch is a
-HOLD. When an operator program or PATH changed since the run started, the run records the new state with a
+restore is a HOLD. Ignored paths are free for a reviewer-type role of every vendor (Codex, Claude and, since
+v3.17.2, Gemini): a changed ignored entry is recorded in the receipt as `readonly_ignored_kept` and the verdict
+stands. An author turn that changes HEAD or the branch is a HOLD. When an operator program or PATH changed since the run started, the run records the new state with a
 NOTE and continues.
 See [`paired_session/docs/efficient-mode.md`](paired_session/docs/efficient-mode.md).
 
@@ -481,8 +481,11 @@ only where the operator profile or the CLI flags name it:
   role runs gemini.
 - Read-only roles: agy runs with `--sandbox` and session-only settings that deny file writes, URLs and MCP and allow
   shell commands and file reads; a turn in which agy denies an action fails. agy 1.5.1 still lets a shell write inside
-  the workspace through. A verified restore allows one automatic re-dispatch of a voided review. A detected
-  edit to an existing ignored file voids the verdict and HOLDs with the edit still on disk for manual inspection.
+  the workspace through. A verified restore allows one automatic re-dispatch of a voided review. Since v3.17.2
+  ignored paths are free for a gemini reviewer-type role as for Codex and Claude: a changed ignored entry (such as a
+  configured test's gitignored temp dir) is recorded as `readonly_ignored_kept` and the verdict stands.
+  The agy sandbox denies unix-socket connects, so a gemini reviewer cannot run tests that need a host-served database
+  over a socket; record those with `attach-verification`.
 - Author: agy runs with `--sandbox` and settings that allow file writes in the workspace only (never the run
   directory), file reads and shell commands, and deny URLs and MCP; it gets the post-turn checks of a Claude author
   (git HEAD and control files, plus refs and the index for the lifecycle writers; global config and the coordinator context), plus a check of the run directory's files, and the

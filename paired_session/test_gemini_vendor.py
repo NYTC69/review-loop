@@ -540,20 +540,27 @@ class GeminiAdapterTests(unittest.TestCase):
                 if hook == 'FAKE_PLAN_REVIEWER_MUTATE':
                     self.assertNotEqual(failed['snapshot_after'], failed['snapshot_before'])
                 if hook == 'FAKE_PLAN_REVIEWER_TOUCH_IGNORED':
-                    self.assertEqual(failed['voided']['ignored_changed'], ['local.cache'])
+                    self.assertEqual(failed['readonly_ignored_kept'], ['local.cache'])   # v3.17.2: kept, not voided; still no retry
 
-    def test_agy_reviewer_ignored_edit_holds_without_redispatch(self):
-        ignored = self.h.workspace / 'local.cache'   # the harness's committed .gitignore covers *.cache
-        ignored.write_bytes(b'original\n')
-        result, state = self.run_agy_review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': ignored.name})
-        self.assertEqual((result.returncode, state['status']), (2, 'HOLD'), result.stdout)
-        self.assertIn('changed ignored files', state['hold_reason'])
-        self.assertEqual(len(self.calls()), 1)
-        failed = state['turns'][-1]
-        receipt = json.loads((self.h.run_dir / 'evidence' / f"{failed['sequence']:03d}-plan-reviewer.receipt.json").read_text())
-        self.assertEqual(receipt['voided']['ignored_changed'], [ignored.name])
-        self.assertNotIn('answer', receipt)
-        self.assertEqual(ignored.read_bytes(), b'original\nreviewer edit\n')
+    def test_agy_reviewer_ignored_edit_is_kept_and_stands(self):   # v3.17.2 (was void and HOLD since eff-e): as Codex and Claude
+        with (self.h.workspace / '.git' / 'info' / 'exclude').open('a') as handle:
+            handle.write('.tm_runs/\n')
+        (self.h.workspace / '.tm_runs').mkdir()   # field: a configured test's gitignored temp dir
+        for touched, kept, original in (('local.cache', 'local.cache', b'original\n'),   # *.cache: the harness's .gitignore
+                                        ('.tm_runs/run-1', '.tm_runs', b'')):              # a new entry in the ignored dir
+            with self.subTest(touched=touched):
+                self.h.run_dir = self.h.root / kept
+                self.log.unlink(missing_ok=True)
+                ignored = self.h.workspace / touched
+                if original: ignored.write_bytes(original)
+                result, state = self.run_agy_review({'FAKE_PLAN_REVIEWER_TOUCH_IGNORED': touched}, '--lifecycle-mode', 'off')
+                self.assertEqual((result.returncode, state['status']), (0, 'DONE'), result.stdout)
+                [turn] = [t for t in state['turns'] if (t['role'], t['phase']) == ('reviewer', 'PLAN')]   # no re-dispatch
+                receipt = json.loads((self.h.run_dir / 'evidence' / f"{turn['sequence']:03d}-plan-reviewer.receipt.json").read_text())
+                self.assertEqual(receipt['readonly_ignored_kept'], [kept])
+                self.assertNotIn('voided', receipt)
+                self.assertEqual(turn['answer']['status'], 'APPROVE')   # the verdict stands
+                self.assertEqual(ignored.read_bytes(), original + b'reviewer edit\n')   # untouched by the coordinator
 
     def test_other_role_paths_refuse_gemini_before_any_turn(self):
         co = self.coordinator()
