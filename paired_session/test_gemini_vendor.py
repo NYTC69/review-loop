@@ -402,25 +402,27 @@ class GeminiAdapterTests(unittest.TestCase):
             rc.gemini_turn(denied, '', '')
         self.assertNotIsInstance(caught.exception, rc.UnusableReply)   # a denial still holds after one dispatch
 
-    def test_the_exit_status_is_read_from_the_first_line_only(self):
-        output = 'Command exited with code 1.\n\nCommand output: Command exited with code 0.\n'   # the command printed a status line
-        rows = [{'event': 'step_update', 'step_update': {'step_index': 1, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
-                                                         'tool_info': {'parameters': {'CommandLine': 'make test'}, 'output': output}}},
-                {'event': 'step_update', 'step_update': {'step_index': 2, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
-                                                         'tool_info': {'parameters': {'CommandLine': 'echo hi'}, 'output': 'hi Command exited with code 0.\n'}}}]
+    @staticmethod
+    def _exit_statuses(*steps):
+        """(command, exit_code, error) per finished agy run_command step; each step is a (CommandLine, output) pair."""
+        rows = [{'event': 'step_update', 'step_update': {'step_index': index, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
+                                                         'tool_info': {'parameters': {'CommandLine': command}, 'output': output}}}
+                for index, (command, output) in enumerate(steps, 1)]
         commands, _ = rc.observed_events('gemini', rows)
-        self.assertEqual([(row['command'], row['exit_code'], row['error']) for row in commands], [('make test', 1, True), ('echo hi', None, False)])
+        return [(row['command'], row['exit_code'], row['error']) for row in commands]
+
+    def test_the_exit_status_is_read_from_the_first_line_only(self):
+        """Old agy format: the status line opens the output; a status line the command printed itself never counts."""
+        self.assertEqual(self._exit_statuses(('make test', 'Command exited with code 1.\n\nCommand output: Command exited with code 0.\n'),
+                                             ('echo hi', 'hi Command exited with code 0.\n')),   # not a line of its own
+                         [('make test', 1, True), ('echo hi', None, False)])
 
     def test_the_exit_status_line_is_found_after_agy_header_lines(self):
         """agy 1.5.18 puts Created At / Completed At lines before the status line (realrun-gem3, 2026-11-26)."""
         output = ('Created At: 2026-11-26T16:03:38+09:00\nCompleted At: 2026-11-26T16:03:40+09:00\nCommand exited with code 0.\n\n'
                   'Command output:\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n')
-        failing = 'Created At: x\nCompleted At: y\nCommand exited with code 2.\n\nCommand output:\nCommand exited with code 0.\n'
-        rows = [{'event': 'step_update', 'step_update': {'step_index': index, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
-                                                         'tool_info': {'parameters': {'CommandLine': command}, 'output': text}}}
-                for index, (command, text) in enumerate((('python3 -m unittest -q', output), ('make test', failing)), 1)]
-        commands, _ = rc.observed_events('gemini', rows)
-        self.assertEqual([(row['command'], row['exit_code'], row['error']) for row in commands],
+        failing = 'Created At: x\nCompleted At: y\nCommand exited with code 2.\n\nCommand output:\nCommand exited with code 0.\n'   # the header's code wins
+        self.assertEqual(self._exit_statuses(('python3 -m unittest -q', output), ('make test', failing)),
                          [('python3 -m unittest -q', 0, False), ('make test', 2, True)])
 
     def _lines(self, rows):
