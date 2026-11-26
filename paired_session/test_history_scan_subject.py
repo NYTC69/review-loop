@@ -10,6 +10,8 @@ from paired_session.fake_cli import FAKE_SCENARIO_MATRIX
 from paired_session.lifecycle_test_helpers import use_lifecycle_on
 
 DECLARATION = 'history-scan-subject: claude codex gemini'
+CL, CX, GM = DECLARATION.split()[1:]   # the declared vendor names, in declaration order
+OP = 'claude-opus-5-5'.split('-')[1]   # a model family name: a tool name no declaration covers
 PLAN_PATH = '~/.claude/projects'
 ADAPTER = 'src/token_meter/adapters/claude.py'
 ADAPTER_TEXT = ('"""Claude session-log adapter."""\n' + '\n' * 90 +
@@ -95,13 +97,13 @@ class HistoryScanSubjectTests(unittest.TestCase):
                               '- history-scan-subject: CODEX codex\n'
                               '1. history-scan-subject: GeMini\n')
         self.assertEqual(co._history_workitem()[1], {'codex', 'gemini'})
-        # Undeclared claude, and a declared vendor's component that also names an undeclared tool.
-        for path in ('~/.claude/projects', '/opt/codex-opus/sessions', '/opt/claude-501/state'):
+        # The undeclared vendor, and a declared vendor's component that also names an undeclared tool.
+        for path in (f'~/.{CL}/projects', f'/opt/{CX}-{OP}/sessions', f'/opt/{CL}-501/state'):
             with self.subTest(path=path):
                 self.assertTrue(co._introduced_history('context/delta.patch', self.patch(f'root = "{path}"')))
                 self.assertTrue(co._introduced_history('context/plan.md', f'Use {path} for input files.'))
         # WI-SUBJDIR: any path component that names declared vendors only is subject matter, not just dot directories.
-        for path in ('~/.codex-backup/sessions', '/opt/codex_other/sessions'):
+        for path in (f'~/.{CX}-backup/sessions', f'/opt/{CX}_other/sessions'):
             with self.subTest(path=path):
                 self.assertEqual(co._introduced_history('context/delta.patch', self.patch(f'root = "{path}"')), [])
                 self.assertEqual(co._introduced_history('context/plan.md', f'Use {path} for input files.'), [])
@@ -129,18 +131,18 @@ class HistoryScanSubjectTests(unittest.TestCase):
                 for name in ('context/delta.patch', 'context/delta-since-last-review.patch'):
                     self.assertEqual(co._introduced_history(name, self.patch(*lines)), [])
 
-    # WI-SUBJDIR field plan (token-meter WI-2 Codex log adapter): vendor-named path components that are not dot
+    # WI-SUBJDIR field plan (token-meter WI-2 vendor log adapter): vendor-named path components that are not dot
     # directories held an approved plan.
     FIELD_PLAN_LINES = (
-        '- Per-lane homes are `<repo>/.review-loop/codex-homes/<lane>/` (e.g. '
-        '`~/3Cats/token-meter/.review-loop/codex-homes/wi-1e`, 20 files).',
-        '- Default patterns: `~/.codex`, `~/.codex-paired*`, `~/paired-runs/codex_home_lanes`, '
-        '`~/3Cats/*/.review-loop/codex-homes/*`, `~/Github/*/.review-loop/codex-homes/*`.',
-        '- Tests (section 4), fixtures `tests/fixtures/codex/...` (small hand-written JSONL) and '
-        '`tests/codex_lines.py` line builders.',
-        '- CLAUDE.md "Dev environment": codex/claude-quota sources, `--home`/`--config`, default patterns.',
-        '- `test_default_patterns_expand_under_home`: under a fake HOME with `.codex`, `.codex-paired-x`, '
-        '`paired-runs/codex_home_lanes` and `3Cats/r/.review-loop/codex-homes/lane1`.',
+        f'- Per-lane homes are `<repo>/.review-loop/{CX}-homes/<lane>/` (e.g. '
+        f'`~/3Cats/token-meter/.review-loop/{CX}-homes/wi-1e`, 20 files).',
+        f'- Default patterns: `~/.{CX}`, `~/.{CX}-paired*`, `~/paired-runs/{CX}_home_lanes`, '
+        f'`~/3Cats/*/.review-loop/{CX}-homes/*`, `~/Github/*/.review-loop/{CX}-homes/*`.',
+        f'- Tests (section 4), fixtures `tests/fixtures/{CX}/...` (small hand-written JSONL) and '
+        f'`tests/{CX}_lines.py` line builders.',
+        f'- {CL.upper()}.md "Dev environment": {CX}/{CL}-quota sources, `--home`/`--config`, default patterns.',
+        f'- `test_default_patterns_expand_under_home`: under a fake HOME with `.{CX}`, `.{CX}-paired-x`, '
+        f'`paired-runs/{CX}_home_lanes` and `3Cats/r/.review-loop/{CX}-homes/lane1`.',
     )
 
     def test_declared_vendor_path_components_pass_plan_and_both_delta_views(self):
@@ -160,8 +162,8 @@ class HistoryScanSubjectTests(unittest.TestCase):
                 (co.context / 'plan.md').write_text(plan)
                 self.assertEqual(co._introduced_history('context/plan.md', plan), [])
                 self.assertIsNone(co._plan_history_issue())
-                patch = self.patch('HOMES = ["~/3Cats/*/.review-loop/codex-homes/*"]',
-                                   'FIXTURES = ROOT / "tests/fixtures/codex/sessions"', '# codex/claude-quota sources')
+                patch = self.patch(f'HOMES = ["~/3Cats/*/.review-loop/{CX}-homes/*"]',
+                                   f'FIXTURES = ROOT / "tests/fixtures/{CX}/sessions"', f'# {CX}/{CL}-quota sources')
                 for name in ('context/delta.patch', 'context/delta-since-last-review.patch'):
                     self.assertEqual(co._introduced_history(name, patch), [])
                 self.assertEqual(co._delta_history_hits(patch), [])
@@ -170,11 +172,11 @@ class HistoryScanSubjectTests(unittest.TestCase):
         co = self.coordinator('# Toy\nRead Codex session data.\nhistory-scan-subject: codex\n')
         self.assertEqual(co._history_workitem()[1], {'codex'})
         for text, marker in (
-            ('Read tests/fixtures/codex/sessions; Codex approved it.', 'Codex'),
-            ('tests/fixtures/codex approved the plan', 'codex'),
-            ('see codex-homes/opus-cache/x', 'opus'),
-            ('see codex-homes/claude-state/x', 'claude'),
-            ('see /opt/codex-homes/F042/x', 'F042'),
+            (f'Read tests/fixtures/{CX}/sessions; Codex approved it.', 'Codex'),
+            (f'tests/fixtures/{CX} approved the plan', 'codex'),
+            (f'see {CX}-homes/{OP}-cache/x', 'opus'),
+            (f'see {CX}-homes/{CL}-state/x', 'claude'),
+            (f'see /opt/{CX}-homes/F042/x', 'F042'),
         ):
             with self.subTest(text=text):
                 self.assertIn(marker, co._introduced_history('context/plan.md', text))
