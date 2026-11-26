@@ -41,11 +41,10 @@
   - Gate note: the AC8 "unchanged state" holds byte for byte only for POLISH-Q; a migrated SECURITY HOLD appends ledger status history (intended). (2026-11-26)
   - v3.17.1 notes (WI-POSTFIX review and dogfood): a merged duplicate backlog entry keeps its first row's priority (a later P1 duplicate can land under ## P2); the run backlog.md line shows only the first ledger id; tests for an all-fixed merged entry and for the F018 preflight re-run are missing. (2026-11-26)
   - v3.17.2 notes (WI-AGYEXIT review and dogfood): an agy run_command output without a "\nCommand output:" marker is searched whole for the status line (agy always prints the marker for a finished step); the fake agy still emits only the old format, so no end-to-end fake-CLI test uses the 1.5.18 header; test name `test_the_exit_status_is_read_from_the_first_line_only` is stale; a kept ignored change blocks the transient retry only for gemini (codex/claude use failed_turn_did_work); `test_igncache` docstring still says an ignored-dir entry voids the verdict. (2026-11-26)
+  - v3.17.3 notes (WI-SUBJDIR review and dogfood): the component mask also hides a file extension, so DOTTED_PATH_RE no longer sees that path as a file name; masking a declared vendor inside a prose slash chain can make the chain classifier refuse an undeclared model name that passed before; test gaps (relative-path-start component, the new attribution lookahead, gemini-named and backslash components); a pre-existing V385-PATH interaction on mixed-tool components in delta.patch (Gemini reviewer note). (2026-11-26)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-DOCSFIX: DOCS rollback reverted operator edits; DOCS budget HOLD offered only abort (token-meter 1862edcf).~~ (added 2026-11-25, closed 2026-11-25, see v3.16.6)
-  - Rollback covers only the writer turn's own writes; operator changes at a DOCS HOLD route to the docs review or the EXEC reviewer; one docs recheck per tree past the DOCS cap; the invocation-limit HOLD says attach-verification keeps the saved cap.
 - ~~WI-DOCSFIX2: DOCS last-slot writer dead end; errored-writer outside writes attributed to the operator.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.7)
   - One past-cap docs review per unreviewed tree; errored/discarded writer writes rolled back per path from evidence snapshots; v3.16.6 protected-path route documented; first release checked by a dogfood review-only lifecycle run. The two v3.16.5 review notes were closed as accepted (owner 2026-11-25).
 - ~~WI-POSTGATE: post-gate stages stop holding on non-blocking findings; narrow author loop for SECURITY findings.~~ (added 2026-11-25, closed 2026-11-26, see v3.17.0)
@@ -54,3 +53,5 @@
   - F022 fixed (merged entries keep all ledger ids); F018 shown unreachable in normal use, regression test added. Opus review APPROVE, CI success, real run ACCEPTED, Fable gate PASS, dogfood run DONE.
 - ~~WI-AGYEXIT: Gemini reviewer evidence and ignored-path field bugs (agy 1.5.18).~~ (added 2026-11-26, closed 2026-11-26, see v3.17.2)
   - The agy 1.5.18 exit-status header is parsed, so a gemini reviewer's configured test counts; ignored paths are free for gemini reviewer-type roles as for codex and claude (token-meter run 9cfa1025). Verified with a real run using a gemini-4-neon reviewer.
+- ~~WI-SUBJDIR: a declared history-scan-subject vendor in any path component blocked PLAN approval.~~ (added 2026-11-26, closed 2026-11-26, see v3.17.3)
+  - token-meter run 6b89f0b3 (codex-homes/, tests/fixtures/codex/). Reviewed by gemini-4-neon high (first Gemini review of our own code), CI success, real run ACCEPTED, Fable gate PASS, dogfood DONE.
