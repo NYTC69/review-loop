@@ -411,6 +411,18 @@ class GeminiAdapterTests(unittest.TestCase):
         commands, _ = rc.observed_events('gemini', rows)
         self.assertEqual([(row['command'], row['exit_code'], row['error']) for row in commands], [('make test', 1, True), ('echo hi', None, False)])
 
+    def test_the_exit_status_line_is_found_after_agy_header_lines(self):
+        """agy 1.5.18 puts Created At / Completed At lines before the status line (realrun-gem3, 2026-11-26)."""
+        output = ('Created At: 2026-11-26T16:03:38+09:00\nCompleted At: 2026-11-26T16:03:40+09:00\nCommand exited with code 0.\n\n'
+                  'Command output:\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n')
+        failing = 'Created At: x\nCompleted At: y\nCommand exited with code 2.\n\nCommand output:\nCommand exited with code 0.\n'
+        rows = [{'event': 'step_update', 'step_update': {'step_index': index, 'state': 'DONE', 'step_type': 'tool', 'tool_name': 'run_command',
+                                                         'tool_info': {'parameters': {'CommandLine': command}, 'output': text}}}
+                for index, (command, text) in enumerate((('python3 -m unittest -q', output), ('make test', failing)), 1)]
+        commands, _ = rc.observed_events('gemini', rows)
+        self.assertEqual([(row['command'], row['exit_code'], row['error']) for row in commands],
+                         [('python3 -m unittest -q', 0, False), ('make test', 2, True)])
+
     def _lines(self, rows):
         path = self.h.root / 'stream.jsonl'
         path.write_text(''.join(json.dumps(row) + '\n' for row in rows))

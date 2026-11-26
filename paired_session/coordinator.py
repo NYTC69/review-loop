@@ -2346,7 +2346,7 @@ def observed_events(vendor: str, rows: list[dict]) -> tuple[list[dict], list[dic
                 calls.append({'tool': step.get('tool_name', ''), 'input': given, 'error': step.get('state') == 'ERROR' if done else None})
                 continue
             command = given.get('CommandLine', '')
-            exit_code = int(found.group(1)) if (found := GEMINI_EXIT_RE.match(output)) else None
+            exit_code = int(found.group(1)) if (found := GEMINI_EXIT_RE.search(output.split('\nCommand output:', 1)[0])) else None   # the header only, never the command's own output
             error = step.get('state') == 'ERROR' or (exit_code is not None and exit_code != 0)
             calls.append({'tool': 'command_execution', 'input': {'command': command}, 'error': error if done else None})
             commands.append({'command': command, 'exit_code': exit_code, 'error': error, 'output': output, 'source': 'run_command',
@@ -12203,7 +12203,7 @@ GEMINI_PREFERENCE_KEYS = {'trustedWorkspaces', 'model'}   # G8: settings agy its
 GEMINI_READONLY_SETTINGS = {'permissions': {'deny': ['write_file(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'],
                                             'allow': ['command(*)', 'read_file(*)']}}   # ADR-21 G5: session-only, under --sandbox;
 # read_file(*) (B3a): headless agy otherwise denies reads outside the workspace (the run's context files)
-GEMINI_EXIT_RE = re.compile(r'Command exited with code (-?\d+)\.')   # ADR-21 G7: the exit status of an agy run_command step (first line of its output)
+GEMINI_EXIT_RE = re.compile(r'^Command exited with code (-?\d+)\.\r?$', re.M)   # ADR-21 G7: the exit status line of an agy run_command step's header (agy 1.5.18 puts Created At / Completed At lines before it)
 
 
 def vendor_entry(table: dict, vendor: str):

@@ -1,5 +1,10 @@
 # Changelog
 
+### v3.17.2：Gemini 审查员的测试退出码在 agy 1.5.18 下读不到（WI-AGYEXIT）
+
+- 修复（现场）：agy 1.5.18 在 run_command 输出的状态行前加了 `Created At` / `Completed At` 两行，coordinator 只认第一行是 `Command exited with code N.` 的旧格式，于是读不到退出码，Gemini 审查员跑完配置的测试也被当成"没有观察到完成"，EXEC 批准每次都 HOLD（realrun-gem3，2026-11-26）。现在在 `Command output:` 之前的头部按行查找状态行，命令自己的输出仍然不算。旧格式照常识别。
+- 测试：`paired_session/test_gemini_vendor.py` 新增 `test_the_exit_status_line_is_found_after_agy_header_lines`（真实 agy 1.5.18 输出；输出里另有一行状态文字时仍取头部的退出码）。已有测试的断言没有改动；`tests/skills/contracts/review-loop.json` 中钉住的版本号随版本改为 3.17.2。
+
 ### v3.17.1：accept 时去重后的 backlog 行按所有账本 ID 判断是否仍未关闭（WI-POSTFIX）
 
 - BACKLOG 修复（F022）：运行 backlog 按（来源、文件、摘要）去重，此前只保留第一行的账本 ID。accept 时只写入仍未关闭的行，所以第一行已修复、后来同来源同文件同摘要的另一行仍未关闭时，这一行不会写入仓库 BACKLOG.md。现在去重后的行在 `ids` 中记下其余账本 ID，只要其中任一 ID 仍未关闭，accept 就写入这一行。已停住或等待 accept 的运行无需额外操作：accept 会先重新列出账本中仍未关闭的非阻塞行，这时记下它们的 ID。
