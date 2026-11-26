@@ -4,6 +4,8 @@
 
 ## P1 — high priority
 
+- WI-SWITCH (v3.18.0): at a HOLD, switch a role's vendor/model/effort on resume and continue with phase, round, ledger, invocations and evidence kept (token-meter request; owner approved 2026-11-26 "要的"; plan first). (added 2026-11-26)
+
 ## P2 — normal
 
 - WI-E remaining: E3 (feature, needs owner OK during the trial). (added 2026-11-22)
@@ -38,12 +40,10 @@
   - `backlog_insert` cosmetics: CRLF files, missing blank line before an inserted section, case-sensitive `## P1`/`## P2` heading match. (2026-11-26)
   - Gate note: the AC8 "unchanged state" holds byte for byte only for POLISH-Q; a migrated SECURITY HOLD appends ledger status history (intended). (2026-11-26)
   - v3.17.1 notes (WI-POSTFIX review and dogfood): a merged duplicate backlog entry keeps its first row's priority (a later P1 duplicate can land under ## P2); the run backlog.md line shows only the first ledger id; tests for an all-fixed merged entry and for the F018 preflight re-run are missing. (2026-11-26)
+  - v3.17.2 notes (WI-AGYEXIT review and dogfood): an agy run_command output without a "\nCommand output:" marker is searched whole for the status line (agy always prints the marker for a finished step); the fake agy still emits only the old format, so no end-to-end fake-CLI test uses the 1.5.18 header; test name `test_the_exit_status_is_read_from_the_first_line_only` is stale; a kept ignored change blocks the transient retry only for gemini (codex/claude use failed_turn_did_work); `test_igncache` docstring still says an ignored-dir entry voids the verdict. (2026-11-26)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-SMALL optional review-note follow-ups (8 items).~~ (added 2026-11-25, closed 2026-11-25, see v3.16.5)
-  - Fixed: risk-first order in auto-split backlog entries; POLISH-Q operator recheck pre-checks the invocation limit; a re-routed stale approval records STALE; the stop-after-gate re-route is bounded once per tree; the round-5 shadow HOLD names the --max-invocations value.
-  - Tests/docs: withdrawal plus two notes, second stale replay at the replay site, README on a second operator edit and "a repeat HOLDs", CHANGELOG names the test_opv_replay fixture pause.
 - ~~WI-DOCSFIX: DOCS rollback reverted operator edits; DOCS budget HOLD offered only abort (token-meter 1862edcf).~~ (added 2026-11-25, closed 2026-11-25, see v3.16.6)
   - Rollback covers only the writer turn's own writes; operator changes at a DOCS HOLD route to the docs review or the EXEC reviewer; one docs recheck per tree past the DOCS cap; the invocation-limit HOLD says attach-verification keeps the saved cap.
 - ~~WI-DOCSFIX2: DOCS last-slot writer dead end; errored-writer outside writes attributed to the operator.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.7)
@@ -52,3 +52,5 @@
   - POLISH-Q report-only after the gate (review-only keeps its fix leg); DOCS spends its budget and moves on; SECURITY-reviewer findings get up to 2 author fix loops (EXEC reviewer, FINISH, unreviewed docs touch-up, SECURITY); "needs your decision" report section; open rows land under ## P1 / ## P2 in BACKLOG at accept (token-meter field note); in-flight v3.16 runs migrate. Dogfood run found and fixed a touch-up TypeError.
 - ~~WI-POSTFIX: accept dropped a still-open duplicate backlog row (F022); SECURITY HOLD resume with scan hits (F018).~~ (added 2026-11-26, closed 2026-11-26, see v3.17.1)
   - F022 fixed (merged entries keep all ledger ids); F018 shown unreachable in normal use, regression test added. Opus review APPROVE, CI success, real run ACCEPTED, Fable gate PASS, dogfood run DONE.
+- ~~WI-AGYEXIT: Gemini reviewer evidence and ignored-path field bugs (agy 1.5.18).~~ (added 2026-11-26, closed 2026-11-26, see v3.17.2)
+  - The agy 1.5.18 exit-status header is parsed, so a gemini reviewer's configured test counts; ignored paths are free for gemini reviewer-type roles as for codex and claude (token-meter run 9cfa1025). Verified with a real run using a gemini-4-neon reviewer.
