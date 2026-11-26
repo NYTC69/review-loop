@@ -304,6 +304,20 @@ class PostGateRunTests(unittest.TestCase):
         self.assertTrue(text.endswith('## Done (recent 5)\n\n- done item\n'), text)
         self.assertEqual(blocker['status'], 'open')
 
+    def test_accept_writes_a_row_whose_earlier_duplicate_was_fixed(self):
+        """WI-POSTFIX F022: the run backlog listed F900 at an earlier DONE; F900 was fixed and F901, the same source, file and
+        summary, is still open at accept: its line reaches BACKLOG.md."""
+        self.assert_done(self.run_coordinator(*ON))
+        state = self.state()
+        row = {'status_history': [], 'source': 'docs-reviewer', 'phase': 'DOCS', 'severity': 'MINOR',
+               'file': 'CHANGELOG.md', 'summary': 'a stale changelog line', 'failure_scenario': ''}
+        state['finding_ledger'] += [{**row, 'id': 'F900', 'status': 'fixed'}, {**row, 'id': 'F901', 'status': 'open'}]
+        state['backlog'].append({**{key: row[key] for key in ('source', 'phase', 'severity', 'file', 'summary',
+                                                              'failure_scenario')}, 'sequence': 1, 'id': 'F900'})
+        (self.run_dir / 'state.json').write_text(json.dumps(state))
+        self.accept()
+        self.assertIn('- a stale changelog line (review-loop run', (self.workspace / 'BACKLOG.md').read_text())
+
     def test_a_failing_post_gate_migration_holds_instead_of_a_traceback(self):
         for error in (RuntimeError('migration boom'), KeyError('fix_base')):
             with self.subTest(error=type(error).__name__):
@@ -527,6 +541,30 @@ class SecurityLoopTests(unittest.TestCase):
         self.assertEqual([item['route'] for item in self.receipts(state, 'SECURITY')], ['HOLD'])
         self.assertNotIn('security_fix', state['lifecycle'])
         self.assertTrue(state['lifecycle']['security_hold']['mirror'])   # the operator's later fix gets the patch
+
+    def test_a_scan_hold_after_an_author_loop_with_reviewer_rows_open_resumes_to_the_operator(self):
+        """WI-POSTFIX F018: the loop's SECURITY holds on the scan while the reviewer's row from the first SECURITY is still
+        open; a plain resume on that tree re-runs the scan and HOLDs again, it does not start the author loop."""
+        original, calls = rc.Coordinator._security_preflight, []
+        def preflight(co, request_id):
+            calls.append(request_id)
+            if len(calls) == 1:
+                return original(co, request_id)
+            return {'status': 'blocked', 'reason': 'security preflight blocked (exit 1); fake-rule in sum_ints.py',
+                    'removed_paths': [], 'preexisting_findings': [], 'findings': []}
+        status, reason, out = self.drive(env=self.env(), _security_preflight=preflight)
+        self.assertEqual(status, 'HOLD', out)
+        before = self.state()
+        self.assertEqual([item['route'] for item in self.receipts(before, 'SECURITY')], ['SECURITY-FIX', 'HOLD'])
+        self.assertTrue([row for row in before['finding_ledger'] if row['source'] == 'security-reviewer'
+                         and row['status'] == 'open' and rc.blocks_by_severity(row)])
+        status, reason, out = self.drive(env=self.env(), action='resume', _security_preflight=preflight)
+        self.assertEqual(status, 'HOLD', out)
+        self.assertIn('security preflight blocked', reason)
+        state = self.state()
+        self.assertNotIn('security_fix', state['lifecycle'])
+        self.assertEqual(len(state['lifecycle']['security_fix_history']), 1)
+        self.assertEqual(len(state['turns']), len(before['turns']))   # no author, no reviewer
 
     # --- AC8b: v3.16.x states -----------------------------------------------------------------------------------------------
     def legacy_security_hold(self):

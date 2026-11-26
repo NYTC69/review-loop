@@ -8708,7 +8708,7 @@ class Coordinator:
         accept carries them to the repository BACKLOG.md (_append_repo_backlog). Never a repair. A row may name its own
         source, phase, origin round and ledger id (the open non-blocking ledger rows at DONE)."""
         entries = self.state.setdefault('backlog', [])
-        known = {(row['source'], row['file'], row['summary']) for row in entries}
+        known = {(row['source'], row['file'], row['summary']): row for row in entries}
         added = []
         for row in rows:
             entry = {'source': row.get('source') or source, 'phase': row.get('phase') or phase,
@@ -8717,10 +8717,12 @@ class Coordinator:
                      'failure_scenario': str(row.get('failure_scenario', '')),
                      **({'id': row['id']} if row.get('id') else {}), **({'category': row['category']} if row.get('category') else {}),
                      **({'priority': 'P1'} if self._post_gate_class(row) == 'decide' else {})}   # WI-POSTGATE F: owner decision
-            if (entry['source'], entry['file'], entry['summary']) not in known:
-                known.add((entry['source'], entry['file'], entry['summary']))
+            if (kept := known.get((entry['source'], entry['file'], entry['summary']))) is None:
+                known[(entry['source'], entry['file'], entry['summary'])] = entry
                 entries.append(entry)
                 added.append(entry)
+            elif entry.get('id') and entry['id'] not in (kept.get('id'), *kept.get('ids', ())):
+                kept.setdefault('ids', []).append(entry['id'])   # WI-POSTFIX F022: accept writes it while any id is open
         if not added or not publish:
             return
         self._write_run_backlog()
@@ -8744,14 +8746,15 @@ class Coordinator:
     def _repo_backlog_plan(self) -> Optional[dict]:
         """WI-GATE1 S3 (owner Q1): at accept, the run backlog goes to the workspace BACKLOG.md (created with a '## P2' heading
         when missing), one line per row; a line already there is not written again (a replayed accept). WI-POSTGATE: only
-        rows still open in the ledger at accept (or without a ledger id) are written, the owner-decision rows under '## P1'
+        rows still open in the ledger at accept (any of the ledger ids a de-duplicated row stands for, or none) are written,
+        the owner-decision rows under '## P1'
         and the others under '## P2', each section created before '## Done…' when missing (backlog_insert). Returns {path, text, rows} (the whole new text), or None. S3 R2 F4: a BACKLOG.md that is a symbolic
         link, not a regular file, or ignored by git is never written; the rows stay in the run backlog (state repo_backlog
         records why)."""
         self._backlog_open_nonblocking()
         status = {row['id']: row.get('status') for row in self.state.get('finding_ledger') or []}
         entries = [row for row in self.state.get('backlog') or []   # WI-POSTGATE: only rows still open at accept
-                   if status.get(row.get('id'), 'open') == 'open']
+                   if any(status.get(key, 'open') == 'open' for key in (row.get('id'), *row.get('ids', ())))]
         if not entries:
             return None
         tracked = self._git_names(['ls-files', '-z', '--', ':(icase,literal)BACKLOG.md'])

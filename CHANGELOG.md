@@ -1,5 +1,11 @@
 # Changelog
 
+### v3.17.1：accept 时去重后的 backlog 行按所有账本 ID 判断是否仍未关闭（WI-POSTFIX）
+
+- BACKLOG 修复（F022）：运行 backlog 按（来源、文件、摘要）去重，此前只保留第一行的账本 ID。accept 时只写入仍未关闭的行，所以第一行已修复、后来同来源同文件同摘要的另一行仍未关闭时，这一行不会写入仓库 BACKLOG.md。现在去重后的行在 `ids` 中记下其余账本 ID，只要其中任一 ID 仍未关闭，accept 就写入这一行。已停住或等待 accept 的运行无需额外操作：accept 会先重新列出账本中仍未关闭的非阻塞行，这时记下它们的 ID。
+- 核查（F018，未改代码）：报告称，SECURITY HOLD 同时有扫描命中或 preflight 失败时，在原树上普通 `resume` 仍会启动作者修复环。核查结论是正常流程到不了这种状态：只有安全审查员给出阻塞发现时才会记录 `security_hold_tree`，而审查员只在扫描和 preflight 都通过时才运行；之后在同一棵树上的 SECURITY 会先处理这些发现，不会再扫描。新增回归测试覆盖最接近的路径：作者修复后的 SECURITY 因扫描 HOLD，上一轮审查员的行仍未关闭，此时普通 `resume` 会重新扫描并再次 HOLD，不会派发任何调用。
+- 测试断言没有改动；`tests/skills/contracts/review-loop.json` 中钉住的版本号随版本改为 3.17.1。
+
 ### v3.17.0：gate 之后只报告，SECURITY 失败走窄循环（WI-POSTGATE）
 
 所有者决定 D-POSTGATE（Yuan 2026-11-25）：门审之后的各阶段只报告，不再重开 EXEC。只有 SECURITY 发现自动修复，而且只走窄循环。POLISH-Q 的修复环保留给 review-only 运行（Q1）；SECURITY 审查员的发现由作者自动修复，最多 2 轮，扫描命中、到达上限和作者 HOLD 交给操作者（Q2）；窄循环里的文档补写不做文档评审，在报告中标出（Q3）；资金类和正确性、数据丢失一起列为“需要你决定”（Q4）。
