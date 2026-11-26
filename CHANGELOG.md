@@ -4,7 +4,7 @@
 
 - BACKLOG 修复（F022）：运行 backlog 按（来源、文件、摘要）去重，此前只保留第一行的账本 ID。accept 时只写入仍未关闭的行，所以第一行已修复、后来同来源同文件同摘要的另一行仍未关闭时，这一行不会写入仓库 BACKLOG.md。现在去重后的行在 `ids` 中记下其余账本 ID，只要其中任一 ID 仍未关闭，accept 就写入这一行。已停住或等待 accept 的运行无需额外操作：accept 会先重新列出账本中仍未关闭的非阻塞行，这时记下它们的 ID。
 - 核查（F018，未改代码）：报告称，SECURITY HOLD 同时有扫描命中或 preflight 失败时，在原树上普通 `resume` 仍会启动作者修复环。核查结论是正常流程到不了这种状态：只有安全审查员给出阻塞发现时才会记录 `security_hold_tree`，而审查员只在扫描和 preflight 都通过时才运行；之后在同一棵树上的 SECURITY 会先处理这些发现，不会再扫描。新增回归测试覆盖最接近的路径：作者修复后的 SECURITY 因扫描 HOLD，上一轮审查员的行仍未关闭，此时普通 `resume` 会重新扫描并再次 HOLD，不会派发任何调用。
-- 测试断言没有改动；`tests/skills/contracts/review-loop.json` 中钉住的版本号随版本改为 3.17.1。
+- 测试：`paired_session/test_wi_postgate.py` 新增两个用例：`test_accept_writes_a_row_whose_earlier_duplicate_was_fixed`（F022：运行 backlog 只记了已修复的 F900，同来源同文件同摘要的 F901 仍未关闭，accept 后这一行写入 BACKLOG.md）和 `test_a_scan_hold_after_an_author_loop_with_reviewer_rows_open_resumes_to_the_operator`（F018：上面的回归路径，resume 后仍 HOLD、没有 `security_fix`、不新增回合）。已有测试的断言没有改动；`tests/skills/contracts/review-loop.json` 中钉住的版本号随版本改为 3.17.1。
 
 ### v3.17.0：gate 之后只报告，SECURITY 失败走窄循环（WI-POSTGATE）
 

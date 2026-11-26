@@ -309,11 +309,11 @@ class PostGateRunTests(unittest.TestCase):
         summary, is still open at accept: its line reaches BACKLOG.md."""
         self.assert_done(self.run_coordinator(*ON))
         state = self.state()
-        row = {'status_history': [], 'source': 'docs-reviewer', 'phase': 'DOCS', 'severity': 'MINOR',
-               'file': 'CHANGELOG.md', 'summary': 'a stale changelog line', 'failure_scenario': ''}
-        state['finding_ledger'] += [{**row, 'id': 'F900', 'status': 'fixed'}, {**row, 'id': 'F901', 'status': 'open'}]
-        state['backlog'].append({**{key: row[key] for key in ('source', 'phase', 'severity', 'file', 'summary',
-                                                              'failure_scenario')}, 'sequence': 1, 'id': 'F900'})
+        row = {'source': 'docs-reviewer', 'phase': 'DOCS', 'severity': 'MINOR', 'file': 'CHANGELOG.md',
+               'summary': 'a stale changelog line', 'failure_scenario': ''}   # one source, file and summary for both ids
+        state['finding_ledger'] += [{**row, 'id': 'F900', 'status': 'fixed', 'status_history': []},
+                                    {**row, 'id': 'F901', 'status': 'open', 'status_history': []}]
+        state['backlog'].append({**row, 'sequence': 1, 'id': 'F900'})   # the earlier DONE listed only F900
         (self.run_dir / 'state.json').write_text(json.dumps(state))
         self.accept()
         self.assertIn('- a stale changelog line (review-loop run', (self.workspace / 'BACKLOG.md').read_text())
