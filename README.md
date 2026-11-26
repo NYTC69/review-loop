@@ -560,7 +560,8 @@ key-named-literal rules apply only to lines the run adds and to a review-pr post
 **History scan subjects** — For work that reads vendor session logs or otherwise uses tool-state directories, add
 `history-scan-subject: claude codex gemini` to the work item with the applicable IDs. Use a plain line or a Markdown list item.
 IDs are case-insensitive and whitespace-separated. Valid lines combine, and a line with an unknown ID or path is ignored.
-The declaration lets the plan and added lines in both delta patches name the listed vendors' state directories.
+The declaration lets the plan and added lines in both delta patches name the listed vendors' state directories and
+any path component that names only listed vendors (`codex-homes/`, `tests/fixtures/codex/`).
 The scan still checks review attributions, finding IDs, verdict words, and review-history wording.
 
 The run freezes the declaration when it starts. For a held run, use `abort` (the workspace stays untouched),

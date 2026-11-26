@@ -170,7 +170,10 @@ case-insensitive IDs. Valid declarations combine. An empty or malformed declarat
 The frozen declaration allows the corresponding complete components in `plan.md` and in added lines of
 `delta.patch` and `delta-since-last-review.patch`. It covers `.claude`, `.codex`, `.codex-paired` (including
 suffixed roots and literal `.codex-paired*`), and `.gemini`, including quoted path components such as
-`joinpath(".claude", "projects")`. A valid declaration also names its vendors for the existing bare-name
+`joinpath(".claude", "projects")`. Since v3.17.3 it also covers any path component next to a `/` or `\` that names
+only declared vendors (`codex-homes/`, `tests/fixtures/codex/`, `codex/claude-quota` when both are declared); a
+component that also names an undeclared tool (`codex-opus/`) or is followed by an attribution verb stays a marker.
+A valid declaration also names its vendors for the existing bare-name
 exception in the delta patches. Finding IDs, verdict words, review attributions, and review-history phrases remain subject to the scan.
 
 To recover a held run, `abort` it (the workspace stays untouched), then start a new run with the declaration in

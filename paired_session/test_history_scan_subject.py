@@ -95,11 +95,16 @@ class HistoryScanSubjectTests(unittest.TestCase):
                               '- history-scan-subject: CODEX codex\n'
                               '1. history-scan-subject: GeMini\n')
         self.assertEqual(co._history_workitem()[1], {'codex', 'gemini'})
-        for path in ('~/.claude/projects', '~/.codex-backup/sessions', '/opt/codex_other/sessions',
-                     '/opt/claude-501/state'):
+        # Undeclared claude, and a declared vendor's component that also names an undeclared tool.
+        for path in ('~/.claude/projects', '/opt/codex-opus/sessions', '/opt/claude-501/state'):
             with self.subTest(path=path):
                 self.assertTrue(co._introduced_history('context/delta.patch', self.patch(f'root = "{path}"')))
                 self.assertTrue(co._introduced_history('context/plan.md', f'Use {path} for input files.'))
+        # WI-SUBJDIR: any path component that names declared vendors only is subject matter, not just dot directories.
+        for path in ('~/.codex-backup/sessions', '/opt/codex_other/sessions'):
+            with self.subTest(path=path):
+                self.assertEqual(co._introduced_history('context/delta.patch', self.patch(f'root = "{path}"')), [])
+                self.assertEqual(co._introduced_history('context/plan.md', f'Use {path} for input files.'), [])
 
     def test_declared_paths_pass_plan_and_both_delta_views_with_or_without_gemini_role(self):
         workitem = ('# Toy\n' + DECLARATION + '\n\n## Files to change\n- product.py\n'
@@ -123,6 +128,64 @@ class HistoryScanSubjectTests(unittest.TestCase):
                 self.assertIsNone(co._fast_plan_issue(plan))
                 for name in ('context/delta.patch', 'context/delta-since-last-review.patch'):
                     self.assertEqual(co._introduced_history(name, self.patch(*lines)), [])
+
+    # WI-SUBJDIR field plan (token-meter WI-2 Codex log adapter): vendor-named path components that are not dot
+    # directories held an approved plan.
+    FIELD_PLAN_LINES = (
+        '- Per-lane homes are `<repo>/.review-loop/codex-homes/<lane>/` (e.g. '
+        '`~/3Cats/token-meter/.review-loop/codex-homes/wi-1e`, 20 files).',
+        '- Default patterns: `~/.codex`, `~/.codex-paired*`, `~/paired-runs/codex_home_lanes`, '
+        '`~/3Cats/*/.review-loop/codex-homes/*`, `~/Github/*/.review-loop/codex-homes/*`.',
+        '- Tests (section 4), fixtures `tests/fixtures/codex/...` (small hand-written JSONL) and '
+        '`tests/codex_lines.py` line builders.',
+        '- CLAUDE.md "Dev environment": codex/claude-quota sources, `--home`/`--config`, default patterns.',
+        '- `test_default_patterns_expand_under_home`: under a fake HOME with `.codex`, `.codex-paired-x`, '
+        '`paired-runs/codex_home_lanes` and `3Cats/r/.review-loop/codex-homes/lane1`.',
+    )
+
+    def test_declared_vendor_path_components_pass_plan_and_both_delta_views(self):
+        workitem = ('# WI-2: Codex adapter, multi-home discovery, quota readings\n\n' + DECLARATION + '\n\n'
+                    'Codex session logs are `<home>/sessions/YYYY/MM/DD/rollout-*.jsonl`.\n')
+        for vendor in ('claude', 'gemini'):
+            with self.subTest(vendor=vendor):
+                original_dir = self.h.run_dir
+                self.h.run_dir = original_dir.with_name(f'run-{vendor}')
+                try:
+                    co = self.coordinator(workitem, '--reviewer-vendor', vendor,
+                                          '--reviewer-model', 'gemini-3.1-pro' if vendor == 'gemini' else 'claude-opus-5-5',
+                                          '--gemini-bin', str(self.h.fake_gemini_cli()))
+                finally:
+                    self.h.run_dir = original_dir
+                plan = '\n'.join(self.FIELD_PLAN_LINES) + '\n' + FAKE_SCENARIO_MATRIX
+                (co.context / 'plan.md').write_text(plan)
+                self.assertEqual(co._introduced_history('context/plan.md', plan), [])
+                self.assertIsNone(co._plan_history_issue())
+                patch = self.patch('HOMES = ["~/3Cats/*/.review-loop/codex-homes/*"]',
+                                   'FIXTURES = ROOT / "tests/fixtures/codex/sessions"', '# codex/claude-quota sources')
+                for name in ('context/delta.patch', 'context/delta-since-last-review.patch'):
+                    self.assertEqual(co._introduced_history(name, patch), [])
+                self.assertEqual(co._delta_history_hits(patch), [])
+
+    def test_declared_vendor_path_components_keep_attributions_and_undeclared_tools(self):
+        co = self.coordinator('# Toy\nRead Codex session data.\nhistory-scan-subject: codex\n')
+        self.assertEqual(co._history_workitem()[1], {'codex'})
+        for text, marker in (
+            ('Read tests/fixtures/codex/sessions; Codex approved it.', 'Codex'),
+            ('tests/fixtures/codex approved the plan', 'codex'),
+            ('see codex-homes/opus-cache/x', 'opus'),
+            ('see codex-homes/claude-state/x', 'claude'),
+            ('see /opt/codex-homes/F042/x', 'F042'),
+        ):
+            with self.subTest(text=text):
+                self.assertIn(marker, co._introduced_history('context/plan.md', text))
+                for name in ('context/delta.patch', 'context/delta-since-last-review.patch'):
+                    self.assertIn(marker, co._introduced_history(name, self.patch(text)))
+
+    def test_vendor_path_components_stay_markers_without_declaration(self):
+        co = self.coordinator('# Toy\nRead session data.\n')
+        for text in self.FIELD_PLAN_LINES[:3] + self.FIELD_PLAN_LINES[4:]:   # codex/claude-quota alone is slash prose
+            with self.subTest(text=text):
+                self.assertIn('codex', co._introduced_history('context/plan.md', text))
 
     def test_subject_keeps_history_markers(self):
         co = self.coordinator('# Toy\nRead Claude session data.\n' + DECLARATION)

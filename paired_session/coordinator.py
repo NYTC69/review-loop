@@ -315,7 +315,7 @@ DOTTED_PATH_RE = re.compile(r'''(?<![\w.-])[\w~./\\:-]+\.[A-Za-z][A-Za-z0-9]*(?=
 BARE_MODEL_NAME_RE = re.compile(r'\b(?:Claude|Codex|Opus|Astra|gpt-6-astra)\b', re.I)
 REVIEW_HISTORY_GUIDANCE = ('Flag accidental review-history carry-over, but do not flag bare vendor/model names '
                            'when the frozen work item is about them (contains the same whole word, case-insensitively). '
-                           'Allow tool-state directory components for vendors declared as work-item subjects. '
+                           'Allow path components that name only vendors declared as work-item subjects. '
                            'Review attributions, other vendor-named directory paths, finding ids and verdict words remain markers.')
 HISTORY_SUBJECT_LINE_RE = re.compile(r'^[ \t]*(?:(?:[-+*]|\d+[.)])[ \t]+)?history-scan-subject:[ \t]*(.*)$', re.M)
 HISTORY_SUBJECT_VENDORS = {'claude', 'codex', 'gemini'}
@@ -326,6 +326,13 @@ HISTORY_SUBJECT_DIR_RE = re.compile(
     r'''(?=[/\\\s'"`\])},;:>]|\.(?=\s|$)|$)'''
     r'(?!(?:[/\\][\w.-]+)*\s+(?:approved?|said|requested|signed|rejected)\b)',
     re.I)
+# WI-SUBJDIR: any path component (next to a / or \\) that names declared vendors only: codex-homes/, fixtures/codex/,
+# codex/claude-quota; a component that also names an undeclared tool (codex-opus/) or is followed by an attribution stays.
+HISTORY_SUBJECT_COMPONENT_RE = re.compile(
+    r'''(?:(?<=[/\\])|(?<![\w.-])(?=[\w.-]+[/\\]))[\w.-]*?(?:claude|codex|gemini|opus|astra)[\w.-]*(?![\w.-])'''
+    r'(?!(?:[/\\][\w.-]+)*\s+(?:approved?|said|requested|signed|rejected)\b)',
+    re.I)
+HISTORY_SUBJECT_TOOL_RE = re.compile(r'claude|codex|gemini|opus|astra', re.I)
 # FIELD-31: the author's code must not carry what the independent shadow and gate refuse as review history.
 AUTHOR_HISTORY_RULE = ('Never write finding ids (an F followed by three or more digits), references to earlier reviews, or reviewer/tool names '
                        '(Claude, Codex, Opus, Astra) into code, tests, comments or docs, unless the work item itself is about '
@@ -6083,8 +6090,12 @@ class Coordinator:
         if not subjects:
             return text
         # Keep offsets and path separators for the path matcher. Hard markers read the original text.
-        return HISTORY_SUBJECT_DIR_RE.sub(
+        text = HISTORY_SUBJECT_DIR_RE.sub(
             lambda match: '.' + 'x' * (len(match.group(0)) - 1) if match.group(1).lower() in subjects else match.group(0),
+            text)
+        return HISTORY_SUBJECT_COMPONENT_RE.sub(
+            lambda match: 'x' * len(match.group(0))
+            if {tool.lower() for tool in HISTORY_SUBJECT_TOOL_RE.findall(match.group(0))} <= subjects else match.group(0),
             text)
 
     def _fresh_history_text(self, name: str, content: str, base: Optional[str] = None) -> str:
