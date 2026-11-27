@@ -197,12 +197,76 @@ class VendorSwitchTests(unittest.TestCase):
                 self.assertEqual(row['gemini_bin'], agy)
                 code, output = self.main('resume', env=self.docs)   # no --gemini-bin: the saved path, not the default agy
                 self.assertEqual(code, 0, output)
-                self.assertIn(f'NOTE: using the saved --gemini-bin {agy} (pass --gemini-bin to change it)', output)
+                self.assertIn(f'NOTE: using the saved --gemini-bin {agy} ' + (   # WI-AGYBIN: a frozen slot fixes the path
+                    '(pass --gemini-bin to change it)' if role == 'gate' else '(fixed while the frozen gemini reviewer slot uses it)'),
+                    output)
                 self.assertIn(DONE, output)
                 self.assertIn(f'NOTE: using the saved --gemini-bin {agy}', self.intent('accept', '--reason', 'owner accepts'))
                 rows = [row for row in self.state()['turns'] if row['role'] in ((role,) if role == 'gate' else (role, 'shadow'))
                         and not row.get('error')]
                 self.assertTrue(rows and all(row['vendor'] == 'gemini' for row in rows), rows)
+
+    # ---- WI-AGYBIN (v3.18.1): the run's agy path stays saved while a role runs gemini, and is dropped when none does ----
+    def drop_agy_from_path(self):
+        """PATH without an agy for the whole test (this machine may have a real one): the default --gemini-bin agy binds nothing."""
+        dirs = os.environ.get('PATH', '').split(os.pathsep)
+        patcher = patch.dict(os.environ, {'PATH': os.pathsep.join(d for d in dirs if not os.path.exists(os.path.join(d, 'agy')))})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_switch_away_from_gemini_drops_the_agy_binding(self):
+        self.drop_agy_from_path()
+        held = self.quota_hold(EXEC_AUTHOR, *TO_GEMINI, '--gemini-bin', self.fake_agy())
+        self.assertIn('gemini_bin', held['operator_programs'])
+        code, output = self.main('resume', *TO_CLAUDE, env=self.docs, drive=lambda co, _: co.hold('test hold') or 'HOLD')
+        self.assertEqual(code, 2, output)
+        self.assertNotIn('gemini-bin', output)
+        code, output = self.main('resume', env=self.docs)   # no --gemini-bin, no agy on PATH, no role on gemini
+        self.assertEqual(code, 0, output)
+        self.assertIn(DONE, output)
+        self.assertNotIn('gemini-bin', output)
+        self.assertNotIn('gemini_bin', output)
+        final = self.state()
+        self.assertNotIn('gemini_bin', final['operator_programs'])
+        self.assertTrue(all(row['vendor'] != 'gemini' for row in self.after(final, held['sequence'])))
+
+    def test_a_gemini_gate_from_run_start_keeps_the_agy_path(self):
+        self.drop_agy_from_path()
+        agy = self.fake_agy()
+        gate = ('--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium', '--gemini-bin', agy)
+
+        def slot_switched_away():   # the only frozen gemini slot moves to claude; the gate stays gemini
+            self.quota_hold(EXEC_AUTHOR, *gate, '--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-pro')
+            code, output = self.main('resume', *TO_CLAUDE, env=self.docs, drive=lambda co, _: co.hold('test hold') or 'HOLD')
+            self.assertEqual(code, 2, output)
+
+        cases = (('held before any turn', lambda: self.held_run(*gate)),
+                 ('quota hold', lambda: self.quota_hold(EXEC_AUTHOR, *gate)),
+                 ('slot switched away', slot_switched_away))
+        for name, start in cases:
+            with self.subTest(start=name):
+                self.base_tree_run('gate-agy-' + name.replace(' ', '-'))
+                start()
+                code, output = self.main('resume', env=self.docs)   # no --gemini-bin: the saved path
+                self.assertEqual(code, 0, output)
+                self.assertIn(DONE, output)
+                self.assertIn(f'NOTE: using the saved --gemini-bin {agy} (pass --gemini-bin to change it)', output)
+                gates = [row for row in self.state()['turns'] if row['role'] == 'gate' and not row.get('error')]
+                self.assertTrue(gates and all(row['vendor'] == 'gemini' for row in gates), gates)
+
+    def test_an_explicit_gemini_bin_on_resume_wins_and_is_kept(self):
+        self.drop_agy_from_path()
+        other = self.h.root / 'other-agy'
+        other.write_text(open(self.fake_agy(), encoding='utf-8').read())
+        other.chmod(0o755)
+        self.quota_hold(EXEC_AUTHOR, '--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium',
+                        '--gemini-bin', self.fake_agy())
+        code, output = self.main('resume', '--gemini-bin', str(other), env=self.docs)
+        self.assertEqual(code, 0, output)
+        self.assertIn(DONE, output)
+        self.assertNotIn('using the saved --gemini-bin', output)
+        self.assertIn(f'NOTE: using the saved --gemini-bin {other} (pass --gemini-bin to change it)',
+                      self.intent('accept', '--reason', 'owner accepts'))
 
     # ---- AC3 ----
     def test_author_vendor_switch_continues_exec(self):

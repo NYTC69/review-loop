@@ -3144,6 +3144,8 @@ class Coordinator:
                 'acceptance_state': 'IN_PROGRESS', 'approved_snapshot': None, 'rejected_digests': [],
                 'test_command_explicit': not isinstance(args.test_command, DefaultTestCommand),   # D09 §3
             }
+            if 'gemini_bin' in required_programs(args):   # WI-AGYBIN: later commands without --gemini-bin reuse it
+                self.state['gemini_bin'] = args.gemini_bin
             if self._pr_pins:
                 self.state['review_pr'] = self._pr_pins   # LG2-c: review-report.md and review_post.py read them
             if args.lifecycle_mode == 'on':
@@ -3232,8 +3234,9 @@ class Coordinator:
                 setattr(self.args, key, saved[key])
         return saved
 
-    def _saved_gemini_bin(self) -> Optional[str]:
-        """WI-SWITCH: the agy path the run dispatches gemini with: a frozen gemini slot's binary, else the latest gemini switch."""
+    def _saved_gemini_bin(self) -> tuple:
+        """WI-SWITCH, WI-AGYBIN: the agy path the run dispatches gemini with and the frozen slot that fixes it, if any: a frozen
+        gemini slot's binary, else the path last bound (state gemini_bin), else the latest gemini switch (a v3.18.0 state)."""
         manifest = self.state.get('role_dispatch_manifest')
         flags = manifest.get('role_flags') if isinstance(manifest, dict) else None
         if isinstance(flags, dict):
@@ -3241,16 +3244,26 @@ class Coordinator:
                                                   ('reviewer', 'reviewer_vendor', 'reviewer_binary')):
                 value = flags.get(slot) if isinstance(flags.get(slot), dict) else {}
                 if value.get(vendor_field) == 'gemini' and isinstance(value.get(bin_field), str):
-                    return value[bin_field]
+                    return value[bin_field], slot
+        if isinstance(self.state.get('gemini_bin'), str):
+            return self.state['gemini_bin'], None
         rows = [row for row in self.state.get('role_resume_changes', []) if isinstance(row.get('gemini_bin'), str)]
-        return rows[-1]['gemini_bin'] if rows else None
+        return (rows[-1]['gemini_bin'] if rows else None), None
 
     def _restore_gemini_bin(self) -> None:
-        """A command without --gemini-bin dispatches gemini with the saved path, so a later resume matches the frozen slot."""
-        if getattr(self.args, 'gemini_bin_explicit', False) or not (saved := self._saved_gemini_bin()):
+        """A command without --gemini-bin dispatches gemini with the saved path, so a later resume matches the frozen slot.
+        WI-AGYBIN: only while a role runs gemini after this command's vendor flags; otherwise agy is not needed."""
+        if getattr(self.args, 'gemini_bin_explicit', False):
+            return
+        config = self.state.get('config', {})
+        flags = set(getattr(self.args, 'explicit_role_flags', ())) - set(getattr(self.args, 'profile_role_flags', ()))
+        vendors = {key: getattr(self.args, key) if key in flags else config.get(key) for key in ROLE_VENDOR_DESTS}
+        saved, slot = self._saved_gemini_bin()
+        if not saved or 'gemini' not in vendor_by_role(argparse.Namespace(**vendors)).values():
             return
         if saved != getattr(self.args, 'gemini_bin', None):
-            self._operator_note(f'NOTE: using the saved --gemini-bin {saved} (pass --gemini-bin to change it)')
+            self._operator_note(f'NOTE: using the saved --gemini-bin {saved} ' + (
+                f'(fixed while the frozen gemini {slot} slot uses it)' if slot else '(pass --gemini-bin to change it)'))
         self.args.gemini_bin = saved
 
     def _check_vendor_switch(self, saved: dict, explicit) -> None:
@@ -3623,9 +3636,9 @@ class Coordinator:
         return result
 
     def _program_snapshot(self):
-        """ADR-21 G1: codex_bin and claude_bin as always; gemini_bin is bound and required when a role runs gemini or the run froze it."""
-        frozen = (getattr(self, 'state', None) or {}).get('operator_programs') or {}
-        gemini = getattr(self.args, 'gemini_bin', None) if 'gemini_bin' in (*required_programs(self.args), *frozen) else None
+        """ADR-21 G1: codex_bin and claude_bin as always; gemini_bin is bound and required while a role runs gemini (WI-AGYBIN:
+        not after a resume switched the last gemini role away)."""
+        gemini = getattr(self.args, 'gemini_bin', None) if 'gemini_bin' in required_programs(self.args) else None
         return program_snapshot(self.workspace, self.run_dir, self.author_temp_dir, self.args.codex_bin, self.args.claude_bin,
                                 self.args.gate_prompt, self.args.config, gemini_bin=gemini)
 
@@ -3636,6 +3649,12 @@ class Coordinator:
     def _program_state(self, hold=False):
         current, issue = self._program_snapshot()
         frozen = self.state.get('operator_programs')
+        if frozen and 'gemini_bin' in frozen and 'gemini_bin' not in current:   # WI-AGYBIN: no role runs gemini any more
+            frozen = self.state['operator_programs'] = {key: value for key, value in frozen.items() if key != 'gemini_bin'}
+            self.save()
+        if issue is None and 'gemini_bin' in current and self.state.get('gemini_bin') != self.args.gemini_bin:
+            self.state['gemini_bin'] = self.args.gemini_bin   # WI-AGYBIN: the bound agy path, for commands without --gemini-bin
+            self.save()
         if issue is None and frozen is None:
             self.state['operator_programs'] = current
             self.save()
@@ -11865,7 +11884,7 @@ class Coordinator:
         for change in changes:
             config[change['key']] = change['new']
             if change['key'] in ROLE_VENDOR_DESTS and change['new'] == 'gemini':   # kept for later commands without --gemini-bin
-                change['gemini_bin'] = self.args.gemini_bin
+                change['gemini_bin'] = self.state['gemini_bin'] = self.args.gemini_bin
             change.update(timestamp=timestamp, hold_reason=hold_reason[:300])
         for role in ('author', 'reviewer'):
             if any(change['key'] in (role + '_model', role + '_vendor') for change in changes):
