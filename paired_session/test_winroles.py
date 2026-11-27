@@ -185,6 +185,16 @@ class RefusalTests(unittest.TestCase):
         args = SimpleNamespace(detach=True, action='stop', safety_mode='strict', run_dir=str(self.run_dir))
         self.assertIn('--detach is not supported on Windows', rc.windows_refusal(args))
 
+    def test_a_resume_switch_to_gemini_is_refused(self):   # WI-SWITCH (v3.18.0): the requested vendor counts too
+        self.run_dir.mkdir(parents=True)
+        state = self.run_dir / 'state.json'
+        state.write_text(json.dumps({'version': rc.STATE_VERSION, 'status': 'HOLD', 'config': {
+            'author_vendor': 'codex', 'reviewer_vendor': 'codex', 'gate_vendor': 'codex'}}), encoding='utf-8')
+        saved = state.read_bytes()
+        out = self.main('resume', '--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-pro')
+        self.assertIn('REFUSED: a gemini role is not supported on Windows', out)
+        self.assertEqual(state.read_bytes(), saved)
+
 
 class ReadOnlyGuardWindowsTests(unittest.TestCase):
     """NTFS has no POSIX permission bits: on Windows nothing is recorded, compared or chmod-ed; content still is."""

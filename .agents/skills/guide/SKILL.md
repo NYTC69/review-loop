@@ -69,8 +69,9 @@ Not on Codex:
   `review_focus`, `review_style`, `quality_focus`, `handsfree`, and `auto_commit` on a review-only run) is listed in
   `docs/protocol/paired-session-entry.md` (Profile and settings).
 - On a continuing `resume`, use `--author-model`, `--reviewer-model`, `--gate-model` or the corresponding
-  `--*-effort` flags. Omitted flags keep their saved values. Vendors and model policy stay fixed.
-  A persistent model change starts a new session for that role. Effort changes keep the session.
+  `--*-effort` flags. Omitted flags keep their saved values. At a HOLD, `--*-vendor` with an explicit `--*-model` moves a
+  role to another provider; model policy stays fixed.
+  A persistent model or vendor change starts a new session for that role. Effort changes keep the session.
   A moved install can continue with matching frozen inputs and the same custom gate prompt path.
   See [resume settings and relocation](../../../paired_session/README.md#changing-role-settings-or-moving-an-install).
 - Under quota pressure, keep the fresh shadow and use the one-way `resume --skip-quality-polish true` to skip new

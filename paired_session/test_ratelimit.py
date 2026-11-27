@@ -336,6 +336,24 @@ class RateLimitDriveTests(unittest.TestCase):
         self.assertNotIn('hold_kind', self.state())
         self.assertNotIn('rate_limit', self.state())
 
+    def test_rate_limited_hold_names_the_switch_command(self):   # WI-SWITCH (v3.18.0)
+        self.fresh('switch-hint')
+        result = self.cli(self.limited_env(SITES[3][0], once=False), extra=('--max-rate-limit-wait', '0'))
+        self.assert_rate_hold(result, 'reviewer', 'EXEC')
+        reason = self.state()['hold_reason']
+        self.assertIn('resume after the quota clears; or move the reviewer to another provider and keep this run: '
+                      'resume --reviewer-vendor VENDOR --reviewer-model MODEL (--gemini-bin PATH for gemini)', reason)
+        self.assertIn(reason, result.stdout)
+        co = rc.Coordinator(self.h.args(action='resume'))   # a shadow rejection names the reviewer flags
+        co.state['turns'].append({'role': 'shadow', 'phase': 'EXEC', 'sequence': 99, 'error_kind': 'rate_limited',
+                                  'reset_hint': LIMIT_TEXT})
+        with patch.object(rc.winplat, 'IS_WINDOWS', True):
+            co.hold('HTTP 429; resume after the quota clears', rate_limited=True)
+        self.assertTrue(self.state()['hold_reason'].endswith(
+            '; or move the reviewer to another provider and keep this run: resume --reviewer-vendor VENDOR '
+            '--reviewer-model MODEL (--gemini-bin PATH for gemini) (gemini is macOS-only)'))
+        self.assertEqual(self.state()['rate_limit']['role'], 'shadow')
+
 
 if __name__ == '__main__':
     unittest.main()

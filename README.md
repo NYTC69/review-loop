@@ -331,8 +331,11 @@ The coordinator prints one progress line per event (the role, its verdict and th
   `resume --add-rounds N` (1-10) continues the same run with N more rounds of that phase;
 - to change a role on a continuing run, pass an explicit `--author-model`, `--reviewer-model`, `--gate-model` or
   corresponding `--*-effort` flag to `resume`. Omitted flags keep the saved values even when a profile supplies
-  defaults. Vendors and the model allowlist stay fixed. A persistent author or reviewer model change starts
-  a new session for that role, while an effort change keeps its session. A saved gate verdict still applies.
+  defaults. At a HOLD (or a quota wait interrupted by `stop`), `--author-vendor`, `--reviewer-vendor` or
+  `--gate-vendor` with an explicit model for the new vendor moves that role to another provider (`--gemini-bin PATH`
+  for gemini, macOS only); the run keeps its phase, rounds, ledger and workspace. The model allowlist stays fixed.
+  A persistent author or reviewer model or vendor change starts a new session for that role, while an effort change
+  keeps its session. A saved gate verdict still applies.
   An install move can continue with identical agent and gate prompt contents and the original custom prompt path.
   See [resume settings and relocation](paired_session/README.md#changing-role-settings-or-moving-an-install).
 - to abort the run (`abort`).
@@ -538,6 +541,8 @@ when it fits the run-wide `--max-rate-limit-wait` budget (6 hours by default). W
 pending dispatch uses backoff slots of 30, 60, 120 and 240 seconds, then HOLDs. A later dispatch starts at 30
 seconds and shares the remaining run-wide wait budget. Set the budget to 0 for immediate HOLD.
 `status --brief` shows the pending retry time, and plain `resume` continues a wait interrupted by `stop`.
+A quota HOLD also names the other way out: `resume --<role>-vendor VENDOR --<role>-model MODEL` moves the limited
+role to another provider and keeps the run.
 
 **Plan Conformance** — In EXEC the reviewer and the shadow review the change against the approved plan, and an
 EXEC approval needs their own run evidence (`self_run_evidence`; a review-pr report run without a test

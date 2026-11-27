@@ -635,7 +635,9 @@ the coordinator HOLDs immediately on the deadline.
 Set the budget to 0 for immediate quota HOLD. A quota HOLD shows the reset hint
 when available and explains why automatic retries stopped. After quota clears,
 use plain `resume` with the same workspace, work item, run directory, role
-settings and test command.
+settings and test command. The HOLD also names the switch: `resume --<role>-vendor VENDOR --<role>-model MODEL`
+moves the limited role to another provider and keeps the run
+(see [Changing role settings or moving an install](#changing-role-settings-or-moving-an-install)).
 
 `--timeout` (default 2700 seconds, at most 86400; a value outside 1..86400 is
 refused before the run starts) governs every turn except author turns in EXEC,
@@ -772,8 +774,8 @@ A continuing `resume` can change any of `--author-model`, `--reviewer-model`, `-
 `--author-effort`, `--reviewer-effort`, and `--gate-effort`. Both `--flag value` and
 `--flag=value` work. Omitted model and effort flags inherit the saved values on every action
 that restores the run, even when the current profile supplies different defaults. The saved
-vendors and `allowed_models` policy apply. Other actions that restore a run refuse explicit model or
-vendor changes; an explicit effort change is ignored by `accept`, `reject`, `note`, `withdraw-findings` and
+vendors and `allowed_models` policy apply (a vendor changes only as described below). Other actions that restore a
+run refuse explicit model or vendor changes; an explicit effort change is ignored by `accept`, `reject`, `note`, `withdraw-findings` and
 `attach-verification` and refused by `abort`, a restoring `run` and `resume --polish`.
 A NOTE lists the explicit differing effort flags ignored by these operator actions. An ordinary
 `resume` that exits before applying requested model or effort changes also lists those flags in
@@ -785,6 +787,20 @@ A model change starts a new persistent session for the affected author or review
 effort-only change keeps the session. A replacement author receives the saved approved plan
 in EXEC or the current draft during a PLAN revision. Changes take effect when the run continues
 and appear in `role_resume_changes` in `state.json`. A saved gate verdict is used once per work item.
+
+A `resume` at a HOLD, or of a quota wait interrupted by `stop`, can also move a role to another vendor with
+`--author-vendor`, `--reviewer-vendor` or `--gate-vendor` (`codex`, `claude` or `gemini`). The switch needs an
+explicit `--<role>-model` for the new vendor (vendor defaults do not apply on resume) and a vendor given on the command
+line (a workspace profile cannot switch it). The phase, round counters, finding ledger, invocation count, turns,
+evidence and workspace stay; the author or reviewer gets a new session (a replacement reviewer is told that the
+open-finding ledger and the delta files hold the review history), and the shadow follows the reviewer. The frozen role
+dispatch rebuilds only the switched role's slots (author; reviewer and shadow; the gate has none), and each
+`role_resume_changes` row also records the first 300 characters of the HOLD reason; a vendor row adds the old and new
+slot digests (`slots`). A switch that would newly give the reviewer or the gate the author's vendor and model is
+refused; a run that started that way keeps it. An author switch leaves the gate's vendor as saved; pass `--gate-vendor`
+to move it too. A gemini role needs a bound agy (`--gemini-bin PATH`; a missing one is refused before any state
+change) and is macOS-only: native Windows refuses it. A saved quota wait whose dispatch still names the old vendor is
+dropped. Without `--retry-uncertain`, an uncertain turn is settled first and a NOTE lists the unapplied flags.
 
 After moving a review-loop install, the next verified lifecycle dispatch can update the saved
 install paths and retain the sessions if the agent bodies, gate prompt and other dispatch inputs

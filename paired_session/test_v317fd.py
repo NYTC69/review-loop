@@ -111,7 +111,10 @@ class OperatorFailureTests(unittest.TestCase):
                 self.assertEqual(receipt['error_kind'], 'rate_limited')
                 self.assertEqual(co.state['hold_reason'], 'rate_limited: provider rejected the call; '
                     'it did not consume the invocation budget; reset time unavailable; '
-                    'automatic waiting is disabled (--max-rate-limit-wait 0); resume after the quota clears')
+                    'automatic waiting is disabled (--max-rate-limit-wait 0); resume after the quota clears'
+                    # WI-SWITCH (v3.18.0, plan step 7): the reason also names the vendor switch
+                    '; or move the author to another provider and keep this run: resume --author-vendor VENDOR '
+                    '--author-model MODEL (--gemini-bin PATH for gemini)')
                 self.assertFalse(receipt['invocation_budget_counted'])
 
     def test_timeout_names_duration_without_using_output(self):

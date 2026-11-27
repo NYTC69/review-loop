@@ -3196,9 +3196,12 @@ class Coordinator:
         """Restore the saved roles, allowing explicit model and effort changes on a continuing resume."""
         saved = self._saved_config()
         overrides = ROLE_RESUME_DESTS if allow_overrides else ()
-        for key in sorted(set(explicit).intersection(ROLE_DESTS) - set(overrides)):
+        profiled = set(getattr(self.args, 'profile_role_flags', ()))   # WI-SWITCH: a vendor from a workspace profile
+        for key in sorted(set(explicit).intersection(ROLE_DESTS) - (set(overrides) - profiled)):
             if getattr(self.args, key) != saved[key]:
                 raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
+        if allow_overrides:
+            self._check_vendor_switch(saved, explicit)
         policy = saved.get('allowed_models')
         if getattr(self.args, 'allowed_models', None) not in (None, policy):
             raise ValueError('role policy is fixed for this run: allowed_models differs from the saved run')
@@ -3215,6 +3218,47 @@ class Coordinator:
             if key not in keep or key not in explicit:
                 setattr(self.args, key, saved[key])
         return saved
+
+    def _check_vendor_switch(self, saved: dict, explicit) -> None:
+        """WI-SWITCH: a resume moves a role to another vendor only at a HOLD or a stopped quota wait, and only with an explicit
+        model for the new vendor (vendor defaults do not apply on resume)."""
+        stopped_wait = (self.state.get('status') == 'ACTIVE' and self.state.get('rate_limit_wait')
+                        and not self.state.get('active'))
+        for key in ROLE_VENDOR_DESTS:
+            if key not in explicit or getattr(self.args, key) == saved[key]:
+                continue
+            if self.state.get('status') != 'HOLD' and not stopped_wait:
+                raise ValueError(f'role models are fixed for this run: {key} differs from the saved run; a vendor switch needs a HOLD')
+            role = key[:-len('_vendor')]
+            if role + '_model' not in explicit:
+                raise ValueError(f'a vendor switch needs an explicit --{role}-model for the {getattr(self.args, key)} vendor '
+                                 '(vendor defaults do not apply on resume)')
+
+    def _check_switch_independence(self, saved: dict) -> None:
+        """WI-SWITCH (owner Q1): a resume role change must not newly give the reviewer or the gate the author's vendor and model;
+        a run that started that way keeps it."""
+        pair = lambda source, role: (source[role + '_vendor'], source[role + '_model'])
+        now = vars(self.args)
+        for role in ('reviewer', 'gate'):
+            if pair(now, role) == pair(now, 'author') and pair(saved, role) != pair(saved, 'author'):
+                vendor, model = pair(now, role)
+                raise ValueError(f'resume role change refused: the author and the {role} would both run {vendor} {model}; '
+                                 f'choose another vendor or model for one of them')
+
+    def _switch_dispatch_manifest(self, saved: dict) -> None:
+        """WI-SWITCH (f), (g): before any state write, the new vendor's program binding is complete and its frozen slots build;
+        the candidate manifest is kept for _apply_resume_role_changes."""
+        self._switched_manifest = None
+        if all(getattr(self.args, key) == saved[key] for key in ROLE_VENDOR_DESTS):
+            return
+        if issue := self._program_snapshot()[1]:
+            raise ValueError(f'the vendor switch cannot bind its program: {issue}')
+        if self.state.get('role_dispatch_manifest') is None and self.state['config'].get('lifecycle_mode') != 'on':
+            return
+        try:
+            self._switched_manifest = self._role_dispatch_manifest()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError(f'the vendor switch cannot build its role dispatch: {exc}') from exc
 
     @staticmethod
     def _readonly_changed(workspace, recorded, before, after) -> bool:   # content (the coordinator's snapshot), HEAD, branch or index
@@ -3739,11 +3783,13 @@ class Coordinator:
             allowed = self.args.allowed_models or {}
             for role in ('author', 'reviewer', 'gate'):
                 key = role + '_model'
-                vendor, model = saved[role + '_vendor'], getattr(self.args, key)
+                vendor, model = getattr(self.args, role + '_vendor'), getattr(self.args, key)   # WI-SWITCH: the new vendor
                 if (model != saved[key] and vendor != 'gemini' and model not in allowed.get(vendor, []) and
                         any(model in allowed.get(other, []) or model.startswith(prefix)
                             for other, prefix in VENDOR_MODEL_PREFIXES.items() if other != vendor)):
-                    raise ValueError(f'{key} {model} does not belong to the saved {vendor} vendor')
+                    raise ValueError(f"{key} {model} does not belong to the {'saved ' if vendor == saved[role + '_vendor'] else ''}"
+                                     f'{vendor} vendor')
+            self._check_switch_independence(saved)
         for key, _ in GUIDANCE_KEYS:   # L105: fixed at run start; a resume without the flag keeps the saved text
             if getattr(self.args, key, None) is None: setattr(self.args, key, self.state['config'][key])
         if getattr(self.args, 'wi_deadline', None) is None:   # F2: the deadline is fixed at run; resume keeps it, a different value is refused below
@@ -3795,6 +3841,8 @@ class Coordinator:
             self._refreeze_bundled_gate_prompt()
         if refreeze_commands and self.args.action != 'abort':
             self._refreeze_reviewer_commands(current_config['workitem_reviewer_commands'])
+        if allow_overrides:
+            self._switch_dispatch_manifest(saved)
 
     def _resume_test_command(self) -> None:
         """v3.7.2: a resume without --test-command (or --no-test-command) uses the saved command; only an explicitly
@@ -4488,11 +4536,15 @@ class Coordinator:
         if self.state.get('active'):
             self._void_opv_unknown_turn(self.state['active'])
             self.state['uncertain_active'] = self.state['active']
+        last = next((row for row in reversed(self.state.get('turns', [])) if row.get('error_kind') == 'rate_limited'), {})
+        if rate_limited and last:   # WI-SWITCH: the other way out of a quota HOLD
+            flag = '--' + ('reviewer' if last.get('role') == 'shadow' else last.get('role', 'reviewer'))
+            reason += (f'; or move the {flag[2:]} to another provider and keep this run: resume {flag}-vendor VENDOR '
+                       f'{flag}-model MODEL (--gemini-bin PATH for gemini)' + (' (gemini is macOS-only)' if winplat.IS_WINDOWS else ''))
         self.state['status'] = 'HOLD'
         self.state['hold_reason'] = reason
         self.state.pop('rate_limit_wait', None)
         self._reconcile_polish_reservation()
-        last = next((row for row in reversed(self.state.get('turns', [])) if row.get('error_kind') == 'rate_limited'), {})
         if rate_limited and last:   # ratelimit: the drive passes it for a RateLimitedTurn only
             self.state['hold_kind'] = 'rate_limited'
             self.state['rate_limit'] = {key: last.get(key) for key in ('role', 'phase', 'sequence', 'reset_hint')}
@@ -5881,9 +5933,12 @@ class Coordinator:
         phase = base_phase
         if role == 'shadow':
             return ''.join(self._shadow_prompt_parts(snapshot))
-        fresh_note = 'Use your persistent thread history across PLAN and EXEC.'
-        exercise = ''
         reviews = self.state[f'{base_phase.lower()}_reviews']
+        replaced = not self.state['started']['reviewer'] and self.state.get('plan_reviews', 0) + self.state.get('exec_reviews', 0)
+        fresh_note = ('Use your persistent thread history across PLAN and EXEC.' if not replaced else
+                      'This is a replacement reviewer session with no thread history (the operator changed the reviewer on resume); '
+                      'the open-finding ledger and the plan or delta files below hold the review history.')   # WI-SWITCH
+        exercise = ''
         if self.args.exercise_revisions and reviews == 0:
             exercise = ('Exercise rule: return REVISE on the first PLAN review because Verification was omitted.' if base_phase == 'PLAN'
                         else 'Exercise rule: return REVISE on the first EXEC review for the intentionally omitted bool rejection.')
@@ -11686,24 +11741,25 @@ class Coordinator:
               f"continues as loop 1 ({record['by']} fix, then the EXEC reviewer of the fix delta, FINISH, a docs touch-up, SECURITY)")
         return True
 
-    def _apply_resume_role_changes(self) -> list[dict]:
+    def _apply_resume_role_changes(self, hold_reason: str = '') -> list[dict]:
         config = self.state['config']
         explicit = getattr(self.args, 'explicit_role_flags', ())
         changes = [{'key': key, 'old': config[key], 'new': getattr(self.args, key)}
                    for key in ROLE_RESUME_DESTS if key in explicit and config[key] != getattr(self.args, key)]
         if not changes:
             return changes
+        switched = {change['key'][:-len('_vendor')]: change for change in changes if change['key'] in ROLE_VENDOR_DESTS}
         manifest = self.state.get('role_dispatch_manifest')
         patches = []
+        slots = {'author': ('author',), 'reviewer': ('reviewer', 'shadow'), 'gate': ()}
+        digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         if manifest is not None or config.get('lifecycle_mode') == 'on':
-            digest = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             if (not isinstance(manifest, dict) or self.state.get('role_dispatch_manifest_version') != 1 or
                     digest(manifest) != self.state.get('role_dispatch_manifest_sha256') or
                     digest(config) != manifest.get('config_sha256') or
                     digest(manifest.get('role_flags')) != manifest.get('role_flags_sha256')):
                 raise RuntimeError('frozen role dispatch changed; abort or start a new run')
             flags = manifest['role_flags']
-            slots = {'author': ('author',), 'reviewer': ('reviewer', 'shadow'), 'gate': ()}
             for change in changes:
                 key = change['key']
                 role, setting = key.split('_', 1)
@@ -11711,23 +11767,38 @@ class Coordinator:
                     field = setting if role == 'author' else key
                     if flags.get(slot, {}).get(field) != change['old']:
                         raise RuntimeError('frozen role dispatch changed; abort or start a new run')
-                    patches.append((flags[slot], field, change['new']))
+                    if role not in switched:   # a switched role's slots are rebuilt whole below
+                        patches.append((flags[slot], field, change['new']))
             for slot, field, value in patches:
                 slot[field] = value
-            if patches:
+            candidate = getattr(self, '_switched_manifest', None)
+            for role, change in switched.items():   # WI-SWITCH: the slot shape depends on the vendor
+                change['slots'] = {}
+                for slot in slots[role]:
+                    change['slots'][slot] = {'old_sha256': digest(flags[slot]),
+                                             'new_sha256': digest(candidate['role_flags'][slot])}
+                    flags[slot] = copy.deepcopy(candidate['role_flags'][slot])
+            if patches or switched:
                 manifest['role_flags_sha256'] = digest(flags)
         timestamp = datetime.now().astimezone().isoformat()
         for change in changes:
-            key = change['key']
-            config[key] = change['new']
-            role, setting = key.split('_', 1)
-            if setting == 'model' and role in ('author', 'reviewer'):
+            config[change['key']] = change['new']
+            change.update(timestamp=timestamp, hold_reason=hold_reason[:300])
+        for role in ('author', 'reviewer'):
+            if any(change['key'] in (role + '_model', role + '_vendor') for change in changes):
                 self.state['started'][role] = False
                 self.state['sessions'][role] = str(uuid.uuid4()) if config[role + '_vendor'] == 'claude' else None
                 if role == 'author':
                     self.state['replacement_author_session'] = True
-            change['timestamp'] = timestamp
+        wait = self.state.get('rate_limit_wait')
+        if switched and wait and wait['dispatch'].get('vendor') != self._role_vendor(wait['dispatch']['role']):
+            self.state.pop('rate_limit_wait')   # its dispatch carries the old vendor
         self.state.setdefault('role_resume_changes', []).extend(changes)
+        if switched:
+            before = {change['key']: change['old'] for change in changes}
+            self.progress('role-switch', change='; '.join(
+                f"{role} {change['old']}/{before.get(role + '_model', config[role + '_model'])} -> "
+                f"{change['new']}/{config[role + '_model']}" for role, change in switched.items()))
         return changes
 
     def resume(self, retry_uncertain=False) -> str:
@@ -11824,7 +11895,7 @@ class Coordinator:
         manifest = self.state.get('role_dispatch_manifest')   # gate R1 (AC2): never re-seal an invalid saved manifest
         sealed = lambda value: hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         manifest_intact = isinstance(manifest, dict) and sealed(manifest) == self.state.get('role_dispatch_manifest_sha256')
-        role_changes = self._apply_resume_role_changes() if self.args.action == 'resume' else []
+        role_changes = self._apply_resume_role_changes(reason) if self.args.action == 'resume' else []
         resume_config_changed = any(self.state['config'].get(key) != getattr(self.args, key)
                                     for key in ('timeout', 'exec_turn_timeout', 'max_invocations', 'max_rate_limit_wait',
                                                 'skip_quality_polish'))
@@ -12198,7 +12269,8 @@ CONFIGURABLE_DESTS = {
 ROLE_DESTS = ('author_vendor', 'author_model', 'reviewer_vendor', 'reviewer_model', 'gate_vendor', 'gate_model')
 ROLE_EFFORT_DESTS = ('author_effort', 'reviewer_effort', 'gate_effort')
 EFFORT_IGNORING_ACTIONS = ('accept', 'reject', 'note', 'withdraw-findings', 'attach-verification')
-ROLE_RESUME_DESTS = ('author_model', 'reviewer_model', 'gate_model', *ROLE_EFFORT_DESTS)
+ROLE_VENDOR_DESTS = ('author_vendor', 'reviewer_vendor', 'gate_vendor')   # WI-SWITCH: resume may change them at a HOLD
+ROLE_RESUME_DESTS = (*ROLE_VENDOR_DESTS, 'author_model', 'reviewer_model', 'gate_model', *ROLE_EFFORT_DESTS)
 MODEL_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}')
 
 
@@ -12500,8 +12572,9 @@ def configure_parser(p: argparse.ArgumentParser, argv: list[str], ignore_profile
         if key in explicit:
             continue
         if writable_profile and key in ('author_vendor', 'reviewer_vendor', 'gate_vendor'):
-            # A workspace profile attempting to switch the saved vendor still gets the fixed-role refusal.
-            p.set_defaults(explicit_role_flags=(*p.get_default('explicit_role_flags'), key))
+            # A workspace profile attempting to switch the saved vendor still gets the fixed-role refusal (also on resume).
+            p.set_defaults(explicit_role_flags=(*p.get_default('explicit_role_flags'), key),
+                           profile_role_flags=(*(p.get_default('profile_role_flags') or ()), key))
         if writable_profile and key in worktree_lifecycle.PROFILE_KEYS:
             p.set_defaults(workspace_lifecycle_keys=sorted({*(p.get_default('workspace_lifecycle_keys') or ()), key}))
         if key in ('lifecycle_mode', 'adversarial_gate') and value == 'off':
