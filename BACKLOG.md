@@ -1,10 +1,9 @@
-**Last updated**: 2026-11-26
+**Last updated**: 2026-11-27
 
 ## P0 — blocker / must-do-now
 
 ## P1 — high priority
 
-- WI-SWITCH (v3.18.0): at a HOLD, switch a role's vendor/model/effort on resume and continue with phase, round, ledger, invocations and evidence kept (token-meter request; owner approved 2026-11-26 "要的"; plan first). (added 2026-11-26)
 
 ## P2 — normal
 
@@ -42,11 +41,10 @@
   - v3.17.1 notes (WI-POSTFIX review and dogfood): a merged duplicate backlog entry keeps its first row's priority (a later P1 duplicate can land under ## P2); the run backlog.md line shows only the first ledger id; tests for an all-fixed merged entry and for the F018 preflight re-run are missing. (2026-11-26)
   - v3.17.2 notes (WI-AGYEXIT review and dogfood): an agy run_command output without a "\nCommand output:" marker is searched whole for the status line (agy always prints the marker for a finished step); the fake agy still emits only the old format, so no end-to-end fake-CLI test uses the 1.5.18 header; test name `test_the_exit_status_is_read_from_the_first_line_only` is stale; a kept ignored change blocks the transient retry only for gemini (codex/claude use failed_turn_did_work); `test_igncache` docstring still says an ignored-dir entry voids the verdict. (2026-11-26)
   - v3.17.3 notes (WI-SUBJDIR review and dogfood): the component mask also hides a file extension, so DOTTED_PATH_RE no longer sees that path as a file name; masking a declared vendor inside a prose slash chain can make the chain classifier refuse an undeclared model name that passed before; test gaps (relative-path-start component, the new attribution lookahead, gemini-named and backslash components); a pre-existing V385-PATH interaction on mixed-tool components in delta.patch (Gemini reviewer note). (2026-11-26)
+  - v3.18.0 notes (WI-SWITCH review and dogfood, all MINOR): the saved --gemini-bin path is lost after a role switches away from gemini, or for a gemini gate set at run start (`_saved_gemini_bin` reads only frozen gemini author/reviewer slots and switch-to-gemini rows; record it also when the old vendor was gemini); the "pass --gemini-bin to change it" NOTE is wrong while a frozen gemini slot fixes the path; a later explicit --gemini-bin on a switched gemini gate is not saved; a workspace profile naming the switched-away vendor keeps the saved vendor at restore but the next dispatch still HOLDs with an operator-program reason that hides the profile cause (docs and message); the drifted-unswitched-slot fallback refusal does not name the differing field; with lifecycle off an edited reviewer-commands block makes later author/gate switches refuse (skip the unswitched-slot comparison when lifecycle is off); the independence refusal also applies to report runs, which never dispatch the author; test gaps (a successful switch to codex, a switch combined with a model change on an unswitched role, a stopped wait of an unswitched role surviving, model-only independence refusal, the export/generic drift branches, an explicit --gemini-bin winning, one vacuous assertion in the rebuild-and-audit test). (2026-11-27)
 ## Done (recent, trimmed quarterly)
 
 
-- ~~WI-DOCSFIX2: DOCS last-slot writer dead end; errored-writer outside writes attributed to the operator.~~ (added 2026-11-25, closed 2026-11-25, see v3.16.7)
-  - One past-cap docs review per unreviewed tree; errored/discarded writer writes rolled back per path from evidence snapshots; v3.16.6 protected-path route documented; first release checked by a dogfood review-only lifecycle run. The two v3.16.5 review notes were closed as accepted (owner 2026-11-25).
 - ~~WI-POSTGATE: post-gate stages stop holding on non-blocking findings; narrow author loop for SECURITY findings.~~ (added 2026-11-25, closed 2026-11-26, see v3.17.0)
   - POLISH-Q report-only after the gate (review-only keeps its fix leg); DOCS spends its budget and moves on; SECURITY-reviewer findings get up to 2 author fix loops (EXEC reviewer, FINISH, unreviewed docs touch-up, SECURITY); "needs your decision" report section; open rows land under ## P1 / ## P2 in BACKLOG at accept (token-meter field note); in-flight v3.16 runs migrate. Dogfood run found and fixed a touch-up TypeError.
 - ~~WI-POSTFIX: accept dropped a still-open duplicate backlog row (F022); SECURITY HOLD resume with scan hits (F018).~~ (added 2026-11-26, closed 2026-11-26, see v3.17.1)
@@ -55,3 +53,5 @@
   - The agy 1.5.18 exit-status header is parsed, so a gemini reviewer's configured test counts; ignored paths are free for gemini reviewer-type roles as for codex and claude (token-meter run 9cfa1025). Verified with a real run using a gemini-4-neon reviewer.
 - ~~WI-SUBJDIR: a declared history-scan-subject vendor in any path component blocked PLAN approval.~~ (added 2026-11-26, closed 2026-11-26, see v3.17.3)
   - token-meter run 6b89f0b3 (codex-homes/, tests/fixtures/codex/). Reviewed by gemini-4-neon high (first Gemini review of our own code), CI success, real run ACCEPTED, Fable gate PASS, dogfood DONE.
+- ~~WI-SWITCH: at a HOLD or stopped quota wait, resume moves a role to another vendor and keeps the run.~~ (added 2026-11-26, closed 2026-11-27, see v3.18.0)
+  - token-meter request; owner Q1-Q3 "按建议". Opus exec, Opus review APPROVE, CI success, Fable gate PASS, real runs realrun-switch run2 (to gemini) and run3 (to claude) ACCEPTED, dogfood DONE (fixed 3 consistency issues after a switch).
