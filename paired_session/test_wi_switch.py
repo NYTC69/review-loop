@@ -1,4 +1,5 @@
 """WI-SWITCH (v3.18.0): at a HOLD (or a stopped quota wait) resume moves a role to another vendor and the run goes on."""
+import argparse
 import contextlib
 import copy
 import io
@@ -18,7 +19,11 @@ EXEC_AUTHOR = 'implementer. Phase: EXEC.'
 GATE = 'adversarial reviewer with a skepticism-by-default stance'
 DOCS_WRITER = 'Role: docs writer, fresh. Phase: DOCS.'
 CODEX_REVIEWER = ('--reviewer-vendor', 'codex', '--reviewer-model', 'gpt-6.1-sol')
-TO_CLAUDE = ('--reviewer-vendor', 'claude', '--reviewer-model', 'claude-opus-5-5')
+CLAUDE_MODEL = rc.resolve_role_model_defaults(argparse.Namespace(   # the claude default (the model the fake CLI reports)
+    author_vendor='claude', reviewer_vendor='claude', gate_vendor='claude', author_model=None, reviewer_model=None,
+    gate_model=None)).reviewer_model
+OTHER_CLAUDE = 'claude-sonnet-5-5'
+TO_CLAUDE = ('--reviewer-vendor', 'claude', '--reviewer-model', CLAUDE_MODEL)
 TO_GEMINI = ('--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-flash-medium')
 
 
@@ -53,6 +58,15 @@ class VendorSwitchTests(unittest.TestCase):
             code = rc.main(self.argv(action, *extra))
         return code, out.getvalue()
 
+    def intent(self, action, *extra):
+        """An --intent-only command: stdout must be the intent JSON alone; the NOTEs go to stderr."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = rc.main(self.argv(action, *extra, '--intent-only'))
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        self.assertIn('digest', json.loads(out.getvalue()))
+        return err.getvalue()
+
     def limited(self, marker, once=False):
         env = {**self.docs, 'FAKE_RATE_LIMIT': '1', 'FAKE_RATE_LIMIT_MATCH': marker}
         if once:
@@ -71,6 +85,23 @@ class VendorSwitchTests(unittest.TestCase):
         co = rc.Coordinator(self.h.args(*flags))
         co.hold('test hold')
         return co
+
+    def base_tree_run(self, name):
+        """Another run in this test from the base tree: the workspace is reset and the run dir is new."""
+        for command in (['git', 'reset', '-q', '--hard', 'HEAD'], ['git', 'clean', '-q', '-fd']):
+            rc.subprocess.run(command, cwd=self.h.workspace, check=True)
+        self.h.run_dir = self.h.root / name
+
+    def fake_agy(self):
+        """The path of the fake Gemini CLI (agy) the real-coordinator tests use."""
+        return str(twl.trc.RealCoordinatorTests.fake_gemini_cli(self.h))
+
+    def write_profile(self, keys):
+        """Write the workspace profile (.review-loop/paired-session.json) and return its path."""
+        profile = self.h.workspace / '.review-loop' / 'paired-session.json'
+        profile.parent.mkdir(exist_ok=True)
+        profile.write_text(json.dumps(keys))
+        return profile
 
     def receipt(self, turn):
         name = f"{turn['sequence']:03d}-{turn['phase'].lower()}-{turn['role']}.receipt.json"
@@ -108,7 +139,7 @@ class VendorSwitchTests(unittest.TestCase):
         self.assertIn('This is a replacement reviewer session with no thread history', first_prompt)
         self.assertTrue(all('Use your persistent thread history' in prompt for prompt in later))
         self.assertIn(DONE, output)
-        self.assertIn('NOTE: resumed with role changes: reviewer_vendor codex -> claude, reviewer_model gpt-6.1-sol -> claude-opus-5-5',
+        self.assertIn('NOTE: resumed with role changes: reviewer_vendor codex -> claude, reviewer_model gpt-6.1-sol -> ' + CLAUDE_MODEL,
                       output)
         [start] = resumed
         for key in ('phase', 'exec_rounds', 'plan_rounds', 'exec_reviews', 'invocations_used', 'turns'):
@@ -125,7 +156,7 @@ class VendorSwitchTests(unittest.TestCase):
         new = self.after(final, held['sequence'])
         reviews = [row for row in new if row['role'] in ('reviewer', 'shadow')]
         self.assertTrue({'reviewer', 'shadow'} <= {row['role'] for row in reviews})
-        self.assertTrue(all(row['vendor'] == 'claude' and row['model'] == 'claude-opus-5-5' for row in reviews), reviews)
+        self.assertTrue(all(row['vendor'] == 'claude' and row['model'] == CLAUDE_MODEL for row in reviews), reviews)
         first = next(row for row in new if row['role'] == 'reviewer' and row['phase'] == 'EXEC')
         command = self.receipt(first)['command']
         self.assertEqual(command[command.index('--session-id') + 1], session)
@@ -140,7 +171,7 @@ class VendorSwitchTests(unittest.TestCase):
         self.assertEqual(code, 2, output)
         self.assertIn('REFUSED', output)
         self.assertEqual(self.state_bytes(), saved)
-        code, output = self.main('resume', *TO_GEMINI, '--gemini-bin', str(twl.trc.RealCoordinatorTests.fake_gemini_cli(self.h)), env=self.docs)
+        code, output = self.main('resume', *TO_GEMINI, '--gemini-bin', self.fake_agy(), env=self.docs)
         self.assertEqual(code, 0, output)
         self.assertIn(DONE, output)
         self.assertIn('NOTE: operator program or PATH changed since run start (changed: gemini_bin)', output)
@@ -152,9 +183,30 @@ class VendorSwitchTests(unittest.TestCase):
         self.assertIn('shadow', {row['role'] for row in reviews})
         self.assertTrue(all(row['vendor'] == 'gemini' for row in reviews), reviews)
 
+    def test_a_plain_resume_after_a_switch_to_gemini_keeps_the_agy_path(self):
+        agy = self.fake_agy()
+        cases = (('reviewer', CODEX_REVIEWER, TO_GEMINI),
+                 ('gate', (), ('--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium')))
+        for role, start, switch in cases:
+            with self.subTest(role=role):
+                self.base_tree_run('agy-' + role)
+                self.held_run(*start)
+                code, output = self.main('resume', *switch, '--gemini-bin', agy, drive=lambda co, _: co.hold('test hold') or 'HOLD')
+                self.assertEqual(code, 2, output)
+                [row] = [row for row in self.state()['role_resume_changes'] if row['key'] == role + '_vendor']
+                self.assertEqual(row['gemini_bin'], agy)
+                code, output = self.main('resume', env=self.docs)   # no --gemini-bin: the saved path, not the default agy
+                self.assertEqual(code, 0, output)
+                self.assertIn(f'NOTE: using the saved --gemini-bin {agy} (pass --gemini-bin to change it)', output)
+                self.assertIn(DONE, output)
+                self.assertIn(f'NOTE: using the saved --gemini-bin {agy}', self.intent('accept', '--reason', 'owner accepts'))
+                rows = [row for row in self.state()['turns'] if row['role'] in ((role,) if role == 'gate' else (role, 'shadow'))
+                        and not row.get('error')]
+                self.assertTrue(rows and all(row['vendor'] == 'gemini' for row in rows), rows)
+
     # ---- AC3 ----
     def test_author_vendor_switch_continues_exec(self):
-        agy = ('--gemini-bin', str(twl.trc.RealCoordinatorTests.fake_gemini_cli(self.h)))   # a reviewer that is neither old nor new author
+        agy = ('--gemini-bin', self.fake_agy())   # a reviewer that is neither old nor new author
         held = self.quota_hold(EXEC_AUTHOR, *TO_GEMINI, *agy)
         self.assertEqual((held['rate_limit']['role'], held['phase']), ('author', 'EXEC'))
         (self.h.workspace / 'partial.txt').write_text('kept\n')   # what the limited author turn left behind
@@ -167,7 +219,7 @@ class VendorSwitchTests(unittest.TestCase):
             return prompt
 
         with patch.object(rc.Coordinator, '_author_prompt', spy):
-            code, output = self.main('resume', '--author-vendor', 'claude', '--author-model', 'claude-opus-5-5', *agy, env=self.docs)
+            code, output = self.main('resume', '--author-vendor', 'claude', '--author-model', CLAUDE_MODEL, *agy, env=self.docs)
         self.assertEqual(code, 0, output)
         self.assertIn(DONE, output)
         prompt, partial = prompts[0]
@@ -188,20 +240,19 @@ class VendorSwitchTests(unittest.TestCase):
     def test_gate_vendor_switch(self):
         held = self.quota_hold(GATE)
         self.assertEqual(held['rate_limit']['role'], 'gate')
-        code, output = self.main('resume', '--gate-vendor', 'claude', '--gate-model', 'claude-opus-5-5', env=self.docs)
+        code, output = self.main('resume', '--gate-vendor', 'claude', '--gate-model', CLAUDE_MODEL, env=self.docs)
         self.assertEqual(code, 0, output)
         self.assertIn(DONE, output)
         gates = [row for row in self.after(self.state(), held['sequence']) if row['role'] == 'gate']
-        self.assertEqual([(row['vendor'], row['model']) for row in gates], [('claude', 'claude-opus-5-5')])
+        self.assertEqual([(row['vendor'], row['model']) for row in gates], [('claude', CLAUDE_MODEL)])
         self.assertEqual(self.state()['config']['gate_vendor_source'], held['config']['gate_vendor_source'])
 
-        for command in (['git', 'reset', '-q', '--hard', 'HEAD'], ['git', 'clean', '-q', '-fd']):   # a second run from the base tree
-            rc.subprocess.run(command, cwd=self.h.workspace, check=True)
-        self.h.run_dir = self.h.root / 'gate-ran'
+        # a second run held after the gate ran (on the DOCS writer): the gate's turns are not re-run
+        self.base_tree_run('gate-ran')
         held = self.quota_hold(DOCS_WRITER)
         self.assertTrue(held['gate_ran'])
         gates = [row for row in held['turns'] if row['role'] == 'gate' and not row.get('error')]
-        code, output = self.main('resume', '--gate-vendor', 'claude', '--gate-model', 'claude-opus-5-5', env=self.docs)
+        code, output = self.main('resume', '--gate-vendor', 'claude', '--gate-model', CLAUDE_MODEL, env=self.docs)
         self.assertEqual(code, 0, output)
         self.assertIn(DONE, output)
         self.assertEqual([row for row in self.state()['turns'] if row['role'] == 'gate' and not row.get('error')], gates)
@@ -220,7 +271,7 @@ class VendorSwitchTests(unittest.TestCase):
         self.assertEqual(manifest['config_sha256'], digest(state['config']))
         self.assertEqual(state['role_dispatch_manifest_sha256'], digest(manifest))
         flags = manifest['role_flags']
-        self.assertEqual((flags['reviewer']['reviewer_vendor'], flags['reviewer']['reviewer_model']), ('claude', 'claude-opus-5-5'))
+        self.assertEqual((flags['reviewer']['reviewer_vendor'], flags['reviewer']['reviewer_model']), ('claude', CLAUDE_MODEL))
         self.assertIn('claude_bash_sandbox', flags['reviewer'])
         self.assertNotIn('codex_reviewer_sandbox', flags['reviewer'])
         self.assertEqual(flags['shadow'], flags['reviewer'])
@@ -229,7 +280,7 @@ class VendorSwitchTests(unittest.TestCase):
             self.assertEqual(manifest[key], old[key], key)
         rows = state['role_resume_changes']
         self.assertEqual([(row['key'], row['old'], row['new']) for row in rows],
-                         [('reviewer_vendor', 'codex', 'claude'), ('reviewer_model', 'gpt-6.1-sol', 'claude-opus-5-5')])
+                         [('reviewer_vendor', 'codex', 'claude'), ('reviewer_model', 'gpt-6.1-sol', CLAUDE_MODEL)])
         for row in rows:
             self.assertEqual(row['hold_reason'], 'test hold')
             self.assertTrue(row['timestamp'])
@@ -240,6 +291,55 @@ class VendorSwitchTests(unittest.TestCase):
         resumed._verify_frozen_role_dispatch()   # the next lifecycle dispatch accepts the rebuilt slot
         self.assertEqual(resumed.args.reviewer_vendor, 'claude')
         self.assertEqual(co.state['config']['reviewer_vendor'], 'codex')
+
+    def test_vendor_switch_refuses_when_an_unswitched_claude_slot_drifts(self):
+        # the kept claude slot was built under the run-start env-var names; a switch from a shell with another secret-looking
+        # name is refused before any state write, with the env hint, and succeeds from the run's environment
+        cases = (('reviewer', ('--author-vendor', 'claude', '--author-model', CLAUDE_MODEL, *CODEX_REVIEWER),
+                  ('--reviewer-vendor', 'claude', '--reviewer-model', OTHER_CLAUDE)),
+                 ('author', (), ('--author-vendor', 'claude', '--author-model', OTHER_CLAUDE)))
+        for role, start, switch in cases:
+            with self.subTest(role=role):
+                self.h.run_dir = self.h.root / ('drift-' + role)
+                self.held_run(*start)
+                saved = self.state_bytes()
+                code, output = self.main('resume', *switch, env={'SWITCH_DRIFT_TOKEN': 'x'},
+                                         drive=lambda co, _: self.fail('a refused switch dispatched'))
+                self.assertEqual(code, 2, output)
+                self.assertIn('credential env-var names added: SWITCH_DRIFT_TOKEN; removed: none; restore the environment '
+                              '(unset SWITCH_DRIFT_TOKEN) and run the switching resume again', output)
+                self.assertEqual(self.state_bytes(), saved)
+                code, output = self.main('resume', *switch, drive=lambda co, _: 'HOLD')
+                self.assertEqual(code, 2, output)
+                self.assertEqual(self.state()['config'][role + '_model'], OTHER_CLAUDE)
+                rc.Coordinator(self.h.args(action='resume'))._verify_frozen_role_dispatch()
+
+    def test_profile_naming_the_switched_away_vendor_keeps_the_saved_one(self):
+        self.held_run(*CODEX_REVIEWER)
+        code, output = self.main('resume', *TO_CLAUDE, drive=lambda co, _: co.hold('test hold') or 'HOLD')
+        self.assertEqual(code, 2, output)
+        profile = self.write_profile({'reviewer_vendor': 'codex'})
+        note = 'NOTE: the workspace profile names reviewer_vendor codex, which this run switched away from on resume; keeping the saved claude'
+        code, output = self.main('note', '--text', 'x')
+        self.assertEqual(code, 0, output)
+        self.assertIn(note, output)
+        code, output = self.main('resume', drive=lambda co, _: 'HOLD')
+        self.assertEqual(code, 2, output)
+        self.assertIn(note, output)
+        self.assertNotIn(FIXED, output)
+        state = self.state()
+        self.assertEqual(state['config']['reviewer_vendor'], 'claude')
+        self.assertEqual(len(state['role_resume_changes']), 2)
+        profile.write_text(json.dumps({'reviewer_vendor': 'gemini'}))   # a vendor the run never had is still refused
+        code, output = self.main('resume', drive=lambda co, _: self.fail('dispatched'))
+        self.assertEqual(code, 2, output)
+        self.assertIn(FIXED + ': reviewer_vendor differs from the saved run', output)
+        profile.unlink()   # a workspace profile with a vendor key holds at dispatch; the run reaches DONE without it
+        code, output = self.main('resume', env=self.docs)
+        self.assertEqual(code, 0, output)
+        self.assertIn(DONE, output)
+        profile.write_text(json.dumps({'reviewer_vendor': 'codex'}))
+        self.assertIn(note, self.intent('accept', '--reason', 'owner accepts'))   # stdout stays the intent JSON
 
     # ---- AC6 ----
     def test_vendor_switch_refusals(self):
@@ -260,8 +360,13 @@ class VendorSwitchTests(unittest.TestCase):
         co.hold('test hold')
         cases = (('needs an explicit --reviewer-model', ('--reviewer-vendor', 'codex')),
                  ('gate_model gpt-6-sol does not belong to the claude vendor', ('--gate-vendor', 'claude', '--gate-model', 'gpt-6-sol')),
-                 ('the author and the reviewer would both run claude claude-opus-5-5',
-                  ('--author-vendor', 'claude', '--author-model', 'claude-opus-5-5')))
+                 # the saved model of a switched role is checked against the new vendor too
+                 ('author_model gpt-6.1-sol does not belong to the claude vendor',
+                  ('--author-vendor', 'claude', '--author-model', 'gpt-6.1-sol')),
+                 (f'reviewer_model {CLAUDE_MODEL} does not belong to the codex vendor',
+                  ('--reviewer-vendor', 'codex', '--reviewer-model', CLAUDE_MODEL)),
+                 (f'the author and the reviewer would both run claude {CLAUDE_MODEL}',
+                  ('--author-vendor', 'claude', '--author-model', CLAUDE_MODEL)))
         for message, flags in cases:
             with self.subTest(message=message):
                 refused(message, *flags)
@@ -269,21 +374,19 @@ class VendorSwitchTests(unittest.TestCase):
             with self.subTest(action=action):
                 refused(FIXED, '--reviewer-vendor', 'codex', '--reviewer-model', 'gpt-6-sol',
                         *(('--text', 'x') if action == 'note' else ()), action=action)
-        profile = self.h.workspace / '.review-loop' / 'paired-session.json'
-        profile.parent.mkdir(exist_ok=True)
-        profile.write_text(json.dumps({'reviewer_vendor': 'codex'}))
+        profile = self.write_profile({'reviewer_vendor': 'codex'})   # a profile vendor key is refused like the flag
         refused(FIXED + ': reviewer_vendor differs from the saved run', '--reviewer-model', 'gpt-6-sol')
         profile.unlink()
 
         self.h.run_dir = self.h.root / 'policy-run'
         policy = self.h.root / 'operator.json'
         policy.write_text(json.dumps({'allowed_models': {'codex': ['gpt-6.1-sol'],
-                                                         'claude': ['claude-opus-5-5', 'claude-sonnet-5-5']}}))
-        argv = self.argv('run', '--config', str(policy), '--gate-vendor', 'claude', '--gate-model', 'claude-sonnet-5-5')
+                                                         'claude': [CLAUDE_MODEL, OTHER_CLAUDE]}}))
+        argv = self.argv('run', '--config', str(policy), '--gate-vendor', 'claude', '--gate-model', OTHER_CLAUDE)
         rc.Coordinator(rc.configure_parser(rc.parser(), argv).parse_args(argv)).hold('test hold')
         refused('not in allowed_models', '--reviewer-vendor', 'codex', '--reviewer-model', 'gpt-6-sol')
-        refused('the author and the gate would both run claude claude-sonnet-5-5',
-                '--author-vendor', 'claude', '--author-model', 'claude-sonnet-5-5')
+        refused(f'the author and the gate would both run claude {OTHER_CLAUDE}',
+                '--author-vendor', 'claude', '--author-model', OTHER_CLAUDE)
 
         self.h.run_dir = self.h.root / 'polish-run'
         argv = self.h.command('--lifecycle-mode', 'off')[2:]

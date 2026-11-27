@@ -799,7 +799,7 @@ dispatch rebuilds only the switched role's slots (author; reviewer and shadow; t
 slot digests (`slots`). A switch that would newly give the reviewer or the gate the author's vendor and model is
 refused; a run that started that way keeps it. An author switch leaves the gate's vendor as saved; pass `--gate-vendor`
 to move it too. A gemini role needs a bound agy (`--gemini-bin PATH`; a missing one is refused before any state
-change) and is macOS-only: native Windows refuses it. A saved quota wait whose dispatch still names the old vendor is
+change; later commands without the flag use the saved path, with a NOTE) and is macOS-only: native Windows refuses it. A saved quota wait whose dispatch still names the old vendor is
 dropped. Without `--retry-uncertain`, an uncertain turn is settled first and a NOTE lists the unapplied flags.
 
 After moving a review-loop install, the next verified lifecycle dispatch can update the saved

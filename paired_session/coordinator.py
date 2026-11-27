@@ -3029,6 +3029,7 @@ class Coordinator:
             getattr(self.args, 'max_rate_limit_wait', DEFAULT_MAX_RATE_LIMIT_WAIT))
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding='utf-8'))
+            self._restore_gemini_bin()
             # test_a_filter_driver_name_git_cannot_pass_safely_fails_closed: validate git config on load.
             self._head_commit()
             worktree_lifecycle.refuse_saved(self.state, args)
@@ -3197,6 +3198,18 @@ class Coordinator:
         saved = self._saved_config()
         overrides = ROLE_RESUME_DESTS if allow_overrides else ()
         profiled = set(getattr(self.args, 'profile_role_flags', ()))   # WI-SWITCH: a vendor from a workspace profile
+        switched_from = {(row['key'], row['old']) for row in self.state.get('role_resume_changes', [])
+                         if row.get('key') in ROLE_VENDOR_DESTS}
+        for key in sorted(profiled):   # the profile still names a vendor a resume switched away from: the saved one stays
+            profile_value = getattr(self.args, key)
+            if profile_value != saved[key] and (key, profile_value) in switched_from:
+                self._operator_note(f'NOTE: the workspace profile names {key} {profile_value}, which this run switched '
+                                    f'away from on resume; keeping the saved {saved[key]}')
+                setattr(self.args, key, saved[key])
+                profiled.discard(key)
+                self.args.profile_role_flags = tuple(item for item in self.args.profile_role_flags if item != key)
+                self.args.explicit_role_flags = tuple(item for item in self.args.explicit_role_flags if item != key)
+                explicit = tuple(item for item in explicit if item != key)
         for key in sorted(set(explicit).intersection(ROLE_DESTS) - (set(overrides) - profiled)):
             if getattr(self.args, key) != saved[key]:
                 raise ValueError(f'role models are fixed for this run: {key} differs from the saved run')
@@ -3218,6 +3231,27 @@ class Coordinator:
             if key not in keep or key not in explicit:
                 setattr(self.args, key, saved[key])
         return saved
+
+    def _saved_gemini_bin(self) -> Optional[str]:
+        """WI-SWITCH: the agy path the run dispatches gemini with: a frozen gemini slot's binary, else the latest gemini switch."""
+        manifest = self.state.get('role_dispatch_manifest')
+        flags = manifest.get('role_flags') if isinstance(manifest, dict) else None
+        if isinstance(flags, dict):
+            for slot, vendor_field, bin_field in (('author', 'vendor', 'binary'),
+                                                  ('reviewer', 'reviewer_vendor', 'reviewer_binary')):
+                value = flags.get(slot) if isinstance(flags.get(slot), dict) else {}
+                if value.get(vendor_field) == 'gemini' and isinstance(value.get(bin_field), str):
+                    return value[bin_field]
+        rows = [row for row in self.state.get('role_resume_changes', []) if isinstance(row.get('gemini_bin'), str)]
+        return rows[-1]['gemini_bin'] if rows else None
+
+    def _restore_gemini_bin(self) -> None:
+        """A command without --gemini-bin dispatches gemini with the saved path, so a later resume matches the frozen slot."""
+        if getattr(self.args, 'gemini_bin_explicit', False) or not (saved := self._saved_gemini_bin()):
+            return
+        if saved != getattr(self.args, 'gemini_bin', None):
+            self._operator_note(f'NOTE: using the saved --gemini-bin {saved} (pass --gemini-bin to change it)')
+        self.args.gemini_bin = saved
 
     def _check_vendor_switch(self, saved: dict, explicit) -> None:
         """WI-SWITCH: a resume moves a role to another vendor only at a HOLD or a stopped quota wait, and only with an explicit
@@ -3259,6 +3293,52 @@ class Coordinator:
             self._switched_manifest = self._role_dispatch_manifest()
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError(f'the vendor switch cannot build its role dispatch: {exc}') from exc
+        self._check_unswitched_slots(saved)
+
+    def _check_unswitched_slots(self, saved: dict) -> None:
+        """WI-SWITCH: a switch keeps the saved slots of the roles it does not switch, so they must still build the same in this
+        environment; otherwise the next dispatch would find a manifest no environment satisfies. Refused before any state write."""
+        manifest = self.state.get('role_dispatch_manifest')
+        if not isinstance(manifest, dict) or not isinstance(manifest.get('role_flags'), dict):
+            return   # _apply_resume_role_changes refuses a missing or damaged manifest
+        flags = manifest['role_flags']
+        slots = {'author': ('author',), 'reviewer': ('reviewer', 'shadow')}
+        expected = {}
+        for role, names in slots.items():
+            if getattr(self.args, role + '_vendor') != saved[role + '_vendor']:
+                continue   # a switched role's slots are rebuilt whole
+            for slot in names:
+                if slot not in flags:
+                    continue
+                value = copy.deepcopy(flags[slot])
+                for key in ROLE_RESUME_DESTS:   # the model and effort changes _apply_resume_role_changes patches in
+                    if key.startswith(role + '_') and getattr(self.args, key) != saved[key]:
+                        value[key.split('_', 1)[1] if role == 'author' else key] = getattr(self.args, key)
+                expected[slot] = value
+        differs = lambda built: [slot for slot, value in expected.items() if built['role_flags'].get(slot) != value]
+        drift = differs(self._switched_manifest)
+        if not drift:
+            return
+        names = set()
+        for slot in expected:
+            settings = flags[slot].get('sandbox') if flags[slot].get('vendor') == 'claude' else flags[slot].get('claude_bash_sandbox')
+            if isinstance(settings, dict):
+                names.update(entry['name'] for entry in settings['sandbox']['credentials']['envVars'])
+        if names and not differs(self._under_env_names(names, self._role_dispatch_manifest)):
+            now = set(self._env_names_now())
+            added, removed = sorted(now - names), sorted(names - now)
+            if added or removed:
+                steps = []
+                if added:
+                    steps.append('unset ' + ' '.join(added))
+                if removed:
+                    steps.append('export ' + ' '.join(name + '=<value>' for name in removed))
+                raise ValueError('the vendor switch would keep the saved ' + ', '.join(drift) + ' dispatch, which this environment '
+                                 'changes; credential env-var names added: ' + (', '.join(added) or 'none') + '; removed: '
+                                 + (', '.join(removed) or 'none') + '; restore the environment (' + '; '.join(steps)
+                                 + ') and run the switching resume again')
+        raise ValueError('the vendor switch would keep the saved ' + ', '.join(drift) + ' dispatch, which differs in this '
+                         'environment; resume from the environment the run started in')
 
     @staticmethod
     def _readonly_changed(workspace, recorded, before, after) -> bool:   # content (the coordinator's snapshot), HEAD, branch or index
@@ -3784,7 +3864,8 @@ class Coordinator:
             for role in ('author', 'reviewer', 'gate'):
                 key = role + '_model'
                 vendor, model = getattr(self.args, role + '_vendor'), getattr(self.args, key)   # WI-SWITCH: the new vendor
-                if (model != saved[key] and vendor != 'gemini' and model not in allowed.get(vendor, []) and
+                changed = model != saved[key] or vendor != saved[role + '_vendor']   # a switch checks even the saved model id
+                if (changed and vendor != 'gemini' and model not in allowed.get(vendor, []) and
                         any(model in allowed.get(other, []) or model.startswith(prefix)
                             for other, prefix in VENDOR_MODEL_PREFIXES.items() if other != vendor)):
                     raise ValueError(f"{key} {model} does not belong to the {'saved ' if vendor == saved[role + '_vendor'] else ''}"
@@ -11783,6 +11864,8 @@ class Coordinator:
         timestamp = datetime.now().astimezone().isoformat()
         for change in changes:
             config[change['key']] = change['new']
+            if change['key'] in ROLE_VENDOR_DESTS and change['new'] == 'gemini':   # kept for later commands without --gemini-bin
+                change['gemini_bin'] = self.args.gemini_bin
             change.update(timestamp=timestamp, hold_reason=hold_reason[:300])
         for role in ('author', 'reviewer'):
             if any(change['key'] in (role + '_model', role + '_vendor') for change in changes):
@@ -12203,7 +12286,9 @@ def parser() -> argparse.ArgumentParser:
                    help='additional exact Bash command allowed for read-only reviewers (repeatable)')
     p.add_argument('--codex-bin', default='codex')
     p.add_argument('--claude-bin', default='claude')
-    p.add_argument('--gemini-bin', default='agy', help='the Antigravity CLI that runs gemini roles (ADR-21)')
+    p.set_defaults(gemini_bin_explicit=False)
+    p.add_argument('--gemini-bin', default='agy', action=StoreExplicit,
+                   help='the Antigravity CLI that runs gemini roles (ADR-21); a resume without it uses the run\'s saved path')
     p.add_argument('--exercise-revisions', action='store_true')
     p.add_argument('--stop-after-plan', action='store_true',
                    help='HOLD once at PLAN completion, after approval or a fast PLAN skip. Resume enters EXEC.')

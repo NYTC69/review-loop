@@ -333,7 +333,7 @@ The coordinator prints one progress line per event (the role, its verdict and th
   corresponding `--*-effort` flag to `resume`. Omitted flags keep the saved values even when a profile supplies
   defaults. At a HOLD (or a quota wait interrupted by `stop`), `--author-vendor`, `--reviewer-vendor` or
   `--gate-vendor` with an explicit model for the new vendor moves that role to another provider (`--gemini-bin PATH`
-  for gemini, macOS only); the run keeps its phase, rounds, ledger and workspace. The model allowlist stays fixed.
+  for gemini, macOS only; later resumes keep that path); the run keeps its phase, rounds, ledger and workspace. The model allowlist stays fixed.
   A persistent author or reviewer model or vendor change starts a new session for that role, while an effort change
   keeps its session. A saved gate verdict still applies.
   An install move can continue with identical agent and gate prompt contents and the original custom prompt path.
