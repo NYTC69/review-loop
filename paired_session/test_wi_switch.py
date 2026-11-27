@@ -25,6 +25,7 @@ CLAUDE_MODEL = rc.resolve_role_model_defaults(argparse.Namespace(   # the claude
 OTHER_CLAUDE = 'claude-sonnet-5-5'
 TO_CLAUDE = ('--reviewer-vendor', 'claude', '--reviewer-model', CLAUDE_MODEL)
 TO_GEMINI = ('--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-flash-medium')
+GEMINI_GATE = ('--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium')
 
 
 class VendorSwitchTests(unittest.TestCase):
@@ -95,6 +96,13 @@ class VendorSwitchTests(unittest.TestCase):
     def fake_agy(self):
         """The path of the fake Gemini CLI (agy) the real-coordinator tests use."""
         return str(twl.trc.RealCoordinatorTests.fake_gemini_cli(self.h))
+
+    def agy_copy(self, name):
+        """An executable copy of the fake agy at another path (a second --gemini-bin); returns the Path."""
+        path = self.h.root / name
+        path.write_text(rc.Path(self.fake_agy()).read_text(encoding='utf-8'))
+        path.chmod(0o755)
+        return path
 
     def write_profile(self, keys):
         """Write the workspace profile (.review-loop/paired-session.json) and return its path."""
@@ -186,7 +194,7 @@ class VendorSwitchTests(unittest.TestCase):
     def test_a_plain_resume_after_a_switch_to_gemini_keeps_the_agy_path(self):
         agy = self.fake_agy()
         cases = (('reviewer', CODEX_REVIEWER, TO_GEMINI),
-                 ('gate', (), ('--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium')))
+                 ('gate', (), GEMINI_GATE))
         for role, start, switch in cases:
             with self.subTest(role=role):
                 self.base_tree_run('agy-' + role)
@@ -233,7 +241,7 @@ class VendorSwitchTests(unittest.TestCase):
     def test_a_gemini_gate_from_run_start_keeps_the_agy_path(self):
         self.drop_agy_from_path()
         agy = self.fake_agy()
-        gate = ('--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium', '--gemini-bin', agy)
+        gate = (*GEMINI_GATE, '--gemini-bin', agy)
 
         def slot_switched_away():   # the only frozen gemini slot moves to claude; the gate stays gemini
             self.quota_hold(EXEC_AUTHOR, *gate, '--reviewer-vendor', 'gemini', '--reviewer-model', 'gemini-3.8-pro')
@@ -256,17 +264,41 @@ class VendorSwitchTests(unittest.TestCase):
 
     def test_an_explicit_gemini_bin_on_resume_wins_and_is_kept(self):
         self.drop_agy_from_path()
-        other = self.h.root / 'other-agy'
-        other.write_text(open(self.fake_agy(), encoding='utf-8').read())
-        other.chmod(0o755)
-        self.quota_hold(EXEC_AUTHOR, '--gate-vendor', 'gemini', '--gate-model', 'gemini-3.8-flash-medium',
-                        '--gemini-bin', self.fake_agy())
+        other = self.agy_copy('other-agy')
+        self.quota_hold(EXEC_AUTHOR, *GEMINI_GATE, '--gemini-bin', self.fake_agy())
         code, output = self.main('resume', '--gemini-bin', str(other), env=self.docs)
         self.assertEqual(code, 0, output)
         self.assertIn(DONE, output)
         self.assertNotIn('using the saved --gemini-bin', output)
         self.assertIn(f'NOTE: using the saved --gemini-bin {other} (pass --gemini-bin to change it)',
                       self.intent('accept', '--reason', 'owner accepts'))
+
+    def test_a_lifecycle_off_run_keeps_a_later_gemini_bin_over_the_frozen_slot(self):
+        """Lifecycle off does not verify the frozen slots, so a later accepted --gemini-bin wins over the slot's path."""
+        self.drop_agy_from_path()
+        old, other = self.agy_copy('old-agy'), self.agy_copy('other-agy')
+        off = ('--lifecycle-mode', 'off')
+        held = self.quota_hold(EXEC_AUTHOR, *off, *TO_GEMINI, '--gemini-bin', str(old))
+        self.assertEqual(held['role_dispatch_manifest']['role_flags']['reviewer']['reviewer_binary'], str(old))
+        # the new path is accepted and dispatched with (the author's retry binds it), then the author is held on quota again
+        code, output = self.main('resume', *off, '--gemini-bin', str(other), '--max-rate-limit-wait', '0',
+                                 env=self.limited(EXEC_AUTHOR))
+        self.assertEqual(code, 2, output)
+        self.assertNotIn('using the saved --gemini-bin', output)
+        state = self.state()
+        self.assertEqual((state['hold_kind'], state['gemini_bin']), ('rate_limited', str(other)), state.get('hold_reason'))
+        self.assertEqual(state['role_dispatch_manifest']['role_flags']['reviewer']['reviewer_binary'], str(old))
+        old.unlink()   # the replaced agy is gone: a command that went back to it would stop on the program binding
+        # a gate switch keeps the unswitched gemini reviewer slot, frozen with the old path; lifecycle off does not hold to it
+        code, output = self.main('resume', *off, *GEMINI_GATE, env=self.docs)
+        self.assertEqual(code, 0, output)
+        self.assertIn(DONE, output)
+        self.assertIn(f'NOTE: using the saved --gemini-bin {other} (pass --gemini-bin to change it)', output)
+        self.assertNotIn('fixed while', output)
+        self.assertNotIn('changed: gemini_bin', output)
+        self.assertEqual(self.state()['gemini_bin'], str(other))
+        note = self.intent('accept', *off, '--reason', 'owner accepts')
+        self.assertIn(f'NOTE: using the saved --gemini-bin {other} (pass --gemini-bin to change it)', note)
 
     # ---- AC3 ----
     def test_author_vendor_switch_continues_exec(self):

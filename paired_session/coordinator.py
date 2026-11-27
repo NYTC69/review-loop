@@ -3234,9 +3234,8 @@ class Coordinator:
                 setattr(self.args, key, saved[key])
         return saved
 
-    def _saved_gemini_bin(self) -> tuple:
-        """WI-SWITCH, WI-AGYBIN: the agy path the run dispatches gemini with and the frozen slot that fixes it, if any: a frozen
-        gemini slot's binary, else the path last bound (state gemini_bin), else the latest gemini switch (a v3.18.0 state)."""
+    def _frozen_gemini_slot(self) -> tuple:
+        """The first frozen gemini author or reviewer slot and its agy binary, or (None, None)."""
         manifest = self.state.get('role_dispatch_manifest')
         flags = manifest.get('role_flags') if isinstance(manifest, dict) else None
         if isinstance(flags, dict):
@@ -3244,9 +3243,21 @@ class Coordinator:
                                                   ('reviewer', 'reviewer_vendor', 'reviewer_binary')):
                 value = flags.get(slot) if isinstance(flags.get(slot), dict) else {}
                 if value.get(vendor_field) == 'gemini' and isinstance(value.get(bin_field), str):
-                    return value[bin_field], slot
+                    return slot, value[bin_field]
+        return None, None
+
+    def _saved_gemini_bin(self) -> tuple:
+        """WI-SWITCH, WI-AGYBIN: the agy path the run dispatches gemini with and the frozen slot that fixes it, if any. A
+        lifecycle-on run verifies its frozen slots, so a frozen gemini slot's binary comes first; a lifecycle-off run does not, so
+        the path last bound (state gemini_bin) comes first there and the slot fixes nothing. Then the slot (an older state), then
+        the latest gemini switch (a v3.18.0 state)."""
+        slot, binary = self._frozen_gemini_slot()
+        if slot and self.state.get('config', {}).get('lifecycle_mode') == 'on':
+            return binary, slot
         if isinstance(self.state.get('gemini_bin'), str):
             return self.state['gemini_bin'], None
+        if slot:
+            return binary, None
         rows = [row for row in self.state.get('role_resume_changes', []) if isinstance(row.get('gemini_bin'), str)]
         return (rows[-1]['gemini_bin'] if rows else None), None
 
@@ -3327,6 +3338,12 @@ class Coordinator:
                 for key in ROLE_RESUME_DESTS:   # the model and effort changes _apply_resume_role_changes patches in
                     if key.startswith(role + '_') and getattr(self.args, key) != saved[key]:
                         value[key.split('_', 1)[1] if role == 'author' else key] = getattr(self.args, key)
+                vendor, binary = ('vendor', 'binary') if role == 'author' else (role + '_vendor', role + '_binary')
+                built = self._switched_manifest['role_flags'].get(slot)
+                if (self.state['config'].get('lifecycle_mode') != 'on' and value.get(vendor) == 'gemini' and
+                        isinstance(built, dict) and built.get(vendor) == 'gemini'):
+                    # WI-AGYBIN: a lifecycle-off run takes its agy path from the last binding, not from the frozen slot
+                    value[binary] = built.get(binary)
                 expected[slot] = value
         differs = lambda built: [slot for slot, value in expected.items() if built['role_flags'].get(slot) != value]
         drift = differs(self._switched_manifest)

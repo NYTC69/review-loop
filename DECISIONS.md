@@ -450,6 +450,8 @@ Threat model: reasonable safeguards within the task's scope, assuming users and 
 
 Amendment 2026-10-29 (B1 fix 7902669, V317-FB contract): codex_bin and claude_bin stay always bound and required; gemini_bin is bound and required only when a role runs gemini or the saved run froze it.
 
+Amendment 2026-11-28 (v3.18.1 WI-AGYBIN): gemini_bin is bound and required only while a role runs gemini; after the last gemini role is switched away on resume, the frozen gemini_bin binding is dropped at the next dispatch. The run keeps its agy path in state while any role runs gemini.
+
 Amendment 2026-10-29 (B3a, live agy test): the read-only settings also allow read_file(*); headless agy denies reads outside the workspace otherwise, and reviews read run/context files there.
 
 Amendment 2026-11-01 (GM1, merge onto v3.4.0): gemini is not part of ADR-20. On native Windows a gemini role, named on the command line, in the profile or frozen in a saved run, is refused before any lease or state write (`REFUSED: a gemini role is not supported on Windows ...`); `status`, `abort` and `stop` stay usable. Gemini read-only turns use the v3.4.0 scratch layout like the Codex read-only roles: the per-dispatch TMPDIR sits under the run's external `scratch_base` (legacy runs keep `run_dir/role-tmp`), and the INTERNAL_WORKSPACE_DIRS exclusions apply to them unchanged because the read-only checks key on the role, not the vendor.
